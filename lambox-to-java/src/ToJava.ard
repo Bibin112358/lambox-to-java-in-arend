@@ -1,0 +1,383 @@
+\import LambdaBox
+\import Data.List (List)
+
+-- =============================================================================
+-- v0: lambda-box (λ□) -> Java source generator.
+--
+-- Scope / philosophy (see the long design discussion):
+--   * UNTYPED target: every λ□ value becomes a Java `Object`. λ□ is untyped, so
+--     we do not attempt any Java typing/generics. (Types = a future λ□ᵀ concern.)
+--   * CLOSURES = ANONYMOUS INNER CLASSES implementing a single-method interface
+--     `Fn { Object apply(Object) }`. We deliberately AVOID Java lambdas / method
+--     references, because those compile to `invokedynamic`/LambdaMetafactory,
+--     which (a) enlarge the trusted base and (b) are not covered by the
+--     mechanized Java/JVM semantics (Featherweight Java, Jinja, Bicolano) that a
+--     future verification would target. Anonymous inner classes compile to plain
+--     classic bytecode (a synthetic nested class + `new`) and capture their
+--     free variables automatically (they must be effectively final, which our
+--     generated `final` locals are).
+--   * CURRIED closures: λ□ application is binary and curried, so `Fn` is a
+--     single-argument interface and multi-arg calls are nested `.apply`.
+--     Uncurrying is a v1 optimization (belongs on a λANF pass), not here.
+--   * CONSTRUCTORS: represented by one generic class `Data { int tag; Object[]
+--     fields }`. We do NOT emit a Java class per inductive: in the untyped tagged
+--     representation the constructor tag + fields is all `case`/`proj` need, and
+--     `construct`/`case`/`proj` already carry the tag/arity inline. Hence
+--     inductive declarations emit no code (just a comment).
+--   * STATEMENT-BASED CODEGEN (ad-hoc ANF): λ□ is an expression language; Java is
+--     statement-based (`let`/`case`/`fix` are not Java expressions). So each term
+--     compiles to a pair (STMTS, EXPR): statements to run first (bindings for
+--     lets/cases/fixes) plus a Java expression giving the value. This inline
+--     hoisting is "poor man's ANF"; promote it to a real λANF IR in v1 when it
+--     gets unwieldy (that refactor stays local to this file).
+--   * CONSTANTS become zero-argument `static Object <name>()` METHODS (not
+--     fields): methods can be mutually recursive and need no topological
+--     ordering, unlike static-field initializers. A constant that is a value is
+--     thus recomputed on each reference — acceptable for v0 (memoize in v1).
+--   * FIX (mutual recursion) is compiled with a mutable `Fn[]` and knot-tying
+--     (see compileFix). ASSUMES fix bodies are function values (lambdas), which
+--     holds for guarded λ□ fixpoints.
+--
+-- Purity / evaluation order assumptions:
+--   * λ□ here is treated as PURE (post-erasure functional code, no observable
+--     side effects). We therefore do not force strict left-to-right evaluation of
+--     pure subexpressions beyond the statements we already hoist; `let` sharing
+--     and `case`/`app` scrutinee evaluation are preserved. If effects/IO are
+--     added later, switch to full ANF binding every subterm to a fresh temp.
+--   * λ□ is call-by-value and Java is call-by-value, so eager `let`, eager
+--     `construct`, and `apply(arg)` match λ□ semantics directly.
+--
+-- DE BRUIJN CONVENTIONS (correctness-critical — VERIFY against MetaRocq's EAst):
+--   We assume that when a binder list extends the context, binders are pushed
+--   left-to-right so that the LAST-listed binder is de Bruijn index 0 (innermost).
+--   This governs (a) `case` branch field binders and (b) `fix` mutual-function
+--   variables. If MetaRocq's convention differs, adjust `bindFields` and the
+--   env construction in `compileFix`.
+--
+-- This is v0 "inspiration" code: NOT typechecked here. A few low-level string
+-- primitives are left as holes (`{?}`) and marked ASSUMED — wire them to your
+-- String library. Arend's `String` is a primitive type, so decimal rendering and
+-- identifier sanitization need real implementations.
+-- =============================================================================
+
+
+-- ---------------------------------------------------------------------------
+-- ASSUMED string primitives (implement with your String library).
+-- ---------------------------------------------------------------------------
+
+-- String concatenation.
+\func \infixr 6 ++ (a b : String) : String => {?}
+
+-- Decimal rendering of a Nat (e.g. 42 -> "42").
+\func natToStr (n : Nat) : String => {?}
+
+-- Decimal rendering of an Int (e.g. -7 -> "-7").
+\func intToStr (i : Int) : String => {?}
+
+-- Identifier sanitization ("cleanIdent"): map an arbitrary Arend identifier to a
+-- valid Java identifier fragment, e.g. escaping each invalid character as
+-- "_u<codepoint>". For v0 you may even assume names are already Java-safe.
+\func sanitize (s : String) : String => {?}
+
+
+-- ---------------------------------------------------------------------------
+-- Small List helpers (LambdaBox defines its own List with nil / ::).
+-- ---------------------------------------------------------------------------
+
+\func lenL {A : \Type} (xs : List A) : Nat \elim xs
+  | nil => 0
+  | _ :: xs => suc (lenL xs)
+
+\func appL {A : \Type} (xs ys : List A) : List A \elim xs
+  | nil => ys
+  | x :: xs => x :: appL xs ys
+
+\func revGo {A : \Type} (xs acc : List A) : List A \elim xs
+  | nil => acc
+  | x :: xs => revGo xs (x :: acc)
+
+\func revL {A : \Type} (xs : List A) : List A => revGo xs nil
+
+-- Look up a de Bruijn index in the naming environment (head = index 0).
+\func nthName (n : Nat) (env : List String) : String \elim n, env
+  | _, nil => "/*UNBOUND*/null"          -- should not happen for closed, well-scoped terms
+  | 0, x :: _ => x
+  | suc n, _ :: env => nthName n env
+
+-- Join a list of strings with ", " (for constructor argument arrays).
+\func joinComma (xs : List String) : String \elim xs
+  | nil => ""
+  | x :: nil => x
+  | x :: xs => x ++ ", " ++ joinComma xs
+
+
+-- ---------------------------------------------------------------------------
+-- Fresh-name supply.  We thread a Nat counter through compilation and turn it
+-- into unique Java local names "v0", "v1", ...  We α-rename everything (ignoring
+-- the source BinderName), which is simplest and avoids capture/shadowing issues.
+-- ---------------------------------------------------------------------------
+
+\func freshName (k : Nat) : String => "v" ++ natToStr k
+
+
+-- ---------------------------------------------------------------------------
+-- Kername mangling -> Java method name.  (A crude cleanIdent; v0 ignores the
+-- possibility of collisions — a real version must guarantee injectivity.)
+-- ---------------------------------------------------------------------------
+
+\func joinDirs (ds : List String) : String \elim ds
+  | nil => ""
+  | d :: nil => sanitize d
+  | d :: ds => sanitize d ++ "_" ++ joinDirs ds
+
+\func mangleModPath (mp : ModPath) : String \elim mp
+  | mpFile dp => joinDirs dp
+  | mpBound dp id n => joinDirs dp ++ "_" ++ sanitize id ++ "_" ++ natToStr n
+  | mpDot mp id => mangleModPath mp ++ "_" ++ sanitize id
+
+\func mangleKername (k : Kername) : String =>
+  "c_" ++ mangleModPath k.kerModPath ++ "__" ++ sanitize k.kerName
+
+
+-- ---------------------------------------------------------------------------
+-- Compilation results.
+--   Out     = (statements to run first, value expression, updated counter)
+--   OutList = same but for a list of subterms (arguments)
+-- ---------------------------------------------------------------------------
+
+\record Out (stmts : String) (expr : String) (fresh : Nat)
+
+\record OutList (stmts : String) (exprs : List String) (fresh : Nat)
+
+
+-- ---------------------------------------------------------------------------
+-- Core term compiler.
+--   env   : de Bruijn index -> Java variable name (head = index 0)
+--   fresh : next fresh-name counter
+-- ---------------------------------------------------------------------------
+
+\func compileExpr (env : List String) (fresh : Nat) (t : Term) : Out \elim t
+  -- erased proof/type: a shared singleton.
+  | box => \new Out "" "Prog.BOX" fresh
+
+  -- bound variable: resolve via the naming environment.
+  | bvar n => \new Out "" (nthName n env) fresh
+
+  -- free variable: should not occur in a closed program. Emit a poison value.
+  | fvar _ => \new Out "" "/*FVAR*/null" fresh
+
+  -- primitive int: λ□ prim ints are fixed-width (BitVec 63) -> boxed Long.
+  | prim (primInt i) => \new Out "" ("java.lang.Long.valueOf(" ++ intToStr i ++ "L)") fresh
+
+  -- global constant: call its generated zero-arg static method.
+  | const k => \new Out "" (mangleKername k ++ "()") fresh
+
+  -- application f a  ->  ((Fn) ⟦f⟧).apply(⟦a⟧)
+  | app f a =>
+    \let | of => compileExpr env fresh f
+         | oa => compileExpr env of.fresh a
+    \in \new Out
+             (of.stmts ++ oa.stmts)
+             ("((Prog.Fn)(" ++ of.expr ++ ")).apply(" ++ oa.expr ++ ")")
+             oa.fresh
+
+  -- lambda: a self-contained expression -> anonymous inner class (no indy).
+  -- The body's own statements live INSIDE apply(), so they don't leak outward.
+  | lambda _ body =>
+    \let | pv => freshName fresh
+         | ob => compileExpr (pv :: env) (suc fresh) body
+    \in \new Out
+             ""
+             ("new Prog.Fn(){ public Object apply(Object " ++ pv ++ "){ "
+                                                                      ++ ob.stmts ++ " return " ++ ob.expr ++ "; } }")
+             ob.fresh
+
+  -- let x := value in body  ->  hoist  final Object x = ⟦value⟧;  then ⟦body⟧
+  | letIn _ value body =>
+    \let | ov => compileExpr env fresh value
+         | lv => freshName ov.fresh
+         | ob => compileExpr (lv :: env) (suc ov.fresh) body
+    \in \new Out
+             (ov.stmts ++ "final Object " ++ lv ++ " = " ++ ov.expr ++ "; " ++ ob.stmts)
+             ob.expr
+             ob.fresh
+
+  -- construct ind idx args  ->  new Data(idx, new Object[]{ ⟦args⟧... })
+  -- We ignore `ind`: the tag alone suffices because every `case` already knows
+  -- the inductive it scrutinizes.
+  | construct _ idx args =>
+    \let | oa => compileArgs env fresh args
+    \in \new Out
+             oa.stmts
+             ("new Prog.Data(" ++ natToStr idx ++ ", new Object[]{ " ++ joinComma oa.exprs ++ " })")
+             oa.fresh
+
+  -- case (ind, npars) scrut branches
+  -- Evaluate scrut to a Data, switch on its tag; each branch binds the
+  -- constructor's fields and assigns the branch value to a result variable.
+  -- ASSUMPTION: branch position i corresponds to constructor index i, and the
+  -- number of binders in a branch equals the number of stored fields for that
+  -- constructor (i.e. inductive parameters `npars` were dropped during erasure so
+  -- they neither appear in `construct` args nor need binding here). If your
+  -- erasure keeps parameters in the fields, offset the field index by `npars`.
+  | case _ scrut brs =>
+    \let | os => compileExpr env fresh scrut
+         | dv => freshName os.fresh              -- scrutinee, cast to Data
+         | rv => freshName (suc os.fresh)        -- result variable
+         | cb => compileBranches env (suc (suc os.fresh)) dv rv 0 brs
+    \in \new Out
+             (os.stmts
+               ++ "final Prog.Data " ++ dv ++ " = (Prog.Data)(" ++ os.expr ++ "); "
+                                                                                ++ "Object " ++ rv ++ "; "
+                                                                                                        ++ "switch (" ++ dv ++ ".tag) { " ++ cb.1
+                                                                                                                                               ++ "default: throw new RuntimeException(\"no matching branch\"); } ")
+             rv
+             cb.2
+
+  -- proj: field access on a single-constructor record value.
+  -- ASSUMPTION: projFieldIdx directly indexes the stored `fields` (no param
+  -- offset). Adjust with projParamCount if your erasure stores parameters.
+  | proj pinfo scrut =>
+    \let | os => compileExpr env fresh scrut
+    \in \new Out
+             os.stmts
+             ("((Prog.Data)(" ++ os.expr ++ ")).fields[" ++ natToStr pinfo.projFieldIdx ++ "]")
+             os.fresh
+
+  -- fix: mutual recursion (see compileFix).
+  | fix defs idx => compileFix env fresh defs idx
+
+
+-- Compile a list of argument terms left-to-right, threading the counter and
+-- accumulating (concatenated statements, list of value expressions).
+\func compileArgs (env : List String) (fresh : Nat) (ts : List Term) : OutList \elim ts
+  | nil => \new OutList "" nil fresh
+  | t :: ts =>
+    \let | o => compileExpr env fresh t
+         | r => compileArgs env o.fresh ts
+    \in \new OutList (o.stmts ++ r.stmts) (o.expr :: r.exprs) r.fresh
+
+
+-- Compile the branches of a `case` into a sequence of `case <ctorIx>: { ... }`
+-- blocks. `dv` is the scrutinee Data variable, `rv` the result variable,
+-- `ctorIx` the constructor index of the current branch (= its position).
+-- Returns (concatenated case-blocks, updated counter).
+\func compileBranches (env : List String) (fresh : Nat) (dv rv : String) (ctorIx : Nat)
+                      (brs : List (\Sigma (List BinderName) Term)) : \Sigma String Nat \elim brs
+  | nil => ("", fresh)
+  | br :: brs =>
+    \let | bnd => bindFields dv 0 br.1 env fresh        -- (bind-stmts, extended env, counter)
+         | ob  => compileExpr bnd.2 bnd.3 br.2
+         | one => "case " ++ natToStr ctorIx ++ ": { "
+                                                  ++ bnd.1 ++ ob.stmts
+                                                                ++ rv ++ " = " ++ ob.expr ++ "; break; } "
+         | rest => compileBranches env ob.fresh dv rv (suc ctorIx) brs
+    \in (one ++ rest.1, rest.2)
+
+
+-- Bind each constructor field to a fresh local and extend the environment.
+-- Pushing binders left-to-right means the LAST binder becomes de Bruijn index 0
+-- (head of env) -- see the DE BRUIJN CONVENTIONS note at the top.
+-- Returns (bind-statements, extended env, updated counter).
+\func bindFields (dv : String) (fieldIx : Nat) (bs : List BinderName)
+                 (env : List String) (fresh : Nat) : \Sigma String (List String) Nat \elim bs
+  | nil => ("", env, fresh)
+  | _ :: bs =>
+    \let | nm => freshName fresh
+         | st => "final Object " ++ nm ++ " = " ++ dv ++ ".fields[" ++ natToStr fieldIx ++ "]; "
+         | r  => bindFields dv (suc fieldIx) bs (nm :: env) (suc fresh)
+    \in (st ++ r.1, r.2, r.3)
+
+
+-- fix [(name0, body0, pa0), ...] idx
+-- Encode a mutual fixpoint block as a mutable array of Fn "holders" and tie the
+-- knot: allocate `Fn[] __fixK`, then assign each slot to its (lambda) body, whose
+-- code refers to the other slots via the environment. The bodies are Fn objects
+-- (not evaluated until applied), so referencing a not-yet-assigned slot is safe
+-- as long as no function is *called* before all slots are filled -- guaranteed,
+-- since we only return __fixK[idx] and calls happen later at apply-time.
+--
+-- ASSUMPTION: every fix body is a function value (lambda). Non-function fixpoints
+-- would read an unassigned slot; λ□ fixpoints are guarded, so this holds.
+--
+-- The k fix-bound variables occupy the innermost context slots: pushing them in
+-- array order 0..k-1 makes def (k-1) de Bruijn index 0. See DE BRUIJN note.
+\func compileFix (env : List String) (fresh : Nat)
+                 (defs : List (\Sigma BinderName Term Nat)) (idx : Nat) : Out =>
+  \let | arr    => "__fix" ++ natToStr fresh
+       | k      => lenL defs
+       | env'   => appL (revL (fixVarNames arr 0 k)) env   -- head = arr[k-1] (index 0)
+       | header => "final Prog.Fn[] " ++ arr ++ " = new Prog.Fn[" ++ natToStr k ++ "]; "
+       | body   => compileFixDefs env' (suc fresh) arr 0 defs
+  \in \new Out
+           (header ++ body.1)
+           (arr ++ "[" ++ natToStr idx ++ "]")
+           body.2
+
+-- Names of the fix slots: [ "arr[j]", "arr[j+1]", ..., ] of length k.
+\func fixVarNames (arr : String) (j k : Nat) : List String \elim k
+  | 0 => nil
+  | suc k => (arr ++ "[" ++ natToStr j ++ "]") :: fixVarNames arr (suc j) k
+
+-- Compile and assign each fix body: `⟦body_j⟧-stmts  arr[j] = (Fn)(⟦body_j⟧-expr);`
+\func compileFixDefs (env : List String) (fresh : Nat) (arr : String) (j : Nat)
+                     (defs : List (\Sigma BinderName Term Nat)) : \Sigma String Nat \elim defs
+  | nil => ("", fresh)
+  | d :: defs =>
+    \let | ob   => compileExpr env fresh d.2      -- d.2 = body term (d.1 name, d.3 recursive-arg index)
+         | asg  => ob.stmts ++ arr ++ "[" ++ natToStr j ++ "] = (Prog.Fn)(" ++ ob.expr ++ "); "
+         | rest => compileFixDefs env ob.fresh arr (suc j) defs
+    \in (asg ++ rest.1, rest.2)
+
+
+-- ---------------------------------------------------------------------------
+-- Program assembly.
+-- ---------------------------------------------------------------------------
+
+-- Fixed runtime preamble: the Fn interface, the Data class, and the BOX
+-- singleton. (In a real setup these might live in a separate hand-written,
+-- trusted runtime; kept inline here for a self-contained single-file output.)
+\func javaHeader : String =>
+  "public final class Prog {\n" ++
+  "  public interface Fn { Object apply(Object x); }\n" ++
+  "  public static final class Data {\n" ++
+  "    public final int tag; public final Object[] fields;\n" ++
+  "    public Data(int tag, Object[] fields){ this.tag = tag; this.fields = fields; }\n" ++
+  "  }\n" ++
+  "  public static final Object BOX = new Object();\n"
+
+\func javaFooter : String => "}\n"
+
+-- One top-level declaration.
+--   constantDecl (just body)  -> a zero-arg static method returning the value
+--   constantDecl (nothing)    -> an axiom: throws until provided by the runtime shim
+--   inductiveDecl _           -> nothing (values are untyped Data(tag, fields))
+\func compileDecl (kd : \Sigma Kername GlobalDecl) : String =>
+  \let | name => mangleKername kd.1
+  \in \case kd.2 \with {
+    | constantDecl cb => \case cb.cstBody \with {
+      | just body =>
+        \let | o => compileExpr nil 0 body
+        \in "  public static Object " ++ name ++ "(){ " ++ o.stmts ++ " return " ++ o.expr ++ "; }\n"
+      | nothing =>
+        "  public static Object " ++ name ++ "(){ throw new RuntimeException(\"axiom " ++ name ++ " not implemented\"); }\n"
+    }
+    | inductiveDecl _ => "  /* inductive " ++ name ++ ": erased; values use Data(tag, fields) */\n"
+  }
+
+\func compileDecls (ds : GlobalDeclarations) : String \elim ds
+  | nil => ""
+  | d :: ds => compileDecl d ++ compileDecls ds
+
+-- The program's main term (if any) becomes __main(), plus a `main` that prints it.
+\func compileMain (m : Maybe Term) : String \elim m
+  | nothing => ""
+  | just t =>
+    \let | o => compileExpr nil 0 t
+    \in "  public static Object __main(){ " ++ o.stmts ++ " return " ++ o.expr ++ "; }\n" ++
+                                                                                  "  public static void main(String[] args){ System.out.println(__main()); }\n"
+
+-- Entry point: a whole λ□ Program -> a single Java source string.
+\func compileProgram (p : Program) : String \elim p
+  | program decls mmain =>
+    javaHeader ++ compileDecls decls ++ compileMain mmain ++ javaFooter
