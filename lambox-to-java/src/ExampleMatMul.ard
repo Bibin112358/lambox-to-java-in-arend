@@ -1,0 +1,420 @@
+\import LambdaBox
+\import Data.Bool
+\import Data.Maybe
+
+-- =============================================================================
+-- Matrix multiplication, translated by hand from:
+--
+--   \func Mat (A : \Type) (n m : Nat) : \Type => Array (Array A m) n
+--   \func funToVec {A}{n} (f : Fin n -> A) : Array A n => \new Array A n f
+--   \func lookupCol {A}{n}{m} (M : Mat A n m) (c : Fin m) : Array A n =>
+--     \new Array A n (\lam r => (M r) c)
+--   \func dot {A} (z:A)(add mul:A->A->A){n}(as bs : Array A n) : A \elim n,as,bs
+--     | 0, nil, nil => z
+--     | suc n, a::as, b::bs => add (mul a b) (dot z add mul as bs)
+--   \func matMul {A}(z:A)(add mul:A->A->A)(n m k:Nat)(M:Mat A n m)(N:Mat A m k) : Mat A n k =>
+--     funToVec (\lam r => funToVec (\lam c => dot z add mul (M r) (lookupCol N c)))
+--   \func SIZE => 30
+--   \func randMat : Mat Nat SIZE SIZE => ...
+--   \func res => matMul {Nat} 0 (Nat.+) (Nat.*) SIZE SIZE SIZE randMat randMat
+--
+-- Design decisions for this translation:
+--
+-- * Native primitive ints (`prim (primInt, _)`), not a hand-rolled Peano Nat.
+--   Consequence: `case` (which dispatches on a `construct`-tagged value) can
+--   no longer structurally recurse on the *size* directly, since a primInt
+--   isn't construct-tagged. Every place the source recurred on `n`/`Fin n`
+--   structurally (funToVec's implicit loop bound, nth-style indexing) now
+--   needs an explicit primitive comparison/decrement, done via 4 axioms
+--   below that a backend must implement natively (see "PRIMITIVE OPS").
+--
+-- * `Array A n` is erasure-encoded as an ordinary 2-constructor inductive
+--   `List` (nil/cons) -- lambda-box has no native array/vector former.
+--
+-- * Erasure keeps every Nat/Fin *value* parameter that's actually used
+--   computationally (array bounds, indices) and drops only `A : \Type` and
+--   provably-dead params. Concretely this drops `m` everywhere (never
+--   inspected as a value, only used in types) and drops dot's `n` (dot
+--   recurses structurally on the two lists, never touches `n` itself).
+--
+-- * Per the earlier discussion: InductiveId's Kername is never passed to
+--   mangleKername (construct/case discard it via `_` in ToJava.ard), so it
+--   is never rendered as text and can't hit the (still open) field-
+--   projection-doesn't-reduce bug. Shared named \funcs for InductiveId are
+--   fine. Every Kername that DOES get mangled (every function declaration's
+--   own Kername, and every `const` reference to one) is instead written
+--   fully inline as `\new Kername ...` at each occurrence, per that
+--   discussion -- no named Kername-valued \func anywhere below.
+-- =============================================================================
+
+
+-- ---------------------------------------------------------------------------
+-- Shared inductive ids (safe to name -- never mangled/printed, see above).
+-- ---------------------------------------------------------------------------
+
+\func listInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "ListBlock") 0
+\func boolInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "BoolBlock") 0
+
+\func listNilC : LBTerm => construct listInd 0 nil
+\func listConsC (h t : LBTerm) : LBTerm => construct listInd 1 (h :: t :: nil)
+
+
+-- ---------------------------------------------------------------------------
+-- Currying helpers (plain LBTerm builders, no Kernames involved).
+-- ---------------------------------------------------------------------------
+
+\func app2 (f a b : LBTerm) : LBTerm => app (app f a) b
+\func app3 (f a b c : LBTerm) : LBTerm => app (app (app f a) b) c
+\func app5 (f a b c d e : LBTerm) : LBTerm => app (app (app (app (app f a) b) c) d) e
+\func app7 (f a b c d e g h : LBTerm) : LBTerm => app (app (app (app (app (app (app f a) b) c) d) e) g) h
+
+
+-- ---------------------------------------------------------------------------
+-- PRIMITIVE OPS -- axioms (no body). A real backend must recognize these
+-- specific Kernames in ToJava.ard's `compileDecl`/`compileExpr | const k`
+-- and emit native `java.math.BigInteger` add/multiply/subtract-one/isZero
+-- instead of the current "axiom ... not implemented" stub. Not implemented
+-- here -- this file only builds the LBProgram value.
+-- ---------------------------------------------------------------------------
+
+\func primAddRef     : LBTerm => const (\new Kername (mpFile nil) "prim_add_int")
+\func primMulRef     : LBTerm => const (\new Kername (mpFile nil) "prim_mul_int")
+\func primSub1Ref    : LBTerm => const (\new Kername (mpFile nil) "prim_sub1_int")
+\func primIsZeroRef  : LBTerm => const (\new Kername (mpFile nil) "prim_is_zero_int")
+
+
+-- ---------------------------------------------------------------------------
+-- buildVec : (int -> A) -> int -> int -> List A
+--   buildVec f remaining idx =
+--     if isZero remaining then nil
+--     else cons (f idx) (buildVec f (sub1 remaining) (add idx 1))
+--
+-- de Bruijn trace (single fix, k=1):
+--   entering fix body:      [self(0)]
+--   after \lam f:            [f(0), self(1)]
+--   after \lam remaining:    [remaining(0), f(1), self(2)]
+--   after \lam idx:          [idx(0), remaining(1), f(2), self(3)]
+-- Bool's constructors (false=0,true=1) take no fields, so both `case`
+-- branches leave the env unchanged.
+-- ---------------------------------------------------------------------------
+
+\func buildVecRef : LBTerm => const (\new Kername (mpFile nil) "buildVec")
+
+\func buildVecBody : LBTerm =>
+  lambda anon (lambda anon (lambda anon (
+    case boolInd 0 (app primIsZeroRef (bvar 1)) (
+    -- tag 0 = false (remaining /= 0): cons (f idx) (buildVec f (sub1 remaining) (add idx 1))
+      (nil,
+       listConsC (app (bvar 2) (bvar 0))
+           (app3 (bvar 3) (bvar 2)
+               (app primSub1Ref (bvar 1))
+               (app2 primAddRef (bvar 0) (prim (primInt, 1))))) ::
+      -- tag 1 = true (remaining == 0): nil
+      (nil, listNilC) ::
+      nil
+    )
+  )))
+
+\func buildVecFix : LBTerm =>
+  fix ((\new FixDef LBTerm anon buildVecBody 0) :: nil) 0
+
+
+-- ---------------------------------------------------------------------------
+-- funToVec : int -> (int -> A) -> List A
+--   funToVec n f = buildVec f n 0
+-- env after both lambdas: [f(0), n(1)]
+-- ---------------------------------------------------------------------------
+
+\func funToVecRef : LBTerm => const (\new Kername (mpFile nil) "funToVec")
+
+\func funToVecBody : LBTerm =>
+  lambda anon (lambda anon (
+    app3 buildVecRef (bvar 0) (bvar 1) (prim (primInt, 0))
+  ))
+
+
+-- ---------------------------------------------------------------------------
+-- nth : List A -> int -> A       (partial: undefined/dummy if out of bounds)
+--   nth xs c = case xs of
+--                nil        => <dummy>
+--                cons hd tl => if isZero c then hd else nth tl (sub1 c)
+--
+-- de Bruijn trace (single fix, k=1):
+--   entering fix body:   [self(0)]
+--   after \lam xs:        [xs(0), self(1)]
+--   after \lam c:         [c(0), xs(1), self(2)]        <- outer case scrutinee = xs = bvar 1
+--   cons branch (2 binders hd,tl; LAST binder = bvar 0, per iota_red):
+--                         [tl(0), hd(1), c(2), xs(3), self(4)]
+--   inner case (isZero c) has 0-field branches, env unchanged in both arms.
+-- ---------------------------------------------------------------------------
+
+\func nthRef : LBTerm => const (\new Kername (mpFile nil) "nth")
+
+\func nthBody : LBTerm =>
+  lambda anon (lambda anon (
+    case listInd 0 (bvar 1) (
+      (nil, prim (primInt, 0)) ::                                    -- nil: out of bounds, unreachable given SIZE invariants
+      ((anon :: anon :: nil),
+       case boolInd 0 (app primIsZeroRef (bvar 2)) (
+         (nil, app2 (bvar 4) (bvar 0) (app primSub1Ref (bvar 2))) ::  -- c /= 0: nth tl (sub1 c)
+         (nil, bvar 1) ::                                             -- c == 0: hd
+         nil
+       )) ::
+      nil
+    )
+  ))
+
+\func nthFix : LBTerm =>
+  fix ((\new FixDef LBTerm anon nthBody 0) :: nil) 0
+
+
+-- ---------------------------------------------------------------------------
+-- lookupCol : List (List A) -> int -> List A     (structural on M; no size arg needed)
+--   lookupCol M c = case M of
+--                     nil         => nil
+--                     row :: rows => cons (nth row c) (lookupCol rows c)
+--
+-- de Bruijn trace:
+--   entering fix body:   [self(0)]
+--   after \lam M:         [M(0), self(1)]
+--   after \lam c:         [c(0), M(1), self(2)]         <- outer case scrutinee = M = bvar 1
+--   cons branch (2 binders row,rows; LAST=rows=bvar0):
+--                         [rows(0), row(1), c(2), M(3), self(4)]
+-- ---------------------------------------------------------------------------
+
+\func lookupColRef : LBTerm => const (\new Kername (mpFile nil) "lookupCol")
+
+\func lookupColBody : LBTerm =>
+  lambda anon (lambda anon (
+    case listInd 0 (bvar 1) (
+      (nil, listNilC) ::
+      ((anon :: anon :: nil),
+       listConsC (app2 nthRef (bvar 1) (bvar 2))
+           (app2 (bvar 4) (bvar 0) (bvar 2))) ::
+      nil
+    )
+  ))
+
+\func lookupColFix : LBTerm =>
+  fix ((\new FixDef LBTerm anon lookupColBody 0) :: nil) 0
+
+
+-- ---------------------------------------------------------------------------
+-- dot : A -> (A->A->A) -> (A->A->A) -> List A -> List A -> A
+--   ("n" from the source is dead here -- dot never inspects it, only as/bs.)
+--   dot z add mul as bs =
+--     case as of
+--       nil        => case bs of { nil => z ; cons _ _ => z }        -- (2nd arm unreachable)
+--       cons ah at => case bs of
+--                       nil        => z                               -- (unreachable)
+--                       cons bh bt => add (mul ah bh) (dot z add mul at bt)
+--
+-- de Bruijn trace (single fix, k=1):
+--   entering fix body:  [self(0)]
+--   \lam z:   [z(0),self(1)]
+--   \lam add: [add(0),z(1),self(2)]
+--   \lam mul: [mul(0),add(1),z(2),self(3)]
+--   \lam as:  [as(0),mul(1),add(2),z(3),self(4)]
+--   \lam bs:  [bs(0),as(1),mul(2),add(3),z(4),self(5)]     <- outer scrutinee as = bvar 1
+--   outer nil branch (0 binders, env unchanged): inner scrutinee bs = bvar 0
+--     inner nil  (0 binders, env unchanged): z = bvar 4
+--     inner cons (2 binders bt,bh -> [bt(0),bh(1),bs(2),as(3),mul(4),add(5),z(6),self(7)]): z = bvar 6 (unreachable)
+--   outer cons branch (2 binders at,ah -> [at(0),ah(1),bs(2),as(3),mul(4),add(5),z(6),self(7)]): inner scrutinee bs = bvar 2
+--     inner nil  (0 binders, env unchanged): z = bvar 6 (unreachable)
+--     inner cons (2 binders bt,bh -> [bt(0),bh(1),at(2),ah(3),bs(4),as(5),mul(6),add(7),z(8),self(9)]):
+--       add (mul ah bh) (dot z add mul at bt)
+-- ---------------------------------------------------------------------------
+
+\func dotRef : LBTerm => const (\new Kername (mpFile nil) "dot")
+
+\func dotBody : LBTerm =>
+  lambda anon (lambda anon (lambda anon (lambda anon (lambda anon (
+    case listInd 0 (bvar 1) (
+    -- as = nil
+      (nil,
+       case listInd 0 (bvar 0) (
+         (nil, bvar 4) ::                     -- both nil: z
+         ((anon :: anon :: nil), bvar 6) ::    -- length mismatch, unreachable
+         nil
+       )) ::
+      -- as = cons(ah, at)
+      ((anon :: anon :: nil),
+       case listInd 0 (bvar 2) (
+         (nil, bvar 6) ::                      -- length mismatch, unreachable
+         ((anon :: anon :: nil),
+          app2 (bvar 7)
+              (app2 (bvar 6) (bvar 3) (bvar 1))
+              (app5 (bvar 9) (bvar 8) (bvar 7) (bvar 6) (bvar 2) (bvar 0))) ::
+         nil
+       )) ::
+      nil
+    )
+  )))))
+
+\func dotFix : LBTerm =>
+  fix ((\new FixDef LBTerm anon dotBody 0) :: nil) 0
+
+
+-- ---------------------------------------------------------------------------
+-- matMul : A -> (A->A->A) -> (A->A->A) -> int -> int -> List(List A) -> List(List A) -> List(List A)
+--   ("m" from the source is dead here: lookupCol/dot both recover the shared
+--   dimension structurally, so only n (row count) and k (col count) survive.)
+--   matMul z add mul n k M N =
+--     funToVec n (\lam r => funToVec k (\lam c => dot z add mul (nth M r) (lookupCol N c)))
+--
+-- de Bruijn trace (no fix -- not recursive):
+--   \lam z,add,mul,n,k,M,N ->
+--     top-level env: [N(0),M(1),k(2),n(3),mul(4),add(5),z(6)]
+--   inside \lam r  (arg to outer funToVec): [r(0),N(1),M(2),k(3),n(4),mul(5),add(6),z(7)]
+--   inside \lam c  (arg to inner funToVec): [c(0),r(1),N(2),M(3),k(4),n(5),mul(6),add(7),z(8)]
+-- ---------------------------------------------------------------------------
+
+\func matMulRef : LBTerm => const (\new Kername (mpFile nil) "matMul")
+
+\func matMulBody : LBTerm =>
+  lambda anon (lambda anon (lambda anon (lambda anon (lambda anon (lambda anon (lambda anon (
+    app2 funToVecRef (bvar 3)                                    -- n
+        (lambda anon (
+          app2 funToVecRef (bvar 3)                                -- k, env: [r(0),N(1),M(2),k(3),n(4),mul(5),add(6),z(7)]
+              (lambda anon (
+              -- env: [c(0),r(1),N(2),M(3),k(4),n(5),mul(6),add(7),z(8)]
+                app5 dotRef (bvar 8) (bvar 7) (bvar 6)
+                    (app2 nthRef (bvar 3) (bvar 1))
+                    (app2 lookupColRef (bvar 2) (bvar 0))
+              ))
+        ))
+  )))))))
+
+
+-- ---------------------------------------------------------------------------
+-- SIZE / randNat / randVec / randMat / res
+-- ---------------------------------------------------------------------------
+
+\func sizeLit : LBTerm => prim (primInt, 30)
+
+\func randNatRef  : LBTerm => const (\new Kername (mpFile nil) "randNat")
+\func randVecRef  : LBTerm => const (\new Kername (mpFile nil) "randVec")
+\func randMatRef  : LBTerm => const (\new Kername (mpFile nil) "randMat")
+\func resRef      : LBTerm => const (\new Kername (mpFile nil) "res")
+
+\func randNatBody : LBTerm => prim (primInt, 1)
+
+\func randVecBody : LBTerm => app2 funToVecRef sizeLit (lambda anon randNatRef)
+
+\func randMatBody : LBTerm => app2 funToVecRef sizeLit (lambda anon randVecRef)
+
+\func resBody : LBTerm =>
+  app7 matMulRef (prim (primInt, 0)) primAddRef primMulRef sizeLit sizeLit randMatRef randMatRef
+
+
+-- ---------------------------------------------------------------------------
+-- sumList : List A -> A     (folds primAdd over a row, base case 0)
+--   sumList xs = case xs of { nil => 0 ; cons hd tl => add hd (sumList tl) }
+--
+-- de Bruijn trace (single fix, k=1):
+--   entering fix body: [self(0)]
+--   after \lam xs:       [xs(0), self(1)]           <- scrutinee xs = bvar 0
+--   cons branch (2 binders hd,tl; LAST=tl=bvar0):
+--                        [tl(0), hd(1), xs(2), self(3)]
+-- ---------------------------------------------------------------------------
+
+\func sumListRef : LBTerm => const (\new Kername (mpFile nil) "sumList")
+
+\func sumListBody : LBTerm =>
+  lambda anon (
+    case listInd 0 (bvar 0) (
+      (nil, prim (primInt, 0)) ::
+      ((anon :: anon :: nil), app2 primAddRef (bvar 1) (app (bvar 3) (bvar 0))) ::
+      nil
+    )
+  )
+
+\func sumListFix : LBTerm =>
+  fix ((\new FixDef LBTerm anon sumListBody 0) :: nil) 0
+
+
+-- ---------------------------------------------------------------------------
+-- sumMat : List (List A) -> A     (sum of all rows' sumList, base case 0)
+--   sumMat rows = case rows of { nil => 0 ; cons row rest => add (sumList row) (sumMat rest) }
+--
+-- de Bruijn trace (single fix, k=1):
+--   entering fix body: [self(0)]
+--   after \lam rows:     [rows(0), self(1)]          <- scrutinee rows = bvar 0
+--   cons branch (2 binders row,rest; LAST=rest=bvar0):
+--                        [rest(0), row(1), rows(2), self(3)]
+-- ---------------------------------------------------------------------------
+
+\func sumMatRef : LBTerm => const (\new Kername (mpFile nil) "sumMat")
+
+\func sumMatBody : LBTerm =>
+  lambda anon (
+    case listInd 0 (bvar 0) (
+      (nil, prim (primInt, 0)) ::
+      ((anon :: anon :: nil), app2 primAddRef (app sumListRef (bvar 1)) (app (bvar 3) (bvar 0))) ::
+      nil
+    )
+  )
+
+\func sumMatFix : LBTerm =>
+  fix ((\new FixDef LBTerm anon sumMatBody 0) :: nil) 0
+
+
+-- ---------------------------------------------------------------------------
+-- sumRes := sumMat res
+--
+-- Hand-checkable expected value: randMat is a 30x30 matrix of all 1s, so
+-- every entry of res = dot(0,+,*, row-of-30-1s, col-of-30-1s) = 30, and
+-- sumRes = 30 * 30 * 30 = 27000.
+-- ---------------------------------------------------------------------------
+
+\func sumResRef : LBTerm => const (\new Kername (mpFile nil) "sumRes")
+
+\func sumResBody : LBTerm => app sumMatRef resRef
+
+
+-- ---------------------------------------------------------------------------
+-- Program assembly.
+-- ---------------------------------------------------------------------------
+
+-- Order matters: EWellformed.v's `wf_glob` checks each entry's body against
+-- only the *tail* of the list (`wf_global_decl Σ d` for `(kn,d)::Σ`), i.e. a
+-- declaration may only reference declarations that come AFTER it in this
+-- list -- dependents first, dependencies last (the reverse of a normal
+-- "declare before use" order).
+\func decls : GlobalDeclarations =>
+  (\new Kername (mpFile nil) "sumRes",    constantDecl (\new ConstantBody (just sumResBody))) ::
+  (\new Kername (mpFile nil) "sumMat",    constantDecl (\new ConstantBody (just sumMatFix))) ::
+  (\new Kername (mpFile nil) "sumList",   constantDecl (\new ConstantBody (just sumListFix))) ::
+  (\new Kername (mpFile nil) "res",       constantDecl (\new ConstantBody (just resBody))) ::
+  (\new Kername (mpFile nil) "randMat",   constantDecl (\new ConstantBody (just randMatBody))) ::
+  (\new Kername (mpFile nil) "randVec",   constantDecl (\new ConstantBody (just randVecBody))) ::
+  (\new Kername (mpFile nil) "randNat",   constantDecl (\new ConstantBody (just randNatBody))) ::
+  (\new Kername (mpFile nil) "matMul",    constantDecl (\new ConstantBody (just matMulBody))) ::
+  (\new Kername (mpFile nil) "funToVec",  constantDecl (\new ConstantBody (just funToVecBody))) ::
+  (\new Kername (mpFile nil) "dot",       constantDecl (\new ConstantBody (just dotFix))) ::
+  (\new Kername (mpFile nil) "lookupCol", constantDecl (\new ConstantBody (just lookupColFix))) ::
+  (\new Kername (mpFile nil) "nth",       constantDecl (\new ConstantBody (just nthFix))) ::
+  (\new Kername (mpFile nil) "buildVec",  constantDecl (\new ConstantBody (just buildVecFix))) ::
+  (\new Kername (mpFile nil) "prim_is_zero_int", constantDecl (\new ConstantBody nothing)) ::
+  (\new Kername (mpFile nil) "prim_sub1_int",    constantDecl (\new ConstantBody nothing)) ::
+  (\new Kername (mpFile nil) "prim_mul_int",     constantDecl (\new ConstantBody nothing)) ::
+  (\new Kername (mpFile nil) "prim_add_int",     constantDecl (\new ConstantBody nothing)) ::
+  (\new Kername (mpFile nil) "BoolBlock", inductiveDecl (\new MutualInductiveBody finite 0
+                                                              ((\new OneInductiveBody "Bool" false IntoAny
+                                                                     ((\new ConstructorBody "false" 0) :: (\new ConstructorBody "true" 0) :: nil)
+                                                                     nil) :: nil))) ::
+  (\new Kername (mpFile nil) "ListBlock", inductiveDecl (\new MutualInductiveBody finite 0
+                                                              ((\new OneInductiveBody "List" false IntoAny
+                                                                     ((\new ConstructorBody "nil" 0) :: (\new ConstructorBody "cons" 2) :: nil)
+                                                                     nil) :: nil))) ::
+  nil
+
+-- Entry point is sumRes (prints a single number, expected 27000) rather than
+-- res (which would print the full 30x30 nested Data tree). Swap to `resRef`
+-- if you want to inspect the raw matrix instead.
+\func matMulProgram : LBProgram => (decls, sumResRef)
+
+\import ToJava
+\import Debug.Meta
+
+\func main => printArr (compileProgram matMulProgram)
