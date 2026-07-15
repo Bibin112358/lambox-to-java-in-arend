@@ -1,0 +1,73 @@
+-- =============================================================================
+-- Code: the "String" replacement for code generation.
+--
+-- Arend's `String` is opaque (`\data String`, no constructors, no eliminator --
+-- see Prelude.ard) so no pure Arend function can read or concatenate two
+-- Strings. The only Strings that exist are literals. Fix: represent generated
+-- text as a ROPE -- `Array String` of literal fragments -- and concatenate by
+-- array append, which is native and pure.
+--
+-- This module is the ONLY place that says `Array String`. ToJava (and anything
+-- else generating code) is written purely against `Code`/`nilC`/`litC`/`<+>`/
+-- `concatC`/`natToStr`/`intToStr`/`sanitize`. If the representation needs to
+-- change later (e.g. a tree instead of a flat array, for cheaper append; or a
+-- real `String` if concatenation ever becomes possible), only this file
+-- changes -- no call site elsewhere does.
+-- =============================================================================
+
+\func Code : \Type => Array String
+
+-- Rope append (same idiom as Data.Array's `++'`, kept dependency-free here).
+\func \infixr 5 <+> (a b : Code) : Code \elim a
+  | nil => b
+  | x :: a => x :: (a <+> b)
+
+\func nilC : Code => nil
+\func litC (s : String) : Code => s :: nil
+
+-- Concatenate an array of Code fragments (no separator).
+\func concatC (xs : Array Code) : Code \elim xs
+  | nil => nilC
+  | x :: xs => x <+> concatC xs
+
+\func digitLit (d : Nat) : String
+  | 0 => "0" | 1 => "1" | 2 => "2" | 3 => "3" | 4 => "4"
+  | 5 => "5" | 6 => "6" | 7 => "7" | 8 => "8" | 9 => "9"
+  | _ => "?"  -- unreachable: only ever called with d = _ mod 10
+
+-- Decimal rendering of a Nat. `n Nat.div 10` is not a sub-pattern of `n`, so
+-- the termination checker can't see it as structurally smaller; recursing on
+-- an explicit `fuel` (seeded to `n`, always more than enough since dividing by
+-- 10 needs far fewer steps than `n`) gives it a real structural decrease.
+-- Recurring on the quotient BEFORE appending the remainder digit produces
+-- digits in the correct most-significant-first order (checked: natToStr 42 =
+-- natToStrFuel _ 4 <+> "2" = "4" <+> "2" = "42").
+\func natToStrFuel (fuel n : Nat) : Code \elim fuel
+  | 0 => litC "0"
+  | suc fuel =>
+    \let | q => n Nat.div 10
+         | r => n Nat.mod 10
+    \in \case q \with {
+      | 0 => litC (digitLit r)
+      | suc _ => natToStrFuel fuel q <+> litC (digitLit r)
+    }
+
+\func natToStr (n : Nat) : Code =>
+  \case n \with {
+    | 0 => litC "0"
+    | suc _ => natToStrFuel n n
+  }
+
+-- `neg zero` is DEFINITIONALLY `pos zero` (see Int's constructor condition in
+-- Prelude.ard), so the `neg 0` clause must agree with `pos 0`'s -- no "-".
+\func intToStr (i : Int) : Code \elim i
+  | pos n => natToStr n
+  | neg 0 => natToStr 0
+  | neg (suc n) => litC "-" <+> natToStr (suc n)
+
+-- Cannot inspect the characters of an opaque String, so this assumes
+-- identifiers arriving from the source are already valid Java identifiers.
+-- Real sanitization (replacing illegal chars) needs char-level access, which
+-- pure Arend does not have; do it at the host/extension boundary if ever
+-- needed (e.g. a small Java meta, same trust tier as printArr).
+\func sanitize (s : String) : Code => litC s
