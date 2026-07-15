@@ -1,7 +1,6 @@
 \import LambdaBox
 \import Data.Maybe
 \import Code
-\import Debug.Meta
 
 -- =============================================================================
 -- v2: lambda-box (LBTerm) -> Java source generator, using Code (Code.ard)
@@ -184,15 +183,44 @@
   \in litC "  public static Object __main(){ " <+> o.1 <+> litC " return " <+> o.2 <+> litC "; }\n" <+>
                                                                                        litC "  public static void main(String[] args){ System.out.println(__main()); }\n"
 
+-- `Fn`/`Data` toString overrides: purely for making printed program output
+-- human-readable (e.g. inspecting `System.out.println(__main())`). Data's is a
+-- recursive, indented `tag(\n  field,\n  field\n)` tree (flat leaves like
+-- `0` print with no parens). Kept to plain loops/casts (no lambdas/streams/
+-- pattern-switch) per the classic-bytecode-only codegen style used everywhere
+-- else here. Fn can't show anything structural (it's a compiled closure), so
+-- it just gets a fixed placeholder instead of a raw hashcode.
 \func compileProgram (p : LBProgram) : Code =>
   litC "public final class Prog {\n" <+>
-  litC "  public interface Fn { Object apply(Object x); }\n" <+>
-  litC "  public static final class Data { public final int tag; public final Object[] fields;\n" <+>
-  litC "    public Data(int tag, Object[] fields){ this.tag = tag; this.fields = fields; } }\n" <+>
+  litC "  public interface Fn {\n" <+>
+  litC "    Object apply(Object x);\n" <+>
+  litC "  }\n" <+>
+  litC "  public static final class Data {\n" <+>
+  litC "    public final int tag;\n" <+>
+  litC "    public final Object[] fields;\n" <+>
+  litC "    public Data(int tag, Object[] fields){ this.tag = tag; this.fields = fields; }\n" <+>
+  litC "    @Override public String toString(){ return toString(0); }\n" <+>
+  litC "    public String toString(int indent){\n" <+>
+  litC "      StringBuilder sb = new StringBuilder();\n" <+>
+  litC "      sb.append(tag);\n" <+>
+  litC "      if (fields.length == 0) return sb.toString();\n" <+>
+  litC "      sb.append(\"(\\n\");\n" <+>
+  litC "      for (int i = 0; i < fields.length; i++) {\n" <+>
+  litC "        for (int j = 0; j < indent + 1; j++) sb.append(\"  \");\n" <+>
+  litC "        Object f = fields[i];\n" <+>
+  litC "        if (f instanceof Data) { sb.append(((Data) f).toString(indent + 1)); } else { sb.append(String.valueOf(f)); }\n" <+>
+  litC "        if (i < fields.length - 1) sb.append(\",\");\n" <+>
+  litC "        sb.append(\"\\n\");\n" <+>
+  litC "      }\n" <+>
+  litC "      for (int j = 0; j < indent; j++) sb.append(\"  \");\n" <+>
+  litC "      sb.append(\")\");\n" <+>
+  litC "      return sb.toString();\n" <+>
+  litC "    }\n" <+>
+  litC "  }\n" <+>
   litC "  public static final Object BOX = new Object();\n" <+>
   compileDecls p.1 <+> compileMain p.2 <+> litC "}\n"
 
 -- Print a generated program via the `printArr` meta (Array String -> console,
 -- fragments joined with nothing in between).
-
-\func main => printArr (compileProgram (nil, prim (primInt, -44)))
+-- \import Debug.Meta
+-- \func main => printArr (compileProgram (nil, prim (primInt, -44)))
