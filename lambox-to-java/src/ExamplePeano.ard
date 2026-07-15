@@ -66,4 +66,8 @@
 \import ToJava
 \import Debug.Meta
 
-\func main => printArr (compileProgram addProgram)
+--\func main => printArr (compileProgram addProgram)
+
+\import Serialize
+\func ser => printArr (LambdaBoxToSrting addProgram)
+

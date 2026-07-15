@@ -417,4 +417,7 @@
 \import ToJava
 \import Debug.Meta
 
-\func main => printArr (compileProgram matMulProgram)
+-- \func main => printArr (compileProgram matMulProgram)
+
+\import Serialize
+\func ser => printArr (LambdaBoxToSrting matMulProgram)

@@ -136,3 +136,48 @@
 \func GlobalDeclarations : \Type => Array (\Sigma Kername GlobalDecl)
 
 \func LBProgram : \Type => \Sigma GlobalDeclarations LBTerm
+
+
+-- ---------------------------------------------------------------------------
+-- The rest of Basic.lean, not otherwise needed by ToJava.ard, but needed by
+-- Serialize.ard (mirrors the tail of Basic.lean: ASTType/Program plus the
+-- extraction-attribute-remapping types).
+-- ---------------------------------------------------------------------------
+
+-- Basic.lean's `Program := ASTType`; `term` is `Option LBTerm` there (unlike
+-- LBProgram above, which requires one) -- a program can be a bare library
+-- with no distinguished entry term.
+\data ASTType
+  | untyped GlobalDeclarations (Maybe LBTerm)
+
+\record RemappedInductive
+  (reIndName : Ident)
+  (reIndCtors : Array Ident)
+  (reIndMatch : Maybe Ident)
+
+\record ExtractInductive
+  (extractCstrs : Array Kername)
+  (extractElim : Kername)
+
+\record RemappedConstant
+  (reConstExt : Maybe Ident)
+  (reConstArity : Nat)
+  (reConstGC : Bool)
+  (reConstInl : Bool)
+  (reConstS : Ident)
+
+\data RemapInductive
+  | knIndRemap ExtractInductive
+  | stringIndRemap RemappedInductive
+
+\record InductiveMapping
+  (indMapKn : Kername)
+  (indMapS : Ident)
+  (indMapN : Array Nat)
+
+\record AttributesConfig
+  (acInlinings : Array Kername)
+  (acConstRemappings : Array (\Sigma Kername RemappedConstant))
+  (acIndRemappings : Array (\Sigma InductiveId RemapInductive))
+  (acCstrReorders : Array InductiveMapping)
+  (acCustomAttributes : Array (\Sigma Kername Ident))
