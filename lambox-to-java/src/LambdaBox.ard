@@ -1,0 +1,138 @@
+-- Encoding of the lambda-box (λ□) language in Arend.
+--
+-- Sources / inspiration:
+--   * MetaRocq EAst.v   : erasure/theories/EAst.v   (the canonical λ□ `term`)
+--   * lean-to-lambdabox : LeanToLambdaBox/Basic.lean (the `LBTerm` adaptation)
+--
+-- We follow the LBTerm shape (cleaner names, locally-nameless friendly):
+--   * keep `fvar` (a locally-nameless free variable, à la Lean) alongside `bvar`
+--     (de Bruijn).  The canonical EAst λ□ uses only `bvar`; drop `fvar` if you
+--     build de Bruijn directly during erasure.
+--   * drop `tVar`, `tEvar`, `tCoFix`, `tLazy`, `tForce` (LBTerm does the same):
+--     they are not needed for a strict, non-coinductive `\Set`+IO fragment.
+--   * `prim` is simplified: MetaRocq/LBTerm carry primitive ints (BitVec 63);
+--     Arend has no fixed-width BitVec, so we model the payload with Prelude `Int`.
+--
+-- This file depends only on the Arend Prelude (Nat, Int, String, \Sigma).
+-- For convenience it (re)defines Bool/Maybe/List locally so it typechecks with
+-- no library setup; replace these with `\import Data.Bool/Maybe/List` if you
+-- build inside arend-lib.
+
+-- ---------------------------------------------------------------------------
+-- Prelude substitutes (swap for arend-lib imports if desired)
+-- ---------------------------------------------------------------------------
+
+\data Bool | false | true
+
+\data Maybe (A : \Type) | nothing | just A
+
+\data List (A : \Type)
+  | nil
+  | \infixr 5 :: A (List A)
+
+-- ---------------------------------------------------------------------------
+-- Names and kernel names  (EAst: ident / dirpath / modpath / kername)
+-- ---------------------------------------------------------------------------
+
+\func Ident => String
+
+\func DirPath => List String
+
+-- MetaRocq's modpath = MPfile | MPbound | MPdot
+\data ModPath
+  | mpFile DirPath
+  | mpBound DirPath Ident Nat
+  | mpDot ModPath Ident
+
+\record Kername (kerModPath : ModPath) (kerName : Ident)
+
+-- EAst `inductive` / LBTerm `InductiveId`: a mutual inductive block + the index
+-- of one body inside it.
+\record InductiveId (indMutualBlock : Kername) (indIdx : Nat)
+
+-- EAst `projection` / LBTerm `ProjectionInfo`.
+\record ProjectionInfo
+  (projIndType : InductiveId)
+  (projParamCount : Nat)
+  (projFieldIdx : Nat)
+
+-- EAst `name` (nAnon | nNamed) / LBTerm `BinderName`.
+\data BinderName
+  | anon
+  | named String
+
+-- ---------------------------------------------------------------------------
+-- Primitive values  (EAst: prim_val ; LBTerm: PrimVal)
+-- ---------------------------------------------------------------------------
+
+\data PrimVal
+  | primInt Int   -- models the single LBTerm tag `primInt` (a BitVec 63)
+
+-- ---------------------------------------------------------------------------
+-- The lambda-box term  (EAst: term ; LBTerm: LBTerm)
+-- ---------------------------------------------------------------------------
+--
+-- A mutual fixpoint definition (EAst `def` / LBTerm `FixDef`) is encoded inline
+-- as a tuple  (fixName, fixBody, fixPrincipalArg) : \Sigma BinderName Term Nat,
+-- mirroring how `case` branches are encoded.  We use \Sigma rather than a
+-- type-parameterized `\record FixDef (T : \Type)` because a recursive occurrence
+-- of `Term` through \Sigma/List is plainly strictly-positive; if you prefer the
+-- named record and Arend's positivity checker accepts the nesting, swap it back.
+
+\data Term
+  | box                                              -- erased proof/type
+  | bvar Nat                                         -- de Bruijn index
+  | fvar Nat                                         -- locally-nameless free var (id); EAst has no analogue
+  | lambda BinderName Term                           -- \x. body
+  | letIn BinderName Term Term                       -- let x := value in body
+  | app Term Term                                    -- binary application
+  | const Kername                                    -- global constant reference
+  | construct InductiveId Nat (List Term)            -- inductive, constructor index, args
+  | case (\Sigma InductiveId Nat) Term (List (\Sigma (List BinderName) Term))
+  -- (inductive, #params), scrutinee, branches (binders, body)
+  | proj ProjectionInfo Term                         -- record field projection
+  | fix (List (\Sigma BinderName Term Nat)) Nat      -- mutual fix block [(name, body, principalArgIdx)], selected index
+  | prim PrimVal                                     -- primitive value
+
+-- ---------------------------------------------------------------------------
+-- Global environment  (EAst: *_body / global_decl / program)
+-- ---------------------------------------------------------------------------
+
+\data AllowedEliminations
+  | intoSProp
+  | intoPropSProp
+  | intoSetPropSProp
+  | intoAny
+
+\data RecursivityKind
+  | finite
+  | cofinite
+  | bifinite
+
+\record ConstructorBody (cstrName : Ident) (cstrNargs : Nat)
+
+\record ProjectionBody (projBodyName : Ident)
+
+\record OneInductiveBody
+  (indName : Ident)
+  (indPropositional : Bool)
+  (indKelim : AllowedEliminations)
+  (indCtors : List ConstructorBody)
+  (indProjs : List ProjectionBody)
+
+\record MutualInductiveBody
+  (indFinite : RecursivityKind)
+  (indNpars : Nat)
+  (indBodies : List OneInductiveBody)
+
+\record ConstantBody (cstBody : Maybe Term)
+
+\data GlobalDecl
+  | constantDecl ConstantBody
+  | inductiveDecl MutualInductiveBody
+
+-- Earliest declarations are consed deepest; head is the most recent.
+\func GlobalDeclarations => List (\Sigma Kername GlobalDecl)
+
+-- EAst `program = global_declarations * term`; LBTerm keeps the term optional.
+\data Program | program GlobalDeclarations (Maybe Term)
