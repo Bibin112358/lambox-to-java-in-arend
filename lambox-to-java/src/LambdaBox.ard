@@ -3,7 +3,11 @@
 -- Sources / inspiration:
 --   * MetaRocq EAst.v   : erasure/theories/EAst.v   (the canonical λ□ `term`)
 --   * lean-to-lambdabox : LeanToLambdaBox/Basic.lean (the `LBTerm` adaptation)
---
+--   * Links
+--     - https://github.com/peregrine-project/lean-to-lambdabox/blob/main/LeanToLambdaBox/Basic.lean
+--     - https://metarocq.github.io/html/MetaRocq.Erasure.EAst.html
+--     - https://metacoq.github.io/v1.2-8.16/MetaCoq.Erasure.EAst.html
+--     - https://github.com/MetaRocq/metarocq/blob/coq-8.20/erasure/theories/EAst.v
 -- We follow the LBTerm shape (cleaner names, locally-nameless friendly):
 --   * keep `fvar` (a locally-nameless free variable, à la Lean) alongside `bvar`
 --     (de Bruijn).  The canonical EAst λ□ uses only `bvar`; drop `fvar` if you
@@ -12,33 +16,24 @@
 --     they are not needed for a strict, non-coinductive `\Set`+IO fragment.
 --   * `prim` is simplified: MetaRocq/LBTerm carry primitive ints (BitVec 63);
 --     Arend has no fixed-width BitVec, so we model the payload with Prelude `Int`.
---
--- This file depends only on the Arend Prelude (Nat, Int, String, \Sigma).
--- For convenience it (re)defines Bool/Maybe/List locally so it typechecks with
--- no library setup; replace these with `\import Data.Bool/Maybe/List` if you
--- build inside arend-lib.
 
--- ---------------------------------------------------------------------------
--- Prelude substitutes (swap for arend-lib imports if desired)
--- ---------------------------------------------------------------------------
+\import Data.Bool
+\import Data.Maybe
+-- All sequences are `Array` (Prelude) so ToJava can recurse inline via `xs i` and
+-- there is no `List`/`Array` `nil`/`::` ambiguity. (No `\import Data.List`.)
 
-\data Bool | false | true
-
-\data Maybe (A : \Type) | nothing | just A
-
-\data List (A : \Type)
-  | nil
-  | \infixr 5 :: A (List A)
-
--- ---------------------------------------------------------------------------
--- Names and kernel names  (EAst: ident / dirpath / modpath / kername)
--- ---------------------------------------------------------------------------
+-- When to use String, type synonym (ident) or class (FreeVarId) ?
 
 \func Ident => String
+\func DirPath => Array String
 
-\func DirPath => List String
+\class FreeVarId
+  | varName : String
 
--- MetaRocq's modpath = MPfile | MPbound | MPdot
+\data BinderName
+  | named FreeVarId
+  | anon  -- Identifiers that are allowed to be anonymous (i.e. "_" in concrete syntax).
+
 \data ModPath
   | mpFile DirPath
   | mpBound DirPath Ident Nat
@@ -46,93 +41,98 @@
 
 \record Kername (kerModPath : ModPath) (kerName : Ident)
 
--- EAst `inductive` / LBTerm `InductiveId`: a mutual inductive block + the index
--- of one body inside it.
 \record InductiveId (indMutualBlock : Kername) (indIdx : Nat)
+-- Q (Lean) : Which of the mutually inductive types defined in this block is used here?
 
--- EAst `projection` / LBTerm `ProjectionInfo`.
 \record ProjectionInfo
   (projIndType : InductiveId)
-  (projParamCount : Nat)
-  (projFieldIdx : Nat)
+  (projParamCount : Nat)  -- number of (non-let) parameters
+  (projFieldIdx : Nat)  -- argument to project
 
--- EAst `name` (nAnon | nNamed) / LBTerm `BinderName`.
-\data BinderName
-  | anon
-  | named String
+\record FixDef (term : \Type)
+  | defName : BinderName
+  | defBody : term
+  | principalArgIdx : Nat  -- Principal/structural argument for recursion
 
--- ---------------------------------------------------------------------------
--- Primitive values  (EAst: prim_val ; LBTerm: PrimVal)
--- ---------------------------------------------------------------------------
+\data PrimTag
+  | primInt
+-- | primFloat
+-- | primList
 
-\data PrimVal
-  | primInt Int   -- models the single LBTerm tag `primInt` (a BitVec 63)
+\func PrimModel (_ : PrimTag) : \Set  -- TODO : is this ok to be a \Set ?
+  | primInt => Int
+-- MetaRocq uses a different prim model
+-- https://metarocq.github.io/html/MetaRocq.Erasure.EPrimitive.html#prim_val
 
--- ---------------------------------------------------------------------------
--- The lambda-box term  (EAst: term ; LBTerm: LBTerm)
--- ---------------------------------------------------------------------------
---
--- A mutual fixpoint definition (EAst `def` / LBTerm `FixDef`) is encoded inline
--- as a tuple  (fixName, fixBody, fixPrincipalArg) : \Sigma BinderName Term Nat,
--- mirroring how `case` branches are encoded.  We use \Sigma rather than a
--- type-parameterized `\record FixDef (T : \Type)` because a recursive occurrence
--- of `Term` through \Sigma/List is plainly strictly-positive; if you prefer the
--- named record and Arend's positivity checker accepts the nesting, swap it back.
+\func PrimVal : \Type => \Sigma (t : PrimTag) (PrimModel t)
 
-\data Term
-  | box                                              -- erased proof/type
-  | bvar Nat                                         -- de Bruijn index
-  | fvar Nat                                         -- locally-nameless free var (id); EAst has no analogue
-  | lambda BinderName Term                           -- \x. body
-  | letIn BinderName Term Term                       -- let x := value in body
-  | app Term Term                                    -- binary application
-  | const Kername                                    -- global constant reference
-  | construct InductiveId Nat (List Term)            -- inductive, constructor index, args
-  | case (\Sigma InductiveId Nat) Term (List (\Sigma (List BinderName) Term))
-  -- (inductive, #params), scrutinee, branches (binders, body)
-  | proj ProjectionInfo Term                         -- record field projection
-  | fix (List (\Sigma BinderName Term Nat)) Nat      -- mutual fix block [(name, body, principalArgIdx)], selected index
-  | prim PrimVal                                     -- primitive value
 
 -- ---------------------------------------------------------------------------
--- Global environment  (EAst: *_body / global_decl / program)
+-- The Lambda Box Term
+--  https://metarocq.github.io/html/MetaRocq.Erasure.EAst.html#term
+--  https://github.com/peregrine-project/lean-to-lambdabox/blob/main/LeanToLambdaBox/Basic.lean#L90
 -- ---------------------------------------------------------------------------
 
-\data AllowedEliminations
-  | intoSProp
-  | intoPropSProp
-  | intoSetPropSProp
-  | intoAny
+\data LBTerm
+  | box  -- represents computation irrelevant things, like proofs and types
+  | bvar Nat  -- bound variable, accessed as a de Bruijn index
+  | fvar FreeVarId  -- free variables (e.g. in a goal)
+  -- tEvar  (not part of Lean pipeline?)
+  | lambda BinderName LBTerm  -- \lam x => x + 1
+  | letIn BinderName LBTerm LBTerm  -- \let | x => 1 \in x + 1
+  | app LBTerm LBTerm  -- f x
+  | const Kername  --  a constant living in the environment
+  | construct InductiveId Nat {- index of the constructor used -} (Array LBTerm)  -- \data ...  (Array so ToJava can recurse inline via `args i`)
+  | case InductiveId Nat {- number of parameters -} LBTerm (Array (\Sigma (Array BinderName) LBTerm))
+  -- \case {Type, number of parameters} expr \with ...
+  | proj ProjectionInfo LBTerm
+  | fix (Array (FixDef LBTerm)) Nat {- index of the one mutually defined function we want to access -}
+  -- | tCoFix  (not part of Lean pipeline?)
+  | prim PrimVal
+-- | lazy  -- lazy evaltiation? (not part of Lean pipeline?)
+-- | force  -- eager evaltiation? (not part of Lean pipeline?)
 
-\data RecursivityKind
-  | finite
-  | cofinite
-  | bifinite
+
+-- ---------------------------------------------------------------------------
+-- The Lambda Box Program
+--  https://metarocq.github.io/html/MetaRocq.Erasure.EAst.html#program
+--  https://github.com/peregrine-project/lean-to-lambdabox/blob/main/LeanToLambdaBox/Basic.lean#L182
+-- ---------------------------------------------------------------------------
 
 \record ConstructorBody (cstrName : Ident) (cstrNargs : Nat)
 
 \record ProjectionBody (projBodyName : Ident)
 
+\data AllowedEliminations  -- TODO : adjust for Arend?
+  | IntoSProp
+  | IntoPropSProp
+  | IntoSetPropSProp
+  | IntoAny
+
 \record OneInductiveBody
   (indName : Ident)
-  (indPropositional : Bool)
+  (indPropositional : Bool)   -- Should always be false? since erasure should remove anything which ends up in Prop
   (indKelim : AllowedEliminations)
-  (indCtors : List ConstructorBody)
-  (indProjs : List ProjectionBody)
+  (indCtors : Array ConstructorBody)
+  (indProjs : Array ProjectionBody)  -- This is only about giving user-visible names to projections, but `peregrine` complains about wellformedness if it is empty.
+
+\data RecursivityKind
+  | finite
+  | cofinite  -- Lean doesn't have primitive coinductive types, but including this here anyway to match the MetaCoq side.
+  | bifinite
 
 \record MutualInductiveBody
-  (indFinite : RecursivityKind)
-  (indNpars : Nat)
-  (indBodies : List OneInductiveBody)
+  (indFinite : RecursivityKind)  -- Should always be finite ?
+  (indNpars : Nat)  -- Number of parameters to this family of mutually inductive types.
+  (indBodies : Array OneInductiveBody)
 
-\record ConstantBody (cstBody : Maybe Term)
+\record ConstantBody (cstBody : Maybe LBTerm)
 
 \data GlobalDecl
   | constantDecl ConstantBody
   | inductiveDecl MutualInductiveBody
 
--- Earliest declarations are consed deepest; head is the most recent.
-\func GlobalDeclarations => List (\Sigma Kername GlobalDecl)
+-- The first declarations to be added to the context are the deepest/first-consed in the list.
+\func GlobalDeclarations : \Type => Array (\Sigma Kername GlobalDecl)
 
--- EAst `program = global_declarations * term`; LBTerm keeps the term optional.
-\data Program | program GlobalDeclarations (Maybe Term)
+\func LBProgram : \Type => \Sigma GlobalDeclarations LBTerm
