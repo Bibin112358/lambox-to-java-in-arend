@@ -1,0 +1,142 @@
+\import LambdaBox
+\import Data.Bool
+\import Data.Maybe
+
+-- =========================================================================
+-- Minimal covering test program for LBProgram
+--
+-- Intended semantics (informal):
+--
+--   inductive Nat  := zero | succ Nat
+--   inductive Wrap := wrap (i : Int)          -- with projection `unwrap`
+--   inductive Empty :=                        -- propositional, no ctors
+--
+--   wrapped  : Wrap := wrap 42
+--   extern   : <axiom, no body>
+--   openTerm := let v := wrapped.unwrap in y  -- y is a FREE variable
+--   main     := \x. let _ := box in
+--               let one := succ zero in
+--               add one x
+--
+--   entry point:  main (succ zero)   ~~>   succ (succ zero)  -- i.e. 2
+-- =========================================================================
+
+-- ---------- Module paths: all three ModPath constructors ----------
+
+\func mpMain  : ModPath => mpFile ("Test" :: nil)          -- mpFile
+\func mpSub   : ModPath => mpDot mpMain "Sub"              -- mpDot
+\func mpFunct : ModPath => mpBound ("Test" :: nil) "F" 0   -- mpBound
+
+-- ---------- Kernames ----------
+
+\func knNat     : Kername => \new Kername mpMain  "NatBlock"
+\func knWrap    : Kername => \new Kername mpSub   "WrapBlock"
+\func knEmpty   : Kername => \new Kername mpMain  "EmptyBlock"
+\func knWrapped : Kername => \new Kername mpSub   "wrapped"
+\func knExtern  : Kername => \new Kername mpFunct "extern"
+\func knOpen    : Kername => \new Kername mpMain  "openTerm"
+\func knMain    : Kername => \new Kername mpMain  "main"
+
+-- ---------- Inductive ids & projection info ----------
+
+\func natId  : InductiveId => \new InductiveId (\new Kername mpMain  "NatBlock")  0
+\func wrapId : InductiveId => \new InductiveId knWrap 0
+
+\func unwrapInfo : ProjectionInfo => \new ProjectionInfo wrapId 0 0
+
+-- ---------- Small term helpers ----------
+
+\func natZero : LBTerm => construct natId 0 nil            -- construct, no args
+\func natSucc (t : LBTerm) : LBTerm => construct natId 1 (t :: nil)
+
+\func fv (s : String) : BinderName => named (\new FreeVarId s)
+
+-- ---------- add : Nat -> Nat -> Nat, structural fixpoint ----------
+--
+--   fix add := \n. \m. case n of
+--                        | zero   => m
+--                        | succ p => succ (add p m)
+--
+-- de Bruijn context inside the succ branch: [add, n, m, p]
+--   p = bvar 0, m = bvar 1, n = bvar 2, add = bvar 3
+
+\func addBody : LBTerm =>
+  lambda (fv "n")
+      (lambda (fv "m")
+          (case natId 0 (bvar 1)
+              (  (nil, bvar 0)                                        -- zero   => m
+                :: ((fv "p" :: nil),
+                    natSucc (app (app (bvar 3) (bvar 0)) (bvar 1)))   -- succ p => succ (add p m)
+                     :: nil)))
+
+\func addFix : LBTerm =>
+  fix ((\new FixDef LBTerm (fv "add") addBody 0) :: nil) 0    -- fix, FixDef
+
+-- ---------- Constant bodies ----------
+
+-- wrapped := wrap 42            (construct with args + prim int)
+\func wrappedTerm : LBTerm =>
+  construct wrapId 0 (prim (primInt, 42) :: nil)
+
+-- openTerm := let v := wrapped.unwrap in y   (proj, const, fvar)
+\func openTerm : LBTerm =>
+  letIn (fv "v")
+      (proj unwrapInfo (const knWrapped))
+      (fvar (\new FreeVarId "y"))
+
+-- main := \x. let _ := box in let one := succ zero in add one x
+-- de Bruijn context in innermost body: [x, _, one]
+--   one = bvar 0, x = bvar 2
+\func mainTerm : LBTerm =>
+  lambda (fv "x")                                             -- lambda, named
+      (letIn anon box                                           -- letIn, anon, box
+          (letIn (fv "one") (natSucc natZero)
+              (app (app addFix (bvar 0)) (bvar 2))))                -- app, bvar
+
+-- ---------- Inductive declarations ----------
+
+\func natDecl : GlobalDecl =>
+  inductiveDecl (\new MutualInductiveBody finite 0
+                      (  (\new OneInductiveBody "Nat" false IntoAny
+                               (  (\new ConstructorBody "zero" 0)
+                                 :: (\new ConstructorBody "succ" 1)
+                                      :: nil)
+                               nil)
+                        :: nil))
+
+\func wrapDecl : GlobalDecl =>
+  inductiveDecl (\new MutualInductiveBody finite 0
+                      (  (\new OneInductiveBody "Wrap" false IntoAny
+                               ((\new ConstructorBody "wrap" 1) :: nil)
+                               ((\new ProjectionBody "unwrap") :: nil))            -- ProjectionBody
+                        :: nil))
+
+-- A degenerate inductive to exercise the "other" enum values:
+-- propositional = true, a non-IntoAny elimination, cofinite recursivity.
+\func emptyDecl : GlobalDecl =>
+  inductiveDecl (\new MutualInductiveBody cofinite 0
+                      (  (\new OneInductiveBody "Empty" true IntoPropSProp nil nil)
+                        :: nil))
+
+-- ---------- Environment (dependencies first) ----------
+
+\func decls : GlobalDeclarations =>
+  ((\new Kername mpMain  "NatBlock"),     natDecl)
+    :: (knWrap,    wrapDecl)
+         :: (knEmpty,   emptyDecl)
+              :: (knWrapped, constantDecl (\new ConstantBody (just wrappedTerm)))
+                   :: (knExtern,  constantDecl (\new ConstantBody nothing))    -- axiom: no body
+                        :: (knOpen,    constantDecl (\new ConstantBody (just openTerm)))
+                             :: (knMain,    constantDecl (\new ConstantBody (just mainTerm)))
+                                  :: nil
+
+-- ---------- The program ----------
+-- Entry point: main (succ zero)  ~~>  succ (succ zero)
+
+\func testProgram : LBProgram =>
+  (decls, app (const knMain) (natSucc natZero))
+
+\import ToJava
+\import Debug.Meta
+
+\func main => printArr (compileProgram testProgram)

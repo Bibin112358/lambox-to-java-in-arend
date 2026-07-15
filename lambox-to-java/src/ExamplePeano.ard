@@ -1,0 +1,69 @@
+\import Data.Bool
+\import LambdaBox
+\import ToJava
+\import Data.Maybe
+
+-- =============================================================================
+-- Example λ□ program: Peano naturals + addition (recursion on the first
+-- argument, via a lone `fix`) + `add 1 3`. Exercises fix / case / construct /
+-- lambda / app / bvar / const -- everything compileExpr handles except
+-- box / fvar / letIn / proj / prim (not needed for plain Nat arithmetic).
+--
+-- BinderName values are all `anon`: compileExpr never reads the textual name
+-- of a lambda/fix/case binder, only its POSITION (see bindFields/pushFix), so
+-- names carry no information for codegen and are left anonymous.
+-- =============================================================================
+
+-- \func natInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "Nat") 0
+
+-- Nat = zero | suc Nat.  construct's 2nd argument is the constructor TAG used
+-- for the switch (0 = zero, 1 = suc), not an argument count.
+\func zero' : LBTerm => construct (\new InductiveId (\new Kername (mpFile nil) "Nat") 0) 0 nil
+\func suc' (n : LBTerm) : LBTerm => construct (\new InductiveId (\new Kername (mpFile nil) "Nat") 0) 1 (n :: nil)
+
+\func one   : LBTerm => suc' zero'
+\func three : LBTerm => suc' (suc' (suc' zero'))
+
+-- add : Nat -> Nat -> Nat, defined by a single (non-mutual) `fix`.
+-- Trace of `env` (bvar 0 = innermost) through this term:
+--   * entering `fix`'s body: [self(0)]                      (pushFix, k=1)
+--   * after `\lam n`:        [n(0), self(1)]
+--   * after `\lam m`:        [m(0), n(1), self(2)]           <- at the `case`
+--   * "zero" branch (0 binders, no shift):        [m(0), n(1), self(2)]
+--   * "suc n'" branch (1 binder, shifts by +1):   [n'(0), m(1), n(2)-unused, self(3)]
+\func addBody : LBTerm =>
+  lambda anon (lambda anon (
+    case (\new InductiveId (\new Kername (mpFile nil) "Nat") 0) 0 (bvar 1) (
+      (nil, bvar 0) ::                                                 -- add 0 m = m
+      ((anon :: nil), suc' (app (app (bvar 3) (bvar 0)) (bvar 1))) ::   -- add (suc n') m = suc (add n' m)
+      nil
+    )
+  ))
+
+-- \func addDef : FixDef LBTerm => \new FixDef LBTerm anon addBody 0
+\func addFix : LBTerm => fix ((\new FixDef LBTerm anon addBody 0) :: nil) 0
+
+\func natCtors : Array ConstructorBody => (\new ConstructorBody "zero" 0) :: (\new ConstructorBody "suc" 1) :: nil
+
+-- \func natBody : OneInductiveBody =>
+--  \new OneInductiveBody "Nat" false IntoAny natCtors nil
+
+\func natMutual : MutualInductiveBody => \new MutualInductiveBody finite 0 ((\new OneInductiveBody "Nat" false IntoAny natCtors nil) :: nil)
+
+\func decls : GlobalDeclarations =>
+  (\new Kername (mpFile nil) "Nat", inductiveDecl natMutual) ::
+  (\new Kername (mpFile nil) "add", constantDecl (\new ConstantBody (just addFix))) ::
+  nil
+
+-- 1 + 3
+\func mainTerm : LBTerm => app (app (const \new Kername (mpFile nil) "add") one) three
+
+\func addProgram : LBProgram => (decls, mainTerm)
+
+-- Typechecking this definition prints the generated Java source to the
+-- console (via ToJava's printProgram -> the printArr meta).
+
+\import ToJava
+\import Debug.Meta
+
+\func main => printArr (compileProgram addProgram)
