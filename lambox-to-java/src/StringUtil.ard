@@ -1,3 +1,4 @@
+\import Data.Bool
 \import Data.String
 
 -- =============================================================================
@@ -55,6 +56,55 @@
   \case n \with {
     | 0 => "0"
     | suc _ => natToStrFuel n n
+  }
+
+-- ---------------------------------------------------------------------------
+-- Making a source name usable as (part of) a Java identifier.
+--
+-- `String` is a record over `Array Byte`, so this filters at the byte level:
+-- ASCII letters, digits and `_` are kept, everything else is dropped. That is
+-- enough here because the result is only ever a PREFIX of a generated
+-- identifier (see `hintPrefix` in ToJava.ard), so Java keywords are harmless
+-- and only illegal characters have to go. A multi-byte UTF-8 character is
+-- simply dropped, byte by byte.
+-- ---------------------------------------------------------------------------
+
+\func natLeqBool (n m : Nat) : Bool \elim n, m
+  | 0, _ => true
+  | suc _, 0 => false
+  | suc n, suc m => natLeqBool n m
+
+\func inRange (lo hi b : Nat) : Bool => and (natLeqBool lo b) (natLeqBool b hi)
+
+\func isDigitByte (b : Nat) : Bool => inRange 48 57 b
+
+\func isIdentByte (b : Nat) : Bool =>
+  or (isDigitByte b)
+     (or (inRange 65 90 b)          -- A-Z
+         (or (inRange 97 122 b)     -- a-z
+             (inRange 95 95 b)))    -- _
+
+\func filterIdentBytes (xs : Array Byte) : Array Byte \elim xs
+  | nil => nil
+  | x :: xs => \case isIdentByte x \with {
+    | true => x :: filterIdentBytes xs
+    | false => filterIdentBytes xs
+  }
+
+-- The sanitized name followed by `_`, ready to be put in front of a generated
+-- identifier -- or "" if nothing legal is left (the caller then gets exactly
+-- the unprefixed name back). The separator is produced HERE rather than by the
+-- caller because `String` is a record, so an empty result cannot be recognized
+-- by matching on the literal `""`.
+-- A leading digit gets an `_` in front, so the result can always start an
+-- identifier.
+\func javaIdentPrefix (s : String) : String =>
+  \case filterIdentBytes s.bytes \with {
+    | nil => ""
+    | b :: bs => \case isDigitByte b \with {
+      | true => "_" ++ (\new String (b :: bs)) ++ "_"
+      | false => (\new String (b :: bs)) ++ "_"
+    }
   }
 
 -- `neg zero` is DEFINITIONALLY `pos zero` (see Int's constructor condition in

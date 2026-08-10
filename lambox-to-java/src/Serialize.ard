@@ -61,6 +61,50 @@
   | listS xs =>
     "(" ++ joinStr " " (mkArray {String} {xs.len} (\lam i => sexprToString (xs i))) ++ ")"
 
+-- ---------------------------------------------------------------------------
+-- The same s-expression, indented over several lines.
+--
+-- `sexprToString` above is what the `.ast` files are made of, and it must stay
+-- exactly as it is: Peregrine's deserializer is what consumes it, and the
+-- harness diffs it. This renderer is for HUMANS -- reading a λ□ program next to
+-- the Java it generates -- so it is a strictly separate function and no caller
+-- of `sexprToString` changes.
+--
+-- Layout rule, deliberately the simplest one that works (no Wadler-style
+-- pretty-printing algebra -- that is a lot of machinery for a debug view):
+-- a subexpression whose ONE-LINE rendering still fits in `lineWidth` columns at
+-- its current indentation is printed on one line by `sexprToString`; otherwise
+-- its head stays after the `(` and every following child goes on its own line,
+-- indented one level deeper.
+--
+-- The width test is what makes this readable. The first attempt used a purely
+-- structural rule ("break unless all children are atoms") and it exploded:
+-- every `((MPfile ()) "Nat")` -- a kername, morally a leaf -- became five
+-- lines, and the term structure drowned in them. Measuring is cheap here
+-- because `String` is a record over `Array Byte`, so the compact form's length
+-- is just `.bytes.len`.
+--
+-- Same inline-`mkArray` discipline as `sexprToString`: `Data.Array.map` hides
+-- `xs i` behind a closure and the termination checker rejects it.
+-- ---------------------------------------------------------------------------
+
+\func lineWidth : Nat => 80
+
+-- `ind` levels of two-space indentation already used up on this line.
+\func fitsInline (ind : Nat) (e : Sexpr) : Bool =>
+  natLeqBool ((2 Nat.* ind) Nat.+ (sexprToString e).bytes.len) lineWidth
+
+\func sexprToPretty (ind : Nat) (e : Sexpr) : String \elim e
+  | atomS c => c
+  | listS xs => \case fitsInline ind (listS xs) \with {
+    | true => sexprToString (listS xs)
+    | false =>
+      -- The separator is "newline + indent", so the FIRST child (the tag) stays
+      -- on the opening line and the rest line up under it.
+      "(" ++ joinStr ("\n" ++ indentStr (suc ind))
+          (mkArray {String} {xs.len} (\lam i => sexprToPretty (suc ind) (xs i))) ++ ")"
+  }
+
 \func quoteAtom (c : String) : String => "\"" ++ c ++ "\""
 
 -- Peregrine's build has `cstr_as_blocks = false` (EWellformed.all_env_flags),
@@ -261,6 +305,14 @@
 \func LambdaBoxToSrting (p : LBProgram) =>
   sexprToString (toSExprASTType (untyped p.1 (just p.2)))
 
+-- The same program, indented for reading. NOT the `.ast` file format: only
+-- `LambdaBoxToSrting` feeds Peregrine.
+\func LambdaBoxToStringPretty (p : LBProgram) : String =>
+  sexprToPretty 0 (toSExprASTType (untyped p.1 (just p.2)))
+
 -- Renders a Peregrine `--attributes` config file (axiom realizations etc.).
 \func AttributesToString (a : AttributesConfig) : String =>
   sexprToString (toSExprAttributesConfig a)
+
+\func AttributesToStringPretty (a : AttributesConfig) : String =>
+  sexprToPretty 0 (toSExprAttributesConfig a)

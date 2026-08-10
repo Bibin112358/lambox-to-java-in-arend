@@ -37,6 +37,7 @@ One script per verb; scripts call scripts, no `case`/`if` dispatch tables.
     test/build-c.sh matmul                                  # a single stage, by hand
     test/extract-arend.sh ExamplePrint:peanoJava            # print generated Java
     test/extract-arend.sh ExamplePrint:matMulSexpr prog.ast # write the λ□ s-expression
+    test/extract-arend.sh ExamplePrint:matMulSexprPretty    # ... indented, for reading
 
 ## How artifacts are obtained
 

@@ -20,18 +20,26 @@
 -- The `*JavaLong` variants use Java's built-in 64-bit integers for λ□ prims
 -- instead of the default `BigInteger` (see `JavaTarget` in ToJava.ard); both
 -- share the same runtime file, so only the printed program differs.
+--
+-- The `*SexprPretty` variants print the SAME s-expression indented over several
+-- lines, for reading the λ□ program next to the Java it generates. The `.ast`
+-- files the harness feeds to Peregrine come from the plain `*Sexpr`
+-- definitions and are unaffected.
 -- =============================================================================
 
 \func exampleJava => putStrLn (compileProgram testProgram)
 \func exampleJavaLong => putStrLn (compileProgramWith targetLong testProgram)
 \func exampleSexpr => putStrLn (LambdaBoxToSrting testProgram)
+\func exampleSexprPretty => putStrLn (LambdaBoxToStringPretty testProgram)
 
 \func peanoJava => putStrLn (compileProgram addProgram)
 \func peanoJavaLong => putStrLn (compileProgramWith targetLong addProgram)
 \func peanoSexpr => putStrLn (LambdaBoxToSrting addProgram)
+\func peanoSexprPretty => putStrLn (LambdaBoxToStringPretty addProgram)
 
 \func matMulJava => putStrLn (compileProgram matMulProgram)
 \func matMulJavaLong => putStrLn (compileProgramWith targetLong matMulProgram)
 \func matMulSexpr => putStrLn (LambdaBoxToSrting matMulProgram)
+\func matMulSexprPretty => putStrLn (LambdaBoxToStringPretty matMulProgram)
 \func matMulAttrsCText => putStrLn (AttributesToString matMulAttrsC)
 \func matMulAttrsOCamlText => putStrLn (AttributesToString matMulAttrsOCaml)

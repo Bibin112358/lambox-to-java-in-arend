@@ -156,7 +156,8 @@
 
 -- Array append and flattening of per-child results. Both come from Data.Array;
 -- neither calls compileExpr, so the recursion above stays in its own SCC.
--- `appendStmts` is the one place `Data.Array.++` is named (see the import).
+-- `appendStmts` (and `appendMembers`, below) are the only places
+-- `Data.Array.++` is named (see the import).
 \func appendStmts (xs ys : Array JStmt) : Array JStmt => Data.Array.++ xs ys
 
 \func concatStmtBlocks (bs : Array (Array JStmt)) : Array JStmt => Big appendStmts nil bs
@@ -181,6 +182,65 @@
 \func mangleKername (k : Kername) : String =>
   "c_" ++ mangleModPath k.kerModPath ++ "__" ++ k.kerName
 
+-- ---------------------------------------------------------------------------
+-- Readability: the source binder name as a PREFIX of the generated identifier.
+--
+-- λ□ still carries the original names (`BinderName = named FreeVarId | anon`,
+-- and `FixDef` even has a `defName`); the generator used to drop them, so the
+-- output spoke only in `pLALLLLLLL`. The hint is added as a prefix and the
+-- `<kind><path>` part is kept intact, because the `path` is what makes names
+-- unique WITHOUT a counter or state threading -- replacing it with the hint
+-- would need a fresh-name monad (cf. CertiCoq's closure_conversion.v). So this
+-- is a pure annotation: `xs_pLL` instead of `pLL`, and `anon` gives back
+-- exactly today's names.
+-- Since the hint only ever PRECEDES `<kind><path>` (`javaIdentPrefix` supplies
+-- the `_` separator), a Java keyword is harmless
+-- (`new_pL` is a legal identifier); only illegal characters must go, which is
+-- what `javaIdentPrefix` does -- the single boundary where a source name is
+-- sanitized, alongside `mangleKername`.
+\func hintPrefix (b : BinderName) : String \elim b
+  | anon => ""
+  | named v => javaIdentPrefix v.varName
+
+-- ---------------------------------------------------------------------------
+-- Readability: naming λ□ things AS THEY ARE IN THE SOURCE, for comments.
+--
+-- These are the counterpart of the mangling functions above: `mangleKername`
+-- produces a Java identifier, these produce the name a reader of the λ□
+-- program sees. They are used ONLY inside `jComment`/`jMemberComment`, so they
+-- need no sanitization and may contain dots, spaces or anything else.
+-- ---------------------------------------------------------------------------
+
+\func showBinder (b : BinderName) : String \elim b
+  | anon => "_"
+  | named v => v.varName
+
+\func showBinders (bs : Array BinderName) : String \elim bs
+  | nil => "(none)"
+  | bs => joinStr " " (map showBinder bs)
+
+\func showModPath (mp : ModPath) : String \elim mp
+  | mpFile dp => joinStr "." dp
+  | mpBound dp id n => joinStr "." dp ++ "." ++ id ++ "#" ++ natToStr n
+  | mpDot mp id => showModPath mp ++ "." ++ id
+
+-- The module path can be empty (`mpFile nil`, as in the matmul example), in
+-- which case the qualified name would start with a stray dot.
+\func showKername (k : Kername) : String =>
+  \case (showModPath k.kerModPath).bytes \with {
+    | nil => k.kerName
+    | _ => showModPath k.kerModPath ++ "." ++ k.kerName
+  }
+
+-- The node address every generated name carries as a suffix, so a comment can
+-- be matched with the identifiers below it. The root node's path is empty,
+-- which would print as nothing at all.
+\func showPath (p : String) : String =>
+  \case p.bytes \with {
+    | nil => "<root>"
+    | _ => p
+  }
+
 -- Bind a branch's fields to fresh locals, starting at field index `fieldIx`
 -- (= npars, to skip inductive parameters). Returns (bind-statements, extended env).
 -- Recurses on the binder array only; never calls compileExpr.
@@ -188,8 +248,8 @@
 \func bindFields (dv : JExpr) (fieldIx : Nat) (bs : Array BinderName) (env : Array JExpr) (path : String)
   : \Sigma (Array JStmt) (Array JExpr) \elim bs
   | nil => (nil, env)
-  | _ :: bs =>
-    \let | nm => "g" ++ natToStr fieldIx ++ path
+  | b :: bs =>
+    \let | nm => hintPrefix b ++ "g" ++ natToStr fieldIx ++ path
          | st => jLocal true tObject nm (just (jIndex (jField dv "fields") (jIntLit fieldIx)))
          | r  => bindFields dv (suc fieldIx) bs (jVar nm :: env) path
     \in (st :: r.1, r.2)
@@ -221,16 +281,20 @@
          | oa => compileExpr env ("A" ++ path) a
     \in (appendStmts of.1 oa.1, jInvoke (jCast rtFn of.2) "apply" (oa.2 :: nil))
 
-  | lambda _ body =>
-    \let | pv => "p" ++ path
+  | lambda b body =>
+    \let | pv => hintPrefix b ++ "p" ++ path
          | ob => compileExpr (jVar pv :: env) ("L" ++ path) body
-    \in (nil, jAnonFn rtFn pv (appendStmts ob.1 (jReturn ob.2 :: nil)))
+    \in (nil, jAnonFn rtFn pv
+                (jComment ("lambda " ++ showBinder b ++ " @" ++ showPath path) ::
+                 appendStmts ob.1 (jReturn ob.2 :: nil)))
 
-  | letIn _ value body =>
+  | letIn b value body =>
     \let | ov => compileExpr env ("V" ++ path) value
-         | lv => "l" ++ path
+         | lv => hintPrefix b ++ "l" ++ path
          | ob => compileExpr (jVar lv :: env) ("B" ++ path) body
-    \in (appendStmts ov.1 (jLocal true tObject lv (just ov.2) :: ob.1), ob.2)
+    \in (jComment ("let " ++ showBinder b ++ " @" ++ showPath path) ::
+           appendStmts ov.1 (jLocal true tObject lv (just ov.2) :: ob.1),
+         ob.2)
 
   -- construct: recurse inline over the Array of args.
   | construct _ cidx args =>
@@ -244,7 +308,7 @@
   -- evaluates its body. We map inline over `brs i`, binding the body by pattern.
   -- The switch has no value, so the branches assign to a result local `r<path>`,
   -- which is this node's value expression.
-  | case _ npars scrut brs =>
+  | case ind npars scrut brs =>
     \let | os => compileExpr env ("S" ++ path) scrut
          | dv => "d" ++ path
          | rv => "r" ++ path
@@ -255,9 +319,14 @@
              \let | bp  => "b" ++ natToStr i ++ path
                   | bnd => bindFields (jVar dv) npars (brs i).1 env bp
                   | ob  => compileExpr bnd.2 bp (brs i).2
-             \in (i, appendStmts bnd.1 (appendStmts ob.1 (jAssign (jVar rv) ob.2 :: nil))))
+             \in (i, jComment ("branch " ++ natToStr i ++ " of " ++ showKername ind.indMutualBlock ++
+                               "#" ++ natToStr ind.indIdx ++ ", binds: " ++ showBinders (brs i).1) ::
+                      appendStmts bnd.1 (appendStmts ob.1 (jAssign (jVar rv) ob.2 :: nil))))
     \in (appendStmts os.1
-           (jLocal true rtData dv (just (jCast rtData os.2)) ::
+           (jComment ("case on " ++ showKername ind.indMutualBlock ++ "#" ++ natToStr ind.indIdx ++
+                      ", " ++ natToStr brs.len ++ " branch(es), npars=" ++ natToStr npars ++
+                      " @" ++ showPath path) ::
+            jLocal true rtData dv (just (jCast rtData os.2)) ::
             jLocal false tObject rv nothing ::
             jSwitch (jField (jVar dv) "tag") cases
               (jThrow (jNew (tClass "RuntimeException") (jStringLit "no matching branch" :: nil)) :: nil) ::
@@ -279,9 +348,13 @@
          | env' => pushFix arr 0 k env
          | assigns => mkArray {Array JStmt} {k} (\lam j =>
              \let | ob => compileExpr env' ("y" ++ natToStr j ++ path) (defs j).defBody
-             \in appendStmts ob.1 (jAssign (jIndex (jVar arr) (jIntLit j)) (jCast rtFn ob.2) :: nil)
+             \in jComment ("fix def " ++ natToStr j ++ ": " ++ showBinder (defs j).defName ++
+                           " (structural arg " ++ natToStr (defs j).principalArgIdx ++ ")") ::
+                   appendStmts ob.1 (jAssign (jIndex (jVar arr) (jIntLit j)) (jCast rtFn ob.2) :: nil)
          )
-    \in (jLocal true (tArray rtFn) arr (just (jNewArraySized rtFn (jIntLit k))) ::
+    \in (jComment ("fix: " ++ natToStr k ++ " mutually recursive definition(s), using #" ++
+                   natToStr idx ++ " @" ++ showPath path) ::
+           jLocal true (tArray rtFn) arr (just (jNewArraySized rtFn (jIntLit k))) ::
            concatStmtBlocks assigns,
          jIndex (jVar arr) (jIntLit idx))
 
@@ -295,32 +368,46 @@
 \func constMethod (name : String) (body : Array JStmt) : JMember =>
   jMethod (\new JMethod true tObject name nil body)
 
-\func compileDecl {t : JavaTarget} (kd : \Sigma Kername GlobalDecl) : JMember =>
+-- A declaration becomes SEVERAL members: a comment naming the λ□ declaration it
+-- came from, then the method itself. (An inductive is erased, so it is the
+-- comment alone.) That is why this returns an array -- the generated Java is
+-- read against the λ□ program, and `c_Test_Sub__wrapped` alone does not say
+-- which source declaration it is.
+\func compileDecl {t : JavaTarget} (kd : \Sigma Kername GlobalDecl) : Array JMember =>
   \let | name => mangleKername kd.1
+       | src  => showKername kd.1
   \in \case kd.2 \with {
     | constantDecl cb => \case cb.cstBody \with {
       | just body =>
         \let | o => compileExpr nil "" body
-        \in constMethod name (appendStmts o.1 (jReturn o.2 :: nil))
+        \in jMemberComment ("constant " ++ src) ::
+            constMethod name (appendStmts o.1 (jReturn o.2 :: nil)) :: nil
       | nothing => \case lookupAxiom kd.1.kerName javaAxioms \with {
-        | just impl => constMethod name (jReturn impl :: nil)
+        | just impl =>
+          jMemberComment ("axiom " ++ src ++ ": realized by the runtime") ::
+          constMethod name (jReturn impl :: nil) :: nil
         | nothing =>
+          jMemberComment ("axiom " ++ src ++ ": NOT realized") ::
           constMethod name
             (jThrow (jNew (tClass "RuntimeException")
-                          (jStringLit ("axiom " ++ name ++ " not implemented") :: nil)) :: nil)
+                          (jStringLit ("axiom " ++ name ++ " not implemented") :: nil)) :: nil) :: nil
       }
     }
     | inductiveDecl _ =>
-      jMemberComment ("inductive " ++ name ++ ": erased; values use Data(tag, fields)")
+      jMemberComment ("inductive " ++ src ++ " (" ++ name ++
+                      "): erased; values use Data(tag, fields)") :: nil
   }
 
+\func appendMembers (xs ys : Array JMember) : Array JMember => Data.Array.++ xs ys
+
 \func compileDecls {t : JavaTarget} (ds : GlobalDeclarations) : Array JMember =>
-  map (\lam d => compileDecl d) ds
+  Big appendMembers nil (map (\lam d => compileDecl d) ds)
 
 -- `__main` holds the program's body; `main` is the entry point printing it.
 \func compileMain {tgt : JavaTarget} (t : LBTerm) : Array JMember =>
   \let | o => compileExpr nil "" t
-  \in constMethod "__main" (appendStmts o.1 (jReturn o.2 :: nil)) ::
+  \in jMemberComment "the program's entry term" ::
+      constMethod "__main" (appendStmts o.1 (jReturn o.2 :: nil)) ::
       jMethod (\new JMethod true tVoid "main"
                  ((\new JParam (tArray (tClass "String")) "args") :: nil)
                  (jExprStmt (jInvoke (jStatic "System.out") "println"
