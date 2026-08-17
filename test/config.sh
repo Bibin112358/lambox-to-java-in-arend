@@ -28,6 +28,18 @@ ROOT="$(cd "$TEST_DIR/.." && pwd)"
 # default thread stack (~1 MB) overflows on inputs a source language considers
 # small; several lean-to-lambdabox benchmarks need this.
 : "${JAVA_RUN_STACK:=-Xss512m}"
+# Additional JVM flags for RUNNING a generated program.
+#
+# `-XX:-DontCompileHugeMethods` lifts HotSpot's default refusal to JIT-compile a
+# method larger than 8000 bytecodes (`-XX:HugeMethodLimit`). That heuristic is
+# written for hand-written code, where such a method is a mistake; our methods
+# are machine-generated, and a single Lean definition (say `Deriv.Expr.mul` with
+# its ten match alternatives) is naturally one huge method. Crossing the limit is
+# a CLIFF, not a slope: the method is interpreted forever. Measured on
+# `lean-deriv`, whose `mul` sits at ~8.0k bytecodes, i.e. right at the edge --
+# 23.8-24.5 s without the flag versus 5.1-7.0 s with it, from a 4% change in
+# method size. Neutral (within noise) on every case whose methods are small.
+: "${JAVA_RUN_FLAGS:=-XX:-DontCompileHugeMethods}"
 # The fixed Java runtime (`Rt.java`: Fn, Data, BOX, PRIM_*) is hand-written, not
 # generated; it is compiled next to every generated `Prog.java`.
 : "${JAVA_RUNTIME_DIR:=$AREND_PROJECT/runtime}"

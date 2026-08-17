@@ -108,7 +108,7 @@ while IFS= read -r ast; do
       else
         t3=$(now)
         t_javac=$(elapsed "$t2" "$t3")
-        timeout "$SUITE_RUN_TIMEOUT" "$JAVA" "$JAVA_RUN_STACK" -cp "$case_dir" Prog \
+        timeout "$SUITE_RUN_TIMEOUT" "$JAVA" "$JAVA_RUN_STACK" $JAVA_RUN_FLAGS -cp "$case_dir" Prog \
           >"$case_dir/output.txt" 2>>"$log"
         code=$?
         t_run=$(elapsed "$t3" "$(now)")

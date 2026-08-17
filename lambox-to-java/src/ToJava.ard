@@ -155,64 +155,81 @@
 -- Keys are fully mangled kernames: the Lean frontend places machine-Nat
 -- primitives under `Nat`, while the hand-written examples use root names.
 -- Keeping the module path avoids treating an unrelated `Foo.add` as Nat.add.
-\func javaAxioms {t : JavaTarget} : Array (\Sigma String JExpr) =>
+--
+-- The third component is the realization's CALLABLE ARITY, i.e. which of the
+-- runtime's entry points it implements: every `Bin` is an `Fn2` (2), every
+-- `curry`-collected operation and `EQ_REC` an `Fn3` (3), the rest a plain `Fn`
+-- (1). `applySpine` uses it to call the entry point directly instead of going
+-- through the shared `Rt.app2`/`app3` dispatcher. It is the arity of the
+-- REALIZATION, not of the axiom: a `curry`-collector accepts three arguments
+-- even when it collects only two (`Rt.step` handles over-application), and a
+-- shorter spine simply falls back to the dispatcher.
+\func javaAxioms {t : JavaTarget} : Array (\Sigma String JExpr Nat) =>
   \let | op (nm : String) => jField rtRef ("PRIM_" ++ nm ++ "_" ++ primOpSuffix)
        -- An operation that neither takes nor returns a λ□ primitive int is the
        -- same in both representations, so it has ONE runtime constant.
        | fixed (nm : String) => jField rtRef nm
-  \in ("c___prim_add_int", op "ADD") ::
-      ("c___prim_mul_int", op "MUL") ::
-      ("c___prim_sub_int", op "SUB") ::
-      ("c___prim_eqb_int", op "EQB") ::
-      ("c__Nat__add", op "ADD") ::
-      ("c__Nat__mul", op "MUL") ::
+  \in ("c___prim_add_int", op "ADD", 2) ::
+      ("c___prim_mul_int", op "MUL", 2) ::
+      ("c___prim_sub_int", op "SUB", 2) ::
+      ("c___prim_eqb_int", op "EQB", 2) ::
+      ("c__Nat__add", op "ADD", 2) ::
+      ("c__Nat__mul", op "MUL", 2) ::
       -- NOT `op "SUB"`: Lean's Nat subtraction truncates at zero, while
       -- `prim_sub_int` is Peregrine's wrapping int63 subtraction.
-      ("c__Nat__sub", jField rtRef ("NAT_SUB_" ++ primOpSuffix)) ::
-      ("c__Nat__beq", op "EQB") ::
+      ("c__Nat__sub", jField rtRef ("NAT_SUB_" ++ primOpSuffix), 2) ::
+      ("c__Nat__beq", op "EQB", 2) ::
       -- The rest of the machine-Nat operations lean-to-lambdabox leaves as
       -- axioms. `div`/`mod` follow Lean's total conventions and
       -- `decEq`/`decLe`/`decLt` return `Decidable`, not `Bool` (see Rt.java).
-      ("c__Nat__div", op "DIV") ::
-      ("c__Nat__mod", op "MOD") ::
-      ("c__Nat__pow", op "POW") ::
-      ("c__Nat__ble", op "BLE") ::
-      ("c__Nat__blt", op "BLT") ::
-      ("c__Nat__decEq", op "DEC_EQ") ::
-      ("c__Nat__decLe", op "DEC_LE") ::
-      ("c__Nat__decLt", op "DEC_LT") ::
+      ("c__Nat__div", op "DIV", 2) ::
+      ("c__Nat__mod", op "MOD", 2) ::
+      ("c__Nat__pow", op "POW", 2) ::
+      ("c__Nat__ble", op "BLE", 2) ::
+      ("c__Nat__blt", op "BLT", 2) ::
+      ("c__Nat__decEq", op "DEC_EQ", 2) ::
+      ("c__Nat__decLe", op "DEC_LE", 2) ::
+      ("c__Nat__decLt", op "DEC_LT", 2) ::
       -- Lean's machine-`Int` operations. `Int` erases to the same λ□ primitive
       -- int as `Nat`, so `ofNat` is the identity in both representations.
-      ("c__Int__ofNat", fixed "INT_OF_NAT") ::
-      ("c__Int__negSucc", jField rtRef ("INT_NEG_SUCC_" ++ primOpSuffix)) ::
-      ("c__Int__neg", jField rtRef ("INT_NEG_" ++ primOpSuffix)) ::
-      ("c__Int__add", jField rtRef ("INT_ADD_" ++ primOpSuffix)) ::
-      ("c__Int__mul", jField rtRef ("INT_MUL_" ++ primOpSuffix)) ::
-      ("c__Int__ediv", jField rtRef ("INT_EDIV_" ++ primOpSuffix)) ::
-      ("c__Int__emod", jField rtRef ("INT_EMOD_" ++ primOpSuffix)) ::
-      ("c__Int__decEq", jField rtRef ("INT_DEC_EQ_" ++ primOpSuffix)) ::
+      ("c__Int__ofNat", fixed "INT_OF_NAT", 1) ::
+      ("c__Int__negSucc", jField rtRef ("INT_NEG_SUCC_" ++ primOpSuffix), 1) ::
+      ("c__Int__neg", jField rtRef ("INT_NEG_" ++ primOpSuffix), 1) ::
+      ("c__Int__add", jField rtRef ("INT_ADD_" ++ primOpSuffix), 2) ::
+      ("c__Int__mul", jField rtRef ("INT_MUL_" ++ primOpSuffix), 2) ::
+      ("c__Int__ediv", jField rtRef ("INT_EDIV_" ++ primOpSuffix), 2) ::
+      ("c__Int__emod", jField rtRef ("INT_EMOD_" ++ primOpSuffix), 2) ::
+      ("c__Int__decEq", jField rtRef ("INT_DEC_EQ_" ++ primOpSuffix), 2) ::
       -- Lean's `Array` operations (`@[extern]`, so erasure keeps no body). Only
       -- `size` returns a Nat, hence only it depends on the representation. The
       -- Lean frontend writes `!` in a name as `_u33`.
-      ("c__Array__mk", fixed "ARRAY_MK") ::
-      ("c__Array__emptyWithCapacity", fixed "ARRAY_EMPTY_WITH_CAPACITY") ::
-      ("c__Array__push", fixed "ARRAY_PUSH") ::
-      ("c__Array__getInternal", fixed "ARRAY_GET_INTERNAL") ::
-      ("c__Array__get_u33Internal", fixed "ARRAY_GET_BANG_INTERNAL") ::
-      ("c__Array__set_u33", fixed "ARRAY_SET_BANG") ::
-      ("c__Array__swap", fixed "ARRAY_SWAP") ::
-      ("c__Array__size", jField rtRef ("ARRAY_SIZE_" ++ primOpSuffix)) ::
+      ("c__Array__mk", fixed "ARRAY_MK", 3) ::
+      ("c__Array__emptyWithCapacity", fixed "ARRAY_EMPTY_WITH_CAPACITY", 3) ::
+      ("c__Array__push", fixed "ARRAY_PUSH", 3) ::
+      ("c__Array__getInternal", fixed "ARRAY_GET_INTERNAL", 3) ::
+      ("c__Array__get_u33Internal", fixed "ARRAY_GET_BANG_INTERNAL", 3) ::
+      ("c__Array__set_u33", fixed "ARRAY_SET_BANG", 3) ::
+      ("c__Array__swap", fixed "ARRAY_SWAP", 3) ::
+      ("c__Array__size", jField rtRef ("ARRAY_SIZE_" ++ primOpSuffix), 3) ::
       -- Rewriting along an equality is the identity at runtime.
-      ("c__Eq__rec", fixed "EQ_REC") ::
-      ("c__Eq__ndrec", fixed "EQ_REC") ::
+      ("c__Eq__rec", fixed "EQ_REC", 3) ::
+      ("c__Eq__ndrec", fixed "EQ_REC", 3) ::
       nil
 
 -- Lookup by fully mangled kername, including its module path.
-\func lookupAxiom (name : String) (tbl : Array (\Sigma String JExpr)) : Maybe JExpr \elim tbl
+\func lookupAxiom (name : String) (tbl : Array (\Sigma String JExpr Nat)) : Maybe JExpr \elim tbl
   | nil => nothing
   | e :: tbl => \case e.1 == name \with {
     | true => just e.2
     | false => lookupAxiom name tbl
+  }
+
+-- The same lookup for the realization's callable arity; 0 = "not an axiom".
+\func lookupAxiomArity (name : String) (tbl : Array (\Sigma String JExpr Nat)) : Nat \elim tbl
+  | nil => 0
+  | e :: tbl => \case e.1 == name \with {
+    | true => e.3
+    | false => lookupAxiomArity name tbl
   }
 
 -- Compilation result: (statements to run first, value expression).
@@ -226,10 +243,25 @@
 -- closed λ□ program has none), so instead of a silent `null` we emit a runtime
 -- call that fails immediately and reports the index and the node.  `n0` is the
 -- original index, kept for the message while `n` counts down.
-\func nthVar {t : JavaTarget} (n : Nat) (env : Array JExpr) (n0 : Nat) (path : String) : JExpr \elim n, env
+--
+-- Each entry also carries the KNOWN CALLABLE ARITY of the value it denotes (0 =
+-- unknown): a `fix` slot holds a function we compiled ourselves, so its arity is
+-- known and a call to it needs no dispatcher (see `applySpine`). Lambda
+-- parameters and constructor fields are opaque, hence 0.
+\func Env : \Type => Array (\Sigma JExpr Nat)
+
+-- An env entry for a value of unknown arity.
+\func opaque (e : JExpr) : \Sigma JExpr Nat => (e, 0)
+
+\func nthVar {t : JavaTarget} (n : Nat) (env : Env) (n0 : Nat) (path : String) : JExpr \elim n, env
   | _, nil => jCallStatic (rt ++ "unbound") (jIntLit n0 :: jStringLit path :: nil)
-  | 0, x :: _ => x
+  | 0, x :: _ => x.1
   | suc n, _ :: env => nthVar n env n0 path
+
+\func nthArity (n : Nat) (env : Env) : Nat \elim n, env
+  | _, nil => 0
+  | 0, x :: _ => x.2
+  | suc n, _ :: env => nthArity n env
 
 -- Array append and flattening of per-child results. Both come from Data.Array;
 -- neither calls compileExpr, so the recursion above stays in its own SCC.
@@ -250,12 +282,48 @@
 -- registers, no intermediate closures) and falls back to the curried protocol
 -- otherwise. Longer spines are chunked: app3 on the first three arguments,
 -- then recurse on the rest (structural on `args`).
-\func applySpine {t : JavaTarget} (f : JExpr) (args : Array JExpr) : JExpr \elim args
-  | nil => f
-  | a :: nil => jInvoke (jCast rtFn f) "apply" (a :: nil)
-  | a :: b :: nil => jCallStatic (rt ++ "app2") (f :: a :: b :: nil)
-  | a :: b :: c :: nil => jCallStatic (rt ++ "app3") (f :: a :: b :: c :: nil)
-  | a :: b :: c :: args => applySpine (jCallStatic (rt ++ "app3") (f :: a :: b :: c :: nil)) args
+--
+-- `ar` is the head's KNOWN callable arity (0 = unknown, see `headArity`). When
+-- the spine has at least that many arguments the entry point is called DIRECTLY
+-- -- `((Rt.Fn2) f).apply(a, b)` -- with no runtime check and, more importantly,
+-- at a call site of its own: profiling showed `Rt.app2`/`app3` as the hottest
+-- frame of both matmul cases (77%/85% of samples), because one shared static
+-- helper is a single maximally megamorphic dispatch that the JIT cannot inline
+-- through, whereas a per-site `apply` sees only the few callees that reach it.
+-- The remaining arguments continue with arity 0, since the result of a
+-- saturated call is an unknown value again.
+\func applySpine {t : JavaTarget} (ar : Nat) (f : JExpr) (args : Array JExpr) : JExpr \elim ar, args
+  | _, nil => f
+  | 1, a :: args => applySpine 0 (jInvoke (jCast rtFn f) "apply" (a :: nil)) args
+  | 2, a :: b :: args => applySpine 0 (jInvoke (jCast rtFn2 f) "apply" (a :: b :: nil)) args
+  | 3, a :: b :: c :: args => applySpine 0 (jInvoke (jCast rtFn3 f) "apply" (a :: b :: c :: nil)) args
+  | _, a :: nil => jInvoke (jCast rtFn f) "apply" (a :: nil)
+  | _, a :: b :: nil => jCallStatic (rt ++ "app2") (f :: a :: b :: nil)
+  | _, a :: b :: c :: nil => jCallStatic (rt ++ "app3") (f :: a :: b :: c :: nil)
+  | _, a :: b :: c :: args => applySpine 0 (jCallStatic (rt ++ "app3") (f :: a :: b :: c :: nil)) args
+
+-- Callable arity of a compiled value, i.e. which of `Rt.Fn`/`Fn2`/`Fn3` the
+-- generated object implements. A lambda nest compiles to one class with a
+-- multi-argument entry point (see compileExpr), capped at 3; anything else is
+-- opaque here.
+\func lamDepth (t : LBTerm) : Nat
+  | lambda _ (lambda _ (lambda _ _)) => 3
+  | lambda _ (lambda _ _) => 2
+  | lambda _ _ => 1
+  | _ => 0
+
+-- Arity of the j-th slot of a `fix`: the slot holds the compiled lambda nest of
+-- that definition's body. Total in `j`, so no `Fin` juggling at the use sites.
+\func fixSlotArity (j : Nat) (defs : Array (FixDef LBTerm)) : Nat \elim j, defs
+  | _, nil => 0
+  | 0, d :: _ => lamDepth d.defBody
+  | suc j, _ :: defs => fixSlotArity j defs
+
+-- Arity of the value a term evaluates to, for the cases where we can see it: a
+-- lambda nest, or a `fix` (whose value is the selected slot).
+\func valueArity (t : LBTerm) : Nat
+  | fix defs i => fixSlotArity i defs
+  | t => lamDepth t
 
 -- Kername -> Java method name. Every source component is encoded at this one
 -- boundary; the fixed separators and leading `c_` are legal by construction.
@@ -276,24 +344,71 @@
 -- (= npars, to skip inductive parameters). Returns (bind-statements, extended env).
 -- Recurses on the binder array only; never calls compileExpr.
 -- Pushing left-to-right makes the LAST binder de Bruijn index 0 (matches iota_red).
-\func bindFields (dv : JExpr) (fieldIx : Nat) (bs : Array BinderName) (env : Array JExpr) (path : String)
-  : \Sigma (Array JStmt) (Array JExpr) \elim bs
+\func bindFields (dv : JExpr) (fieldIx : Nat) (bs : Array BinderName) (env : Env) (path : String)
+  : \Sigma (Array JStmt) Env \elim bs
   | nil => (nil, env)
   | _ :: bs =>
     \let | nm => "g" ++ natToStr fieldIx ++ path
          | st => jLocal true tObject nm (just (dataField dv fieldIx))
-         | r  => bindFields dv (suc fieldIx) bs (jVar nm :: env) path
+         | r  => bindFields dv (suc fieldIx) bs (opaque (jVar nm) :: env) path
     \in (st :: r.1, r.2)
 
 -- Push the k fix slots arr[0..k-1] onto env; head = arr[k-1] = de Bruijn 0
 -- (= the LAST mutually-defined function, matching λ□'s fix_subst). No compileExpr.
-\func pushFix (arr : String) (j k : Nat) (env : Array JExpr) : Array JExpr \elim k
+-- Each slot's arity is the lambda depth of its own body, so a recursive call is
+-- compiled as a direct `apply` (see applySpine) rather than a dispatch.
+\func pushFix (arr : String) (defs : Array (FixDef LBTerm)) (j k : Nat) (env : Env) : Env \elim k
   | 0 => env
-  | suc k => pushFix arr (suc j) k (jIndex (jVar arr) (jIntLit j) :: env)
+  | suc k => pushFix arr defs (suc j) k ((jIndex (jVar arr) (jIntLit j), fixSlotArity j defs) :: env)
+
+-- Occurrence count of de Bruijn index `n`, used to decide whether a `let`-bound
+-- lambda may be SUNK into its use site (see compileExpr's letIn clause). An
+-- occurrence under a lambda or fix binder is counted TWICE: it is reached once
+-- per call of the enclosing function, so sinking there would turn one allocation
+-- into many. Hence `occ 0 body <= 1` means "evaluated at most once, right here".
+\func natEq (a b : Nat) : Bool \elim a, b
+  | 0, 0 => true
+  | suc a, suc b => natEq a b
+  | _, _ => false
+
+\func addNat (a b : Nat) : Nat => a Nat.+ b
+
+\func occ (n : Nat) (t : LBTerm) : Nat \elim t
+  | box => 0
+  | bvar k => \case natEq k n \with { | true => 1 | false => 0 }
+  | fvar _ => 0
+  | const _ => 0
+  | prim _ => 0
+  | lambda _ b => \let o => occ (suc n) b \in addNat o o
+  | letIn _ v b => addNat (occ n v) (occ (suc n) b)
+  | app f a => addNat (occ n f) (occ n a)
+  | proj _ s => occ n s
+  | construct _ _ args => Big addNat 0 (mkArray {Nat} {args.len} (\lam i => occ n (args i)))
+  | case _ _ s brs =>
+    addNat (occ n s)
+           (Big addNat 0 (mkArray {Nat} {brs.len} (\lam i => occ (addNat n (brs i).1.len) (brs i).2)))
+  | fix defs _ =>
+    \let o => Big addNat 0 (mkArray {Nat} {defs.len} (\lam j => occ (addNat n defs.len) (defs j).defBody))
+    \in addNat o o
+
+-- May the `let`'s value be sunk into the body instead of bound to a local? Only
+-- if it is a lambda (allocation only -- no evaluation to duplicate or lose) and
+-- the body uses it at most once, unconditionally-per-evaluation. This is the
+-- shape Lean's matchers always produce: every branch alternative is a lambda
+-- `let`-bound before the `switch` and used in exactly ONE branch, so without
+-- sinking all of them are allocated on every call. Profiling `lean-matmul`
+-- attributed 92% of its allocation to exactly these dead alternatives.
+\func sinkable (value body : LBTerm) : Bool =>
+  \case lamDepth value \with {
+    | 0 => false
+    | _ => \case occ 0 body \with { | 0 => true | 1 => true | _ => false }
+  }
 
 -- Core compiler. `path` uniquely identifies this node; binder names and child
 -- paths are derived from it, so no state threading is needed.
-\func compileExpr {tgt : JavaTarget} (env : Array JExpr) (path : String) (t : LBTerm) : Out \elim t
+-- `cas` maps a mangled top-level name to the callable arity of the value its
+-- generated method returns (0 = unknown); see `constArities` and `headArity`.
+\func compileExpr {tgt : JavaTarget} (cas : Array (\Sigma String Nat)) (env : Env) (path : String) (t : LBTerm) : Out \elim t
   | box => (nil, jField rtRef "BOX")
 
   | bvar n => (nil, nthVar n env n path)
@@ -313,8 +428,8 @@
   -- `applySpine` emits either the plain unary `.apply` (spine of length 1,
   -- unchanged) or a single `Rt.app2`/`Rt.app3` dispatch.
   | app f a =>
-    \let oa => compileExpr env ("A" ++ path) a
-    \in compileApp env ("F" ++ path) f (oa.1 :: nil) (oa.2 :: nil)
+    \let oa => compileExpr cas env ("A" ++ path) a
+    \in compileApp cas env ("F" ++ path) f (oa.1 :: nil) (oa.2 :: nil)
 
   -- Lambda nests compile to ONE anonymous class with a real multi-argument
   -- entry point: 3+-deep nests to Rt.Fn3, 2-deep to Rt.Fn2, single lambdas to
@@ -327,29 +442,41 @@
     \let | pv => "p" ++ path
          | qv => "q" ++ path
          | sv => "s" ++ path
-         | ob => compileExpr (jVar sv :: jVar qv :: jVar pv :: env) ("L" ++ path) body
+         | ob => compileExpr cas (opaque (jVar sv) :: opaque (jVar qv) :: opaque (jVar pv) :: env) ("L" ++ path) body
     \in (nil, jAnonFn3 rtFn3 pv qv sv (appendStmts ob.1 (jReturn ob.2 :: nil)))
 
   | lambda _ (lambda _ body) =>
     \let | pv => "p" ++ path
          | qv => "q" ++ path
-         | ob => compileExpr (jVar qv :: jVar pv :: env) ("L" ++ path) body
+         | ob => compileExpr cas (opaque (jVar qv) :: opaque (jVar pv) :: env) ("L" ++ path) body
     \in (nil, jAnonFn2 rtFn2 pv qv (appendStmts ob.1 (jReturn ob.2 :: nil)))
 
   | lambda _ body =>
     \let | pv => "p" ++ path
-         | ob => compileExpr (jVar pv :: env) ("L" ++ path) body
+         | ob => compileExpr cas (opaque (jVar pv) :: env) ("L" ++ path) body
     \in (nil, jAnonFn rtFn pv (appendStmts ob.1 (jReturn ob.2 :: nil)))
 
+  -- let: normally a `final Object l<path> = <value>;` local before the body.
+  -- A `let`-bound LAMBDA used at most once is SUNK instead: its expression is
+  -- substituted at the single use site, so the closure is allocated only if that
+  -- code is reached (inside one `switch` branch, typically) instead of always.
+  -- See `sinkable`. Nothing is duplicated (at most one occurrence) and nothing
+  -- is reordered that could matter -- building a closure has no other effect.
   | letIn _ value body =>
-    \let | ov => compileExpr env ("V" ++ path) value
+    \let | ov => compileExpr cas env ("V" ++ path) value
          | lv => "l" ++ path
-         | ob => compileExpr (jVar lv :: env) ("B" ++ path) body
-    \in (appendStmts ov.1 (jLocal true tObject lv (just ov.2) :: ob.1), ob.2)
+    \in \case sinkable value body \with {
+      | true =>
+        \let ob => compileExpr cas ((ov.2, lamDepth value) :: env) ("B" ++ path) body
+        \in (appendStmts ov.1 ob.1, ob.2)
+      | false =>
+        \let ob => compileExpr cas (opaque (jVar lv) :: env) ("B" ++ path) body
+        \in (appendStmts ov.1 (jLocal true tObject lv (just ov.2) :: ob.1), ob.2)
+    }
 
   -- construct: recurse inline over the Array of args.
   | construct _ cidx args =>
-    \let | results => mkArray {Out} {args.len} (\lam i => compileExpr env ("c" ++ natToStr i ++ path) (args i))
+    \let | results => mkArray {Out} {args.len} (\lam i => compileExpr cas env ("c" ++ natToStr i ++ path) (args i))
     \in (concatStmts results, dataNew cidx (map (\lam r => r.2) results))
 
   -- case: switch on the scrutinee's tag; each branch binds fields[npars ..] then
@@ -357,7 +484,7 @@
   -- The switch has no value, so the branches assign to a result local `r<path>`,
   -- which is this node's value expression.
   | case _ npars scrut brs =>
-    \let | os => compileExpr env ("S" ++ path) scrut
+    \let | os => compileExpr cas env ("S" ++ path) scrut
          | dv => "d" ++ path
          | rv => "r" ++ path
          -- Recurse on the DIRECT projection `(brs i).2`, NOT a `\case`-bound
@@ -366,7 +493,7 @@
          | cases => mkArray {\Sigma Nat (Array JStmt)} {brs.len} (\lam i =>
              \let | bp  => "b" ++ natToStr i ++ path
                   | bnd => bindFields (jVar dv) npars (brs i).1 env bp
-                  | ob  => compileExpr bnd.2 bp (brs i).2
+                  | ob  => compileExpr cas bnd.2 bp (brs i).2
              \in (i, appendStmts bnd.1 (appendStmts ob.1 (jAssign (jVar rv) ob.2 :: nil))))
     \in (appendStmts os.1
            (jLocal true rtData dv (just (jCast rtData os.2)) ::
@@ -378,7 +505,7 @@
 
   -- proj: the AST has no arithmetic node, so `npars + idx` is added here.
   | proj pinfo scrut =>
-    \let | os => compileExpr env ("P" ++ path) scrut
+    \let | os => compileExpr cas env ("P" ++ path) scrut
     \in (os.1,
          dataField (jCast rtData os.2) (pinfo.projParamCount Nat.+ pinfo.projFieldIdx))
 
@@ -387,9 +514,9 @@
   | fix defs idx =>
     \let | arr => "x" ++ path
          | k   => defs.len
-         | env' => pushFix arr 0 k env
+         | env' => pushFix arr defs 0 k env
          | assigns => mkArray {Array JStmt} {k} (\lam j =>
-             \let | ob => compileExpr env' ("y" ++ natToStr j ++ path) (defs j).defBody
+             \let | ob => compileExpr cas env' ("y" ++ natToStr j ++ path) (defs j).defBody
              \in appendStmts ob.1 (jAssign (jIndex (jVar arr) (jIntLit j)) (jCast rtFn ob.2) :: nil)
          )
     \in (jLocal true (tArray rtFn) arr (just (jNewArraySized rtFn (jIntLit k))) ::
@@ -403,14 +530,48 @@
 -- direct sub-term `f`, and the catch-all hands the SAME term to compileExpr --
 -- every cycle through the compileExpr/compileApp SCC still strictly decreases
 -- the LBTerm argument (compileExpr's `app` clause enters with the sub-term `f`).
-\func compileApp {tgt : JavaTarget} (env : Array JExpr) (path : String) (t : LBTerm)
+\func compileApp {tgt : JavaTarget} (cas : Array (\Sigma String Nat)) (env : Env) (path : String) (t : LBTerm)
                  (argStmts : Array (Array JStmt)) (argExprs : Array JExpr) : Out \elim t
   | app f a =>
-    \let oa => compileExpr env ("A" ++ path) a
-    \in compileApp env ("F" ++ path) f (oa.1 :: argStmts) (oa.2 :: argExprs)
+    \let oa => compileExpr cas env ("A" ++ path) a
+    \in compileApp cas env ("F" ++ path) f (oa.1 :: argStmts) (oa.2 :: argExprs)
   | t =>
-    \let of => compileExpr env path t
-    \in (appendStmts of.1 (concatStmtBlocks argStmts), applySpine of.2 argExprs)
+    \let | of => compileExpr cas env path t
+         -- Only a spine of TWO or more arguments can profit from a known arity
+         -- (a 1-argument spine compiles to the same `.apply(a)` either way), and
+         -- `headArity`'s table lookups compare mangled names, so this gate keeps
+         -- generation time down on programs with many unary applications.
+         | ar => spineArity cas env t argExprs
+    \in (appendStmts of.1 (concatStmtBlocks argStmts), applySpine ar of.2 argExprs)
+
+\func spineArity {tgt : JavaTarget} (cas : Array (\Sigma String Nat)) (env : Env) (t : LBTerm)
+                 (args : Array JExpr) : Nat \elim args
+  | _ :: _ :: _ => headArity cas env t
+  | _ => 0
+
+-- Callable arity of a spine's HEAD, whenever it can be read off the term: a
+-- lambda nest is compiled here (so we know it), a `fix` slot and a `let`-sunk
+-- lambda carry their arity in the environment, an axiom's arity comes from
+-- `javaAxioms`, and a top-level constant's from the program-wide table `cas`.
+-- Everything else is 0 = unknown, and keeps the `Rt.app2`/`app3` dispatch.
+\func headArity {tgt : JavaTarget} (cas : Array (\Sigma String Nat)) (env : Env) (t : LBTerm) : Nat \elim t
+  | bvar n => nthArity n env
+  | const k =>
+    \let | nm => mangleKername k
+         | a  => lookupAxiomArity nm javaAxioms
+    \in \case a \with { | 0 => lookupNat nm cas | _ => a }
+  | lambda _ (lambda _ (lambda _ _)) => 3
+  | lambda _ (lambda _ _) => 2
+  | lambda _ _ => 1
+  | fix defs i => fixSlotArity i defs
+  | _ => 0
+
+\func lookupNat (name : String) (tbl : Array (\Sigma String Nat)) : Nat \elim tbl
+  | nil => 0
+  | e :: tbl => \case e.1 == name \with {
+    | true => e.2
+    | false => lookupNat name tbl
+  }
 
 
 -- ---------------------------------------------------------------------------
@@ -436,12 +597,28 @@
 -- it.) The `jIfNull`/`jStaticField` AST nodes the experiment needed were
 -- removed again; a future *typed* dictionary hoist would reintroduce them.
 
-\func compileDecl {t : JavaTarget} (kd : \Sigma Kername GlobalDecl) : Array JMember =>
+-- Callable arity of what a top-level declaration's generated method RETURNS, so
+-- that a call `Rt.app2(c_foo(), a, b)` can become `((Rt.Fn2) c_foo()).apply(a, b)`
+-- (see headArity/applySpine). λ□ has no arity in its syntax, so this is read off
+-- the body: its leading lambdas, or -- for the usual `\let rec` shape -- the
+-- leading lambdas of the selected `fix` slot. Axioms get theirs from javaAxioms.
+\func constArities (ds : GlobalDeclarations) : Array (\Sigma String Nat) =>
+  map (\lam d => (mangleKername d.1, declArity d.2)) ds
+
+\func declArity (d : GlobalDecl) : Nat => \case d \with {
+  | constantDecl cb => \case cb.cstBody \with {
+    | just body => valueArity body
+    | nothing => 0
+  }
+  | inductiveDecl _ => 0
+}
+
+\func compileDecl {t : JavaTarget} (cas : Array (\Sigma String Nat)) (kd : \Sigma Kername GlobalDecl) : Array JMember =>
   \let | name => mangleKername kd.1
   \in \case kd.2 \with {
     | constantDecl cb => \case cb.cstBody \with {
       | just body =>
-        \let | o => compileExpr nil "" body
+        \let | o => compileExpr cas nil "" body
         \in constMethod name (appendStmts o.1 (jReturn o.2 :: nil)) :: nil
       | nothing => \case lookupAxiom name javaAxioms \with {
         -- An axiom's realization is a runtime constant already (`Rt.PRIM_ADD_LONG`),
@@ -457,16 +634,16 @@
       jMemberComment ("inductive " ++ name ++ ": erased; values use Data(tag, fields)") :: nil
   }
 
-\func compileDecls {t : JavaTarget} (ds : GlobalDeclarations) : Array JMember =>
-  concatMembers (map (\lam d => compileDecl d) ds)
+\func compileDecls {t : JavaTarget} (cas : Array (\Sigma String Nat)) (ds : GlobalDeclarations) : Array JMember =>
+  concatMembers (map (\lam d => compileDecl cas d) ds)
 
 \func concatMembers (ms : Array (Array JMember)) : Array JMember \elim ms
   | nil => nil
   | m :: ms => m ++A concatMembers ms
 
 -- `__main` holds the program's body; `main` is the entry point printing it.
-\func compileMain {tgt : JavaTarget} (t : LBTerm) : Array JMember =>
-  \let | o => compileExpr nil "" t
+\func compileMain {tgt : JavaTarget} (cas : Array (\Sigma String Nat)) (t : LBTerm) : Array JMember =>
+  \let | o => compileExpr cas nil "" t
   \in constMethod "__main" (appendStmts o.1 (jReturn o.2 :: nil)) ::
       jMethod (\new JMethod true tVoid "main"
                  ((\new JParam (tArray (tClass "String")) "args") :: nil)
@@ -478,7 +655,8 @@
 -- human-readable `toString`) and `BOX` come from the hand-written runtime class
 -- `runtime/Rt.java`, which must be compiled together with this output.
 \func compileClass {t : JavaTarget} (p : LBProgram) : JClass =>
-  \new JClass "Prog" (compileDecls p.1 ++A compileMain p.2)
+  \let cas => constArities p.1
+  \in \new JClass "Prog" (compileDecls cas p.1 ++A compileMain cas p.2)
 
 -- The generator and the printer, composed. The int representation is explicit
 -- here; `compileProgram` below fixes it to `targetLong`, the representation

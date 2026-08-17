@@ -65,7 +65,7 @@ set_run_cmd() {
   local dir
   dir=$(work_dir "$CASE_NAME" "$1")
   case $1 in
-    java)     cmd=("$JAVA" "$JAVA_RUN_STACK" -cp "$dir" Prog) ;;
+    java)     cmd=("$JAVA" "$JAVA_RUN_STACK" $JAVA_RUN_FLAGS -cp "$dir" Prog) ;;
     c|ocaml)  cmd=("$dir/prog") ;;
     eval)     cmd=("$PEREGRINE" eval --anf "$EVAL_ANF" --fuel "$EVAL_FUEL" "$dir/prog.ast") ;;
     *)        die "bench.sh: no run command for backend '$1'" ;;
