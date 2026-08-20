@@ -1,0 +1,87 @@
+\import LambdaBox
+\import LambdaBoxEval
+\import ExamplePeano
+\import Data.Maybe
+\import Data.String
+
+-- =============================================================================
+-- The λ□ semantics (`LambdaBoxEval.ard`) applied to a real program: the Peano
+-- `add` of `ExamplePeano.ard`, the same term `ToJava.ard` compiles and the test
+-- harness runs.
+--
+-- Each definition below is a DERIVATION: its type is the claim "this program
+-- evaluates to this value", and Arend accepts it only if the rules compose and
+-- every side condition computes (all of them are discharged by `idp`, so
+-- `csubst`, `substl`, `fixSubst`, `iotaRed`, `lookupEnv`/`constructorInfo` and
+-- `cunfoldFix` must all produce exactly what the rules ask for -- on a global
+-- environment with two entries, a mutual inductive block and a `fix`).
+--
+-- This is the only executable check the semantics can have: it is a
+-- specification, so it has no output to diff -- but a wrong rule, a wrong de
+-- Bruijn shift or a wrong lookup makes these fail to typecheck.
+-- =============================================================================
+
+\func addKername : Kername => \new Kername (mpFile nil) "add"
+
+-- Every argument of a `construct` has to be evaluated (`eval_construct_block` is
+-- a congruence), so a numeral needs one derivation per constructor node. These
+-- two helpers supply the pointwise premise for the zero- and one-field
+-- constructors of `Nat`.
+--
+-- (`noFields` has NO clauses on purpose: `Fin 0` is empty, so there is nothing
+-- to prove -- `zero` has no field to evaluate.)
+\func noFields {env : GlobalDeclarations} {args vs : Array LBTerm 0} (i : Fin 0)
+  : Eval env (args i) (vs i) \elim i
+
+\func oneField {env : GlobalDeclarations} {a va : LBTerm} (p : Eval env a va) (i : Fin 1)
+  : Eval env ((a :: nil) i) ((va :: nil) i) \elim i
+  | 0 => p
+
+-- Numerals are values: `zero`/`suc` evaluate to themselves.
+\func evalZero : Eval decls zero' zero' => evalConstruct idp idp noFields idp
+
+-- `suc` is a congruence: the field is evaluated, then the node is rebuilt. Kept
+-- general in the field's value (`vn`, not `n`) because `add`'s `suc` branch
+-- applies it to a RECURSIVE CALL, not to a numeral.
+\func evalSucOf {n vn : LBTerm} (p : Eval decls n vn) : Eval decls (suc' n) (suc' vn) =>
+  evalConstruct idp idp (oneField p) idp
+
+\func evalOne : Eval decls one one => evalSucOf evalZero
+
+\func evalThree : Eval decls three three => evalSucOf (evalSucOf (evalSucOf evalZero))
+
+-- `add 0 3` evaluates to `3`. Reading the derivation outside in: the outer
+-- application is a beta (the partially applied `add` is an abstraction); its
+-- function part unfolds the constant to the `fix` (`eval_delta`), unfolds the
+-- `fix` on application (`eval_fix'`, unguarded -- it does NOT wait for the
+-- principal argument to be a constructor) and betas; the body is then a `case`
+-- whose scrutinee is `zero`, so the first branch is selected and, having no
+-- fields, is its own iota-reduct.
+
+\func evalAddZeroThree : Eval decls (app (app (const addKername) zero') three) three =>
+  evalBeta
+    (evalFix (evalDelta idp idp (evalAtomFix idp)) idp evalZero
+             (evalBeta (evalAtomLambda idp) evalZero (evalAtomLambda idp)))
+    evalThree
+    (evalIota evalZero idp idp idp idp evalThree)
+
+-- The same, but through the `fix` node directly: this is the recursive call
+-- `add n' m` as it appears after `cunfold_fix`.
+\func evalAddFixZeroThree : Eval decls (app (app addFix zero') three) three =>
+  evalBeta
+    (evalFix (evalAtomFix idp) idp evalZero
+             (evalBeta (evalAtomLambda idp) evalZero (evalAtomLambda idp)))
+    evalThree
+    (evalIota evalZero idp idp idp idp evalThree)
+
+-- The program itself: `add 1 3` evaluates to `4`. The `suc` branch fires, its
+-- field is substituted for the branch binder, and the recursive call is
+-- evaluated inside the `suc` constructor.
+\func evalMain : Eval decls mainTerm (suc' three) =>
+  evalBeta
+    (evalFix (evalDelta idp idp (evalAtomFix idp)) idp evalOne
+             (evalBeta (evalAtomLambda idp) evalOne (evalAtomLambda idp)))
+    evalThree
+    (evalIota evalOne idp idp idp idp (evalSucOf evalAddFixZeroThree))
+
+\func evalAddProgram : EvalProgram addProgram (suc' three) => evalMain
