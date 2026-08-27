@@ -1,0 +1,167 @@
+-- Sanity checks for `JavaEval.ard`, in the style of `ExampleEval.ard`: small
+-- classes shaped exactly like `ToJava.ard`'s output, run by the evaluator.
+--
+-- These are the TESTS of the semantics. Every one is stated with `idp`, so it
+-- typechecks only if the evaluator actually COMPUTES -- if any helper (store
+-- allocation, `selectCase`, closure capture, `bindRes`) fails to reduce, the
+-- file stops typechecking. That is the same property `ExampleEval.ard` enforces
+-- on the λ□ side.
+--
+-- Each assertion is on `runClass`, whose result type is `Res RunOut` and so
+-- carries NO store. That is deliberate: asserting a `Value` literal containing a
+-- `Loc` would depend on allocation order, and any reordering inside `evalArgs`
+-- would break the test for reasons unrelated to correctness.
+
+\import JavaAst
+\import JavaEval
+\import JavaValue
+\import RtLong
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+
+-- The spellings `ToJava.ard` uses, so these programs are the real shapes.
+\func rtFn : JType => tClass "Rt.Fn"
+\func rtData : JType => tClass "Rt.Data"
+\func rtBox : JExpr => jField (jStatic "Rt") "BOX"
+
+-- `public static Object __main(){ <body> }` in `public final class Prog`.
+\func prog (body : Array JStmt) : JClass =>
+  \new JClass "Prog" (jMethod (\new JMethod true tObject "__main" nil body) :: nil)
+
+-- ---------------------------------------------------------------------------
+-- 1. A closure applied to BOX -- what `ToJava.ard` emits for `app (lambda ..) box`.
+--
+--   return ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object p){ return p; } })).apply(Rt.BOX);
+-- ---------------------------------------------------------------------------
+
+\func idClosure : JExpr => jAnonFn rtFn "p" (jReturn (jVar "p") :: nil)
+
+\func progId : JClass =>
+  prog (jReturn (jInvoke (jCast rtFn idClosure) "apply" (rtBox :: nil)) :: nil)
+
+\func jevalId : runClass rtLong progId 20 = rOk (rvValue vBox) => idp
+
+-- ---------------------------------------------------------------------------
+-- 2. THE FIX KNOT -- the reason the semantics carries a store at all.
+--
+--   final Rt.Fn[] x = new Rt.Fn[1];
+--   x[0] = ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object p){ return p; } }));
+--   return ((Rt.Fn)(x[0])).apply(Rt.BOX);
+--
+-- The closure is created and stored BEFORE the slot it will be read from is
+-- observed, so this passes only if `jNewArraySized` really allocates, `jAssign`
+-- really mutates the store, and `jAnonFn` captured the array by reference
+-- (JLS 15.9.5 / 4.12.4). Encoding the knot as a special value instead of a
+-- store would make this test vacuous.
+-- ---------------------------------------------------------------------------
+
+\func progFix : JClass =>
+  prog (
+    jLocal true (tArray rtFn) "x" (just (jNewArraySized rtFn (jIntLit 1))) ::
+    jAssign (jIndex (jVar "x") (jIntLit 0)) (jCast rtFn idClosure) ::
+    jReturn (jInvoke (jCast rtFn (jIndex (jVar "x") (jIntLit 0))) "apply" (rtBox :: nil)) ::
+    nil)
+
+\func jevalFix : runClass rtLong progFix 30 = rOk (rvValue vBox) => idp
+
+-- ---------------------------------------------------------------------------
+-- 3. A `case` -- constructor, switch on the tag, field projection.
+--
+--   final Rt.Data d = ((Rt.Data)(new Rt.Data(1, new Object[]{ Rt.BOX })));
+--   Object r;
+--   switch (d.tag) {
+--     case 0: { r = Rt.BOX; break; }
+--     case 1: { r = d.fields[0]; break; }
+--     default: { throw new RuntimeException("no matching branch"); }
+--   }
+--   return r;
+--
+-- Exercises `selectCase` picking the second arm, `d.fields[0]` through the
+-- store, and the uninitialised `r` being assigned before it is read.
+-- ---------------------------------------------------------------------------
+
+\func progCase : JClass =>
+  prog (
+    jLocal true rtData "d"
+      (just (jCast rtData (jNew rtData (jIntLit 1 :: jNewArrayInit tObject (rtBox :: nil) :: nil)))) ::
+    jLocal false tObject "r" nothing ::
+    jSwitch (jField (jVar "d") "tag")
+      -- Arm 0 must yield something DIFFERENT from arm 1, or the test cannot see
+      -- which arm ran. (Found by mutation: with both arms returning `Rt.BOX`, a
+      -- `selectCase` that ignores the label entirely still passed this test.)
+      ((0, jAssign (jVar "r") (jCallStatic "Long.valueOf" (jLongLit 99 :: nil)) :: nil) ::
+       (1, jAssign (jVar "r") (jIndex (jField (jVar "d") "fields") (jIntLit 0)) :: nil) ::
+       nil)
+      (jThrow (jNew (tClass "RuntimeException") (jStringLit "no matching branch" :: nil)) :: nil) ::
+    jReturn (jVar "r") ::
+    nil)
+
+\func jevalCase : runClass rtLong progCase 40 = rOk (rvValue vBox) => idp
+
+-- ---------------------------------------------------------------------------
+-- 4. NEGATIVE checks: the semantics must distinguish the failure modes it
+-- claims to. These are as important as the positive ones -- they are what makes
+-- `rStuck`, `rOutOfFuel` and a thrown exception three different answers rather
+-- than one.
+-- ---------------------------------------------------------------------------
+
+-- Too little fuel is `rOutOfFuel`, NOT `rStuck`.
+\func jevalStarved : runClass rtLong progFix 3 = rOutOfFuel => idp
+
+-- No matching case reaches `default` and THROWS -- an observable outcome, not a
+-- stuck state. (Tag 2 against arms 0 and 1.)
+\func progNoBranch : JClass =>
+  prog (
+    jLocal true rtData "d"
+      (just (jCast rtData (jNew rtData (jIntLit 2 :: jNewArrayInit tObject nil :: nil)))) ::
+    jSwitch (jField (jVar "d") "tag")
+      ((0, jReturn rtBox :: nil) :: (1, jReturn rtBox :: nil) :: nil)
+      (jThrow (jNew (tClass "RuntimeException") (jStringLit "no matching branch" :: nil)) :: nil) ::
+    nil)
+
+\func jevalNoBranch
+  : runClass rtLong progNoBranch 40 = rOk (rvThrown (vExcObj "RuntimeException" "no matching branch"))
+  => idp
+
+-- A bad cast throws ClassCastException (JLS 5.5): a closure is not an `Rt.Data`.
+\func progBadCast : JClass =>
+  prog (jReturn (jField (jCast rtData idClosure) "tag") :: nil)
+
+\func jevalBadCast
+  : runClass rtLong progBadCast 20 = rOk (rvThrown excCCE)
+  => idp
+
+-- Reading a declared-but-unassigned local is STUCK, not null (JLS 16 definite
+-- assignment -- `javac` rejects such a program outright). This is what makes
+-- "a switch branch forgets to assign the result variable" a detectable bug.
+\func progUninit : JClass =>
+  prog (jLocal false tObject "r" nothing :: jReturn (jVar "r") :: nil)
+
+\func jevalUninit : runClass rtLong progUninit 20 = rStuck => idp
+
+-- ---------------------------------------------------------------------------
+-- 5. The runtime interface computes: `Rt.PRIM_ADD_LONG` collects two arguments
+-- and only then adds, which is the arity discipline `Rt.curry` got wrong.
+--
+--   return ((Rt.Fn)(((Rt.Fn)(Rt.PRIM_ADD_LONG)).apply(Long.valueOf(2L)))).apply(Long.valueOf(5L));
+-- ---------------------------------------------------------------------------
+
+\func lng (i : Int) : JExpr => jCallStatic "Long.valueOf" (jLongLit i :: nil)
+
+\func progAdd : JClass =>
+  prog (jReturn
+    (jInvoke (jCast rtFn
+      (jInvoke (jCast rtFn (jField (jStatic "Rt") "PRIM_ADD_LONG")) "apply" (lng 2 :: nil)))
+      "apply" (lng 5 :: nil)) :: nil)
+
+\func jevalAdd : runClass rtLong progAdd 30 = rOk (rvValue (vLong 7)) => idp
+
+-- Partial application is a VALUE, not a result: one argument in, still an `Fn`.
+\func progPartial : JClass =>
+  prog (jReturn
+    (jInvoke (jCast rtFn (jField (jStatic "Rt") "PRIM_ADD_LONG")) "apply" (lng 2 :: nil)) :: nil)
+
+\func jevalPartial
+  : runClass rtLong progPartial 30 = rOk (rvValue (vBuiltin "PRIM_ADD_LONG" (vLong 2 :: nil)))
+  => idp

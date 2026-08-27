@@ -1,0 +1,526 @@
+-- Formal semantics of the Java fragment: a functional big-step evaluator, in
+-- Arend.
+--
+-- `JavaAst.ard` defines the SYNTAX of the fragment we commit to generating and
+-- says of itself that it "is the object a future operational semantics (and
+-- hence any correctness statement about the backend) will be given for". This
+-- module is that semantics. Nothing in the compiler imports it: it is a
+-- specification, not a pass.
+--
+-- ---------------------------------------------------------------------------
+-- WHY A FUNCTION AND NOT A RELATION (the one place this file differs in style
+-- from `LambdaBoxEval.ard`, deliberately)
+-- ---------------------------------------------------------------------------
+-- `LambdaBoxEval.ard` is a `\data ... \elim` relation because it TRANSCRIBES a
+-- relation, MetaRocq's `EWcbvEval.eval`. There the upstream is the oracle.
+--
+-- Here there is no upstream to transcribe -- no existing formalisation is the
+-- semantics of THIS fragment. So the two oracles have to be manufactured, and
+-- both of them want a function:
+--
+--   1. a JLS citation per rule, in place of an upstream rule name;
+--   2. an EXECUTABLE evaluator, so the semantics can be differential-tested
+--      against `javac` + `java` on the corpus. A relation cannot be run.
+--
+-- This is Owens-Myreen-Kumar-Tan's *functional big-step* style (ESOP 2016), the
+-- style the CakeML verified compiler is written in: a recursive interpreter made
+-- total by a decreasing clock, with a timeout result, where divergence is
+-- "times out for every clock". Their claim -- and the reason this is not a
+-- compromise -- is that the resulting induction principle is BETTER for
+-- compiler proofs than a relation's, not worse.
+--
+-- Determinism costs nothing here: Java fixes evaluation order left to right
+-- (JLS 15.7), unlike C, which is why none of `Csem.v`'s reduction-context
+-- machinery is needed. `JEval` at the bottom recovers a relation from the
+-- function, for the theorem statement.
+--
+-- ---------------------------------------------------------------------------
+-- WHAT IS AND IS NOT MODELLED
+-- ---------------------------------------------------------------------------
+-- Modelled: every `JExpr`, `JStmt`, `JType`, `JMember` constructor of
+-- `JavaAst.ard`. The fragment is closed by construction -- the generator can
+-- only emit what those constructors allow -- so "unmodelled Java features"
+-- cannot appear in the input to this function. What they CAN affect is the two
+-- things outside it, and both are named:
+--
+--   * `JavaPrint.ard` (138 lines) turns this AST into text and is TRUSTED, in
+--     the same sense as CompCert's `printClight.ml`. Its documented gap is that
+--     `jStringLit` is not escaped.
+--   * `runtime/Rt.java` (618 lines) is a parameter, `RtSpec` -- see
+--     `JavaValue.ard`.
+--
+-- No output component. `ToJava.ard` emits `jExprStmt` exactly once, for
+-- `Rt.runMain(...)` (`ToJava.ard:386`), and never emits `System.out.println` --
+-- checked, not assumed. The observable of a generated program is therefore the
+-- VALUE returned by `__main()`, which `Rt.runMain` prints; rendering it as text
+-- to compare with `java`'s stdout belongs outside this module.
+--
+-- ---------------------------------------------------------------------------
+-- KNOWN GAPS, stated rather than hidden
+-- ---------------------------------------------------------------------------
+--   * `new java.math.BigInteger("<digits>")` is `rStuck`: it needs a decimal
+--     parser, and it only arises under the non-default `targetBigInteger`
+--     (`ToJava.ard:118`); `targetLong` is what the harness runs.
+--   * Array index out of bounds and a null receiver are modelled as thrown
+--     exceptions (JLS 10.4, 15.12.4.4), but arithmetic overflow inside `Rt` is
+--     the instance's business, not this file's.
+
+\import JavaAst
+\import JavaValue
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Set
+
+-- ---------------------------------------------------------------------------
+-- Class-level lookup
+--
+-- One flat method table over the single generated class, as every comparable
+-- formalisation does it (Featherweight Java's `CT`, Jinja's `class P C`,
+-- Clight's `prog_defs`, Malfunction's global bindings).
+-- ---------------------------------------------------------------------------
+
+\func lookupMethodIn (ms : Array JMember) (nm : JIdent) : Maybe JMethod \elim ms
+  | nil => nothing
+  | jMemberComment _ :: ms => lookupMethodIn ms nm
+  | jMethod m :: ms => \case m.mName == nm \with {
+    | true => just m
+    | false => lookupMethodIn ms nm
+  }
+
+\func lookupMethod (cls : JClass) (nm : JIdent) : Maybe JMethod =>
+  lookupMethodIn cls.classMembers nm
+
+-- Bind a method's parameters to the actual arguments, positionally.
+\func bindParams (ps : Array JParam) (vs : Array Value) : Maybe Env \elim ps, vs
+  | nil, nil => just nil
+  | nil, _ :: _ => nothing
+  | _ :: _, nil => nothing
+  | p :: ps, v :: vs => \case bindParams ps vs \with {
+    | nothing => nothing
+    | just env => just ((p.paramName, v) :: env)
+  }
+
+-- ---------------------------------------------------------------------------
+-- Exceptions the semantics itself raises
+-- ---------------------------------------------------------------------------
+
+\func excCCE : Value => vExcObj "java.lang.ClassCastException" "cast failed"
+\func excNPE : Value => vExcObj "java.lang.NullPointerException" "null receiver"
+\func excAIOOBE : Value => vExcObj "java.lang.ArrayIndexOutOfBoundsException" "index"
+
+-- ---------------------------------------------------------------------------
+-- Casts (JLS 5.5, 15.16)
+--
+-- Every value in the fragment is statically `Object`, so a cast is a runtime
+-- type test. Two details that matter and are easy to get wrong:
+--   * casting `null` ALWAYS succeeds, whatever the target type;
+--   * a failing cast throws `ClassCastException`, it does not get stuck.
+-- Only the class names the generator actually casts to are recognised:
+-- `Rt.Fn` (before `.apply`) and `Rt.Data` (before `.tag`/`.fields`).
+-- ---------------------------------------------------------------------------
+
+\func castOk (t : JType) (v : Value) : Bool \elim t
+  | tObject => true
+  | tVoid => false
+  | tArray _ => \case v \with {
+    | vArr _ => true
+    | vNull => true
+    | _ => false
+  }
+  | tClass q => \case v \with {
+    | vNull => true
+    | vClos _ _ _ _ => q == "Rt.Fn"
+    | vBuiltin _ _ => q == "Rt.Fn"
+    | vData _ _ => q == "Rt.Data"
+    | vStr _ => q == "String"
+    | vLong _ => q == "Long"
+    | vBigInt _ => q == "java.math.BigInteger"
+    | vExcObj c _ => c == q
+    | _ => false
+  }
+
+-- ---------------------------------------------------------------------------
+-- The evaluator.
+--
+-- Fuel (`n`) is the first `\elim` argument and strictly decreases at every
+-- recursive call, in every direction of the mutual cycle, so termination is
+-- structural on it. `evalArgs` exists because a store must be threaded from one
+-- element of an argument array to the next, which `mkArray` cannot do -- so
+-- `ToJava.ard`'s `xs i`-inside-`mkArray` discipline does not transfer here.
+-- ---------------------------------------------------------------------------
+
+\func evalExpr (rt : RtSpec) (cls : JClass) (n : Nat) (st : Store) (env : Env) (e : JExpr)
+  : Res (\Sigma Store ExprOut) \elim n, e
+  | 0, _ => rOutOfFuel
+
+  -- Literals. JLS 3.10.
+  | suc _, jStringLit s => rOk (st, eVal (vStr s))
+  | suc _, jIntLit k => rOk (st, eVal (vInt k))
+  | suc _, jLongLit i => rOk (st, eVal (vLong i))
+
+  -- A local or parameter. Reading a declared-but-unassigned local is `rStuck`
+  -- (JLS 16 definite assignment: `javac` rejects such a program).
+  | suc _, jVar x => \case lookupVar env x \with {
+    | nothing => rStuck
+    | just vUninit => rStuck
+    | just v => rOk (st, eVal v)
+  }
+
+  -- `Rt` as a receiver. `ToJava.ard` only ever emits `jStatic runtimeClass`.
+  | suc _, jStatic q => rOk (st, eVal (vStaticRef q))
+
+  -- A closure. The environment is captured BY VALUE, now (JLS 15.9.5, 4.12.4).
+  -- This is the rule the `fix` knot depends on: what gets captured is a
+  -- reference to an array whose slots are still empty, so the assignments that
+  -- follow are visible through it.
+  | suc _, jAnonFn iface p body => rOk (st, eVal (vClos iface p body env))
+
+  -- `e.f`. Either a field of `Rt` (`Rt.BOX`, `Rt.PRIM_ADD_LONG`) or one of
+  -- `Rt.Data`'s two fields.
+  | suc n, jField recv f =>
+    bindRes (evalExpr rt cls n st env recv) (\lam p => \case p.2 \with {
+      | eExc ev => rOk (p.1, eExc ev)
+      | eVal (vStaticRef _) => \case rtField {rt} f \with {
+        | nothing => rStuck                       -- an Rt member no instance covers
+        | just v => rOk (p.1, eVal v)
+      }
+      | eVal (vData tg fs) => \case f == "tag" \with {
+        | true => rOk (p.1, eVal (vInt tg))
+        | false => \case f == "fields" \with {
+          | true => rOk (p.1, eVal (vArr fs))
+          | false => rStuck
+        }
+      }
+      | eVal vNull => rOk (p.1, eExc excNPE)
+      | eVal _ => rStuck
+    })
+
+  -- `a[i]`. JLS 10.4: an out-of-range index throws.
+  | suc n, jIndex a i =>
+    bindRes (evalExpr rt cls n st env a) (\lam pa => \case pa.2 \with {
+      | eExc ev => rOk (pa.1, eExc ev)
+      | eVal vNull => rOk (pa.1, eExc excNPE)
+      | eVal (vArr l) =>
+        bindRes (evalExpr rt cls n pa.1 env i) (\lam pi => \case pi.2 \with {
+          | eExc ev => rOk (pi.1, eExc ev)
+          | eVal (vInt k) => \case storeGet pi.1 l \with {
+            | nothing => rStuck
+            | just cells => \case nthArr k cells \with {
+              | nothing => rOk (pi.1, eExc excAIOOBE)
+              | just v => rOk (pi.1, eVal v)
+            }
+          }
+          | eVal _ => rStuck
+        })
+      | eVal _ => rStuck
+    })
+
+  -- `(T)(e)`. JLS 5.5.
+  | suc n, jCast t sub =>
+    bindRes (evalExpr rt cls n st env sub) (\lam p => \case p.2 \with {
+      | eExc ev => rOk (p.1, eExc ev)
+      | eVal v => \case castOk t v \with {
+        | true => rOk (p.1, eVal v)
+        | false => rOk (p.1, eExc excCCE)
+      }
+    })
+
+  -- `recv.m(args)`. In this fragment `m` is always `apply` with one argument
+  -- (`ToJava.ard` compiles every λ□ application to one `.apply`), but the rule
+  -- is written for the general shape and rejects anything else.
+  | suc n, jInvoke recv m args =>
+    bindRes (evalExpr rt cls n st env recv) (\lam p => \case p.2 \with {
+      | eExc ev => rOk (p.1, eExc ev)
+      | eVal rv =>
+        bindRes (evalArgs rt cls n p.1 env args) (\lam q => \case q.2 \with {
+          | aExc ev => rOk (q.1, eExc ev)
+          | aVals vs => \case m == "apply" \with {
+            | false => rStuck
+            | true => \case vs \with {
+              | a :: nil => applyVal rt cls n q.1 rv a
+              | _ => rStuck
+            }
+          }
+        })
+    })
+
+  -- `m(args)` with `m` possibly qualified: a generated constant `c_foo()`, or
+  -- one of the three `Rt` statics the generator calls.
+  | suc n, jCallStatic q args =>
+    bindRes (evalArgs rt cls n st env args) (\lam p => \case p.2 \with {
+      | aExc ev => rOk (p.1, eExc ev)
+      | aVals vs => callStatic rt cls n p.1 q vs
+    })
+
+  -- `new T(args)`.
+  | suc n, jNew t args =>
+    bindRes (evalArgs rt cls n st env args) (\lam p => \case p.2 \with {
+      | aExc ev => rOk (p.1, eExc ev)
+      | aVals vs => newObject p.1 t vs
+    })
+
+  -- `new T[]{ es }` -- a fresh array holding the element values.
+  | suc n, jNewArrayInit _ es =>
+    bindRes (evalArgs rt cls n st env es) (\lam p => \case p.2 \with {
+      | aExc ev => rOk (p.1, eExc ev)
+      | aVals vs => \case storeAlloc p.1 vs \with {
+        | (st', l) => rOk (st', eVal (vArr l))
+      }
+    })
+
+  -- `new T[k]` -- k cells, null-filled (JLS 10.6: reference arrays are
+  -- zero-initialised). This is the `fix` knot's array, filled by `jAssign`
+  -- immediately afterwards. `vNull` and not `vUninit`: definite assignment does
+  -- not apply to array elements, so reading one is legal and yields null.
+  | suc n, jNewArraySized _ sz =>
+    bindRes (evalExpr rt cls n st env sz) (\lam p => \case p.2 \with {
+      | eExc ev => rOk (p.1, eExc ev)
+      | eVal (vInt k) => \case storeAlloc p.1 (replicateArr k vNull) \with {
+        | (st', l) => rOk (st', eVal (vArr l))
+      }
+      | eVal _ => rStuck
+    })
+
+-- Left to right, short-circuiting on the first throw (JLS 15.7, 15.12.4.2).
+\func evalArgs (rt : RtSpec) (cls : JClass) (n : Nat) (st : Store) (env : Env) (es : Array JExpr)
+  : Res (\Sigma Store ArgsOut) \elim n, es
+  | 0, _ => rOutOfFuel
+  | suc _, nil => rOk (st, aVals nil)
+  | suc n, e :: es =>
+    bindRes (evalExpr rt cls n st env e) (\lam p => \case p.2 \with {
+      | eExc ev => rOk (p.1, aExc ev)
+      | eVal v =>
+        bindRes (evalArgs rt cls n p.1 env es) (\lam q => \case q.2 \with {
+          | aExc ev => rOk (q.1, aExc ev)
+          | aVals vs => rOk (q.1, aVals (v :: vs))
+        })
+    })
+
+-- `recv.apply(a)`: the fragment's only virtual call.
+--
+-- A closure runs its body in the captured environment extended with the
+-- parameter. A builtin accumulates until it is saturated and then computes --
+-- the arity discipline `Rt.curry` got wrong. Applying `null` throws
+-- (JLS 15.12.4.4).
+\func applyVal (rt : RtSpec) (cls : JClass) (n : Nat) (st : Store) (f a : Value)
+  : Res (\Sigma Store ExprOut) \elim n
+  | 0 => rOutOfFuel
+  | suc n => \case f \with {
+    | vNull => rOk (st, eExc excNPE)
+    | vClos _ p body cenv =>
+      bindRes (execStmts rt cls n st ((p, a) :: cenv) body) (\lam q => \case q.2 \with {
+        | oReturn v => rOk (q.1, eVal v)
+        | oExcS ev => rOk (q.1, eExc ev)
+        -- `apply` is declared to return `Object`, so falling off the end is not
+        -- a well-formed method body (JLS 8.4.7); cf. ClightBigstep's
+        -- `outcome_result_value`.
+        | oNormal _ => rStuck
+      })
+    | vBuiltin nm got => \case builtinArity {rt} nm \with {
+      | nothing => rStuck
+      | just k => \case snocArr got a \with {
+        | got' => \case natEq got'.len k \with {
+          | false => rOk (st, eVal (vBuiltin nm got'))
+          | true => bindRes (builtinRun {rt} nm got') (\lam v => rOk (st, eVal v))
+        }
+      }
+    }
+    | _ => rStuck
+  }
+
+-- `q(args)`. Three cases: a method of the generated class; one of the `Rt`
+-- statics `ToJava.ard` calls; or unknown, hence stuck.
+\func callStatic (rt : RtSpec) (cls : JClass) (n : Nat) (st : Store) (q : JQIdent) (vs : Array Value)
+  : Res (\Sigma Store ExprOut) \elim n
+  | 0 => rOutOfFuel
+  | suc n => \case lookupMethod cls q \with {
+    | just m => \case bindParams m.mParams vs \with {
+      | nothing => rStuck
+      | just env =>
+        bindRes (execStmts rt cls n st env m.mBody) (\lam p => \case p.2 \with {
+          | oReturn v => rOk (p.1, eVal v)
+          | oExcS ev => rOk (p.1, eExc ev)
+          -- A `void` method may fall off the end; an `Object` one may not.
+          | oNormal _ => \case m.mReturn \with {
+            | tVoid => rOk (p.1, eVal vBox)
+            | _ => rStuck
+          }
+        })
+    }
+    -- `Rt.unbound` / `Rt.freeVar`: ill-formed λ□ reached the generator. Both
+    -- throw by construction (`Rt.java:130`, `:135`), which is the whole point
+    -- of commit 729c3f7 -- they replaced a silent `null`.
+    | nothing => \case q == "Rt.unbound" \with {
+      | true => rOk (st, eExc (vExcObj "java.lang.IllegalStateException" "ill-formed lambda-box"))
+      | false => \case q == "Rt.freeVar" \with {
+        | true => rOk (st, eExc (vExcObj "java.lang.IllegalStateException" "free variable"))
+        | false => \case q == "Long.valueOf" \with {
+          | true => \case vs \with {
+            | vLong i :: nil => rOk (st, eVal (vLong i))
+            | _ => rStuck
+          }
+          | false => rStuck
+        }
+      }
+    }
+  }
+
+-- `new T(args)` for the three classes the generator instantiates.
+-- `java.math.BigInteger` is a named gap (see the header).
+\func newObject (st : Store) (t : JType) (vs : Array Value) : Res (\Sigma Store ExprOut) =>
+  \case t \with {
+    | tClass q => \case q == "Rt.Data" \with {
+      | true => \case vs \with {
+        | vInt tg :: vArr l :: nil => rOk (st, eVal (vData tg l))
+        | _ => rStuck
+      }
+      | false => \case q == "RuntimeException" \with {
+        | true => \case vs \with {
+          | vStr msg :: nil => rOk (st, eVal (vExcObj "RuntimeException" msg))
+          | _ => rStuck
+        }
+        | false => rStuck
+      }
+    }
+    | _ => rStuck
+  }
+
+-- ---------------------------------------------------------------------------
+-- Statements
+-- ---------------------------------------------------------------------------
+
+\func execStmt (rt : RtSpec) (cls : JClass) (n : Nat) (st : Store) (env : Env) (s : JStmt)
+  : Res (\Sigma Store StmtOut) \elim n, s
+  | 0, _ => rOutOfFuel
+
+  -- Trivia. `jComment` has no effect at all -- it exists so the printer can put
+  -- a comment on a line of its own.
+  | suc _, jComment _ => rOk (st, oNormal env)
+
+  -- `final Object l = e;` / `Object r;`. An uninitialised local binds
+  -- `vUninit`, so reading it before assignment is stuck (JLS 16).
+  | suc n, jLocal _ _ x init => \case init \with {
+    | nothing => rOk (st, oNormal (bindVar env x vUninit))
+    | just e =>
+      bindRes (evalExpr rt cls n st env e) (\lam p => \case p.2 \with {
+        | eExc ev => rOk (p.1, oExcS ev)
+        | eVal v => rOk (p.1, oNormal (bindVar env x v))
+      })
+  }
+
+  -- `lhs = rhs;` where `lhs` is a local or an array element. The array case is
+  -- the `fix` knot and the only mutation the generator emits; the store is what
+  -- makes it mean what it means.
+  | suc n, jAssign lhs rhs => \case lhs \with {
+    | jVar x =>
+      bindRes (evalExpr rt cls n st env rhs) (\lam p => \case p.2 \with {
+        | eExc ev => rOk (p.1, oExcS ev)
+        | eVal v => rOk (p.1, oNormal (bindVar env x v))
+      })
+    | jIndex a i =>
+      bindRes (evalExpr rt cls n st env a) (\lam pa => \case pa.2 \with {
+        | eExc ev => rOk (pa.1, oExcS ev)
+        | eVal vNull => rOk (pa.1, oExcS excNPE)
+        | eVal (vArr l) =>
+          bindRes (evalExpr rt cls n pa.1 env i) (\lam pi => \case pi.2 \with {
+            | eExc ev => rOk (pi.1, oExcS ev)
+            | eVal (vInt k) =>
+              bindRes (evalExpr rt cls n pi.1 env rhs) (\lam pr => \case pr.2 \with {
+                | eExc ev => rOk (pr.1, oExcS ev)
+                | eVal v => \case storeSet pr.1 l k v \with {
+                  | nothing => rOk (pr.1, oExcS excAIOOBE)
+                  | just st' => rOk (st', oNormal env)
+                }
+              })
+            | eVal _ => rStuck
+          })
+        | eVal _ => rStuck
+      })
+    | _ => rStuck
+  }
+
+  -- `throw e;`
+  | suc n, jThrow e =>
+    bindRes (evalExpr rt cls n st env e) (\lam p => \case p.2 \with {
+      | eExc ev => rOk (p.1, oExcS ev)
+      | eVal v => rOk (p.1, oExcS v)
+    })
+
+  -- `return e;`
+  | suc n, jReturn e =>
+    bindRes (evalExpr rt cls n st env e) (\lam p => \case p.2 \with {
+      | eExc ev => rOk (p.1, oExcS ev)
+      | eVal v => rOk (p.1, oReturn v)
+    })
+
+  -- An expression evaluated for its effect. The only one the generator emits is
+  -- `Rt.runMain(...)`, which is not modelled, so this is here for completeness.
+  | suc n, jExprStmt e =>
+    bindRes (evalExpr rt cls n st env e) (\lam p => \case p.2 \with {
+      | eExc ev => rOk (p.1, oExcS ev)
+      | eVal _ => rOk (p.1, oNormal env)
+    })
+
+  -- `switch (scrut) { case t: {...} default: {...} }`. JLS 14.11.
+  --
+  -- The scrutinee is always `d.tag`, so an `int`. Cases are searched in order;
+  -- a case body's outcome IS the switch's outcome, because the printer inserted
+  -- the `break` and the fragment has no fallthrough (`JavaAst.ard:165-171`).
+  -- This is where ClightBigstep's `outcome_switch` would map `Out_break` to
+  -- `Out_normal`; here there is no break to map.
+  | suc n, jSwitch scrut cases dflt =>
+    bindRes (evalExpr rt cls n st env scrut) (\lam p => \case p.2 \with {
+      | eExc ev => rOk (p.1, oExcS ev)
+      | eVal (vInt tg) => \case selectCase tg cases \with {
+        | just body => execStmts rt cls n p.1 env body
+        | nothing => execStmts rt cls n p.1 env dflt
+      }
+      | eVal _ => rStuck
+    })
+
+-- First case whose label matches, in source order.
+\func selectCase (tg : Nat) (cases : Array (\Sigma Nat (Array JStmt))) : Maybe (Array JStmt) \elim cases
+  | nil => nothing
+  | c :: cases => \case natEq c.1 tg \with {
+    | true => just c.2
+    | false => selectCase tg cases
+  }
+
+-- A statement sequence. An abrupt outcome stops the sequence and propagates;
+-- a normal one carries its (possibly extended) environment to the next
+-- statement. Falling off the end is `oNormal`.
+\func execStmts (rt : RtSpec) (cls : JClass) (n : Nat) (st : Store) (env : Env) (ss : Array JStmt)
+  : Res (\Sigma Store StmtOut) \elim n, ss
+  | 0, _ => rOutOfFuel
+  | suc _, nil => rOk (st, oNormal env)
+  | suc n, s :: ss =>
+    bindRes (execStmt rt cls n st env s) (\lam p => \case p.2 \with {
+      | oReturn v => rOk (p.1, oReturn v)
+      | oExcS ev => rOk (p.1, oExcS ev)
+      | oNormal env' => execStmts rt cls n p.1 env' ss
+    })
+
+-- ---------------------------------------------------------------------------
+-- Running a program
+--
+-- The generated class's entry point for a VALUE is `__main()`: `main(String[])`
+-- only wraps it in `Rt.runMain`, which supplies the big stack and prints the
+-- result. So the semantics of a generated program is the value `__main()`
+-- returns -- an uncaught exception is a distinct, observable outcome, not a
+-- stuck state.
+-- ---------------------------------------------------------------------------
+
+\data RunOut | rvValue Value | rvThrown Value
+
+\func runClass (rt : RtSpec) (cls : JClass) (n : Nat) : Res RunOut =>
+  bindRes (callStatic rt cls n nil "__main" nil) (\lam p => \case p.2 \with {
+    | eVal v => rOk (rvValue v)
+    | eExc ev => rOk (rvThrown ev)
+  })
+
+-- The relation, recovered from the function: "`cls` runs to `v`" is "there is a
+-- clock for which the evaluator says so". This is the right-hand side of the
+-- correctness statement.
+\func JEval (rt : RtSpec) (cls : JClass) (v : Value) : \Type =>
+  \Sigma (n : Nat) (runClass rt cls n = rOk (rvValue v))

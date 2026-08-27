@@ -1,0 +1,86 @@
+-- One instance of `RtSpec` (JavaValue.ard): the `targetLong` runtime.
+--
+-- `ToJava.ard`'s default target is `targetLong` (`:113`, `:402`), so this is the
+-- instance the harness's programs actually run against. It covers exactly what
+-- the differential corpus needs and leaves everything else `nothing`, which is
+-- `rStuck` -- a named gap, not a wrong answer.
+--
+-- NAMED GAPS, all deliberate:
+--   * `wrap64` IS NOT IMPLEMENTED. Arend's `Int` is unbounded; `Rt.java`'s
+--     `PRIM_*_LONG` family computes on Java `long`, which wraps at 2^63
+--     (JLS 4.2.2). The operations below are therefore faithful ONLY on programs
+--     that never overflow, and the harness cannot tell you which those are.
+--     This is the single most likely place this model silently diverges from the
+--     JVM -- CertiCoq-Wasm found an unsoundness in exactly this spot -- so it is
+--     the next thing to write, with adversarial tests crossing 2^63.
+--   * `ARRAY_*` and `EQ_REC` are absent: they stay abstract, so Lean programs
+--     using Array or eq-rec are outside the differential test.
+--   * The `PRIM_*_INT` (BigInteger) family is absent: it belongs to the other
+--     target.
+
+\import JavaAst
+\import JavaValue
+-- `Arith.Int` supplies the `IntRing` instance; `+`/`*` are class fields of
+-- `Algebra.Monoid` and `-` of `Algebra.Group`, so those must be in scope too for
+-- instance resolution to spell them.
+\import Arith.Int
+\import Algebra.Monoid
+\import Algebra.Group
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Set
+
+-- `Rt.FALSE` / `Rt.TRUE` are `Data(0, {})` / `Data(1, {})` (`Rt.java:178`).
+-- They need a `Loc` for their empty field array, and a value cannot allocate,
+-- so they are not expressible as `rtField` results without a store. The corpus
+-- reaches them only through `builtinRun` on comparison operators, which is the
+-- same problem; both are therefore left out for now and named here rather than
+-- being given a plausible-looking wrong encoding.
+
+\func rtFieldLong (f : JIdent) : Maybe Value =>
+  \case f == "BOX" \with {
+    | true => just vBox
+    | false => \case builtinArityLong f \with {
+      -- Any name with a declared arity is an `Fn` constant, unapplied.
+      | just _ => just (vBuiltin f nil)
+      | nothing => nothing
+    }
+  }
+
+-- The arity contract. Every one of these is binary in `Rt.java`, reached as
+-- `Fn -> Fn -> result`. Writing this down is the fix for the `Rt.curry` class of
+-- bug (`ef2751a`): that bug was a collector advertising an arity it did not
+-- need, and it was silent because no arity contract existed anywhere.
+\func builtinArityLong (f : JIdent) : Maybe Nat =>
+  \case f == "PRIM_ADD_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_SUB_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_MUL_LONG" \with { | true => just 2 | false =>
+  \case f == "NAT_SUB_LONG"  \with { | true => just 2 | false => nothing } } } }
+
+\func builtinRunLong (f : JIdent) (vs : Array Value) : Res Value =>
+  \case vs \with {
+    | vLong x :: vLong y :: nil =>
+      \case f == "PRIM_ADD_LONG" \with { | true => rOk (vLong (x + y)) | false =>
+      \case f == "PRIM_SUB_LONG" \with { | true => rOk (vLong (x - y)) | false =>
+      \case f == "PRIM_MUL_LONG" \with { | true => rOk (vLong (x * y)) | false =>
+      -- Lean's `Nat.sub` truncates at zero (`ToJava.ard:142-145` explains why it
+      -- is NOT `PRIM_SUB`), so a negative difference becomes 0. `neg 0` is
+      -- DEFINITIONALLY `pos 0` (Prelude's constructor condition), so the true
+      -- negatives are exactly `neg (suc _)` -- the same three-clause split
+      -- `StringUtil.intToStr` uses.
+      \case f == "NAT_SUB_LONG" \with {
+        | true => \case x - y \with {
+          | pos k => rOk (vLong (pos k))
+          | neg 0 => rOk (vLong 0)
+          | neg (suc _) => rOk (vLong 0)
+        }
+        | false => rStuck
+      } } } }
+    | _ => rStuck
+  }
+
+\instance rtLong : RtSpec
+  | rtField => rtFieldLong
+  | builtinArity => builtinArityLong
+  | builtinRun => builtinRunLong

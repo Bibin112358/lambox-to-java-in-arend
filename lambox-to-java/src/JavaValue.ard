@@ -1,0 +1,227 @@
+-- Runtime values, the store, and the runtime interface for the Java fragment.
+--
+-- WHY A SEPARATE MODULE. `JavaEval.ard` needs `RtSpec` (it is a parameter of
+-- every rule) and `RtSpec` needs `Value`, so the two cannot live in one file
+-- without a cycle. This module is the shared bottom layer: values, store,
+-- outcomes, and the runtime interface. `JavaEval.ard` is the evaluator;
+-- `RtLong.ard` is one instance of the interface.
+--
+-- Sources / inspiration (the survey is in the plan file):
+--   * ClightBigstep.v -- `outcome` (`Out_normal | Out_break | Out_continue |
+--     Out_return`) is `StmtOut` below, Java-specialised: no break, no continue,
+--     plus an exception case.
+--   * CompCert `Events.v` `external_call` -- the model for `RtSpec`: the
+--     semantics QUANTIFIES over the runtime rather than defining it, so a
+--     correctness statement does not depend on Rt's arithmetic.
+--   * Owens-Myreen-Kumar-Tan, "Functional Big-Step Semantics" (ESOP 2016) --
+--     the clock/fuel discipline and `Res`'s timeout case.
+--   * Charguéraud, "Pretty-Big-Step Semantics" (ESOP 2013) -- the diagnosis
+--     that exceptions duplicate every rule. The functional answer is `bindRes`
+--     below, used everywhere instead of a propagation case per rule.
+
+\import JavaAst
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Set
+
+-- ---------------------------------------------------------------------------
+-- Store locations
+-- ---------------------------------------------------------------------------
+
+\func Loc => Nat
+
+-- ---------------------------------------------------------------------------
+-- Values
+--
+-- Every value the emitted fragment can produce, and nothing else. The fragment
+-- is untyped-style -- every static type is `Object` -- so this is a single flat
+-- sum, not a typed hierarchy.
+--
+-- ARRAYS ARE HEAP REFERENCES, `Rt.Data` IS NOT. The generator mutates exactly
+-- one thing: the `Rt.Fn[]` knot for `fix`, whose slots are filled after the
+-- closures that read them have already captured the array. Modelling that
+-- honestly requires a store. `Rt.Data` needs no indirection of its own -- it is
+-- immutable and nothing in the fragment compares references -- but its `fields`
+-- ARE an array, so it carries a `Loc`.
+-- ---------------------------------------------------------------------------
+
+\data Value
+  -- `Rt.BOX`. An erased proof. Identity-based in Java (`new Object()`), but
+  -- nothing in the fragment tests identity, so a single atom is faithful.
+  | vBox
+  -- `new Rt.Data(tag, fields)` -- a constructor application.
+  | vData (tag : Nat) (fields : Loc)
+  -- `Object[]` and `Rt.Fn[]` alike: a reference into the store.
+  | vArr Loc
+  -- A closure: `new Rt.Fn(){ public Object apply(Object p){ body } }`.
+  -- The environment is captured BY VALUE at creation (JLS 15.9.5, 4.12.4) --
+  -- which is precisely why the `fix` knot works: what is captured is a
+  -- reference to a still-empty array, and the later slot assignments are
+  -- visible through it. `Env` cannot be named here (it is defined below in
+  -- terms of `Value`), so it is spelled out.
+  | vClos (iface : JType) (param : JIdent) (body : Array JStmt)
+          (cenv : Array (\Sigma JIdent Value))
+  -- A runtime constant of `Rt`, with the arguments it has collected so far.
+  -- `Rt.PRIM_ADD_LONG` is an `Fn` that returns an `Fn`, so applying it is
+  -- accumulation until saturation -- see `builtinArity`. This constructor is
+  -- the arity contract whose ABSENCE was the `Rt.curry` bug (`ef2751a`).
+  | vBuiltin (name : JIdent) (got : Array Value)
+  -- The class `Rt` used as a receiver, i.e. `jStatic "Rt"`. Only ever a
+  -- receiver for field access; it is not a first-class value in Java either.
+  | vStaticRef JQIdent
+  -- `Long.valueOf(5L)` -- a boxed machine integer. `Int` because it is signed.
+  | vLong Int
+  -- `new java.math.BigInteger("5")` -- unbounded.
+  | vBigInt Int
+  | vStr String
+  -- A decimal `int`: a constructor tag, a field index, an array size, and the
+  -- result of reading `d.tag`.
+  | vInt Nat
+  -- An exception OBJECT (not a thrown state): `new RuntimeException("...")`.
+  -- Throwing it is a `StmtOut`, see below.
+  | vExcObj (excClass : JQIdent) (msg : String)
+  -- `null`. Reachable only as the initial content of a `jNewArraySized` array
+  -- (Java zero-fills reference arrays), never written by the generator.
+  | vNull
+  -- A declared-but-unassigned local. NOT `null`: JLS 16 (definite assignment)
+  -- makes reading such a local a compile-time error, so `javac` would reject
+  -- the program; reading it here is `rStuck`. This is what makes "a switch
+  -- branch fails to assign the result variable" a detectable mutation.
+  | vUninit
+
+\func Env => Array (\Sigma JIdent Value)
+
+-- The store maps a `Loc` to its cells. Allocation appends, so a fresh `Loc` is
+-- the old length; nothing is ever freed (the fragment has no deallocation and
+-- the semantics does not model the collector).
+\func Store => Array (Array Value)
+
+-- ---------------------------------------------------------------------------
+-- Results
+--
+-- `rStuck` ("the semantics does not define this") is deliberately distinct from
+-- `rOutOfFuel` ("the clock ran out"). The differential test needs the
+-- difference: `rStuck` is a real disagreement with `java`, `rOutOfFuel` is a
+-- budget that was too small. Collapsing both into `Maybe` would report the
+-- second as the first.
+-- ---------------------------------------------------------------------------
+
+\data Res (A : \Type)
+  | rOk A
+  | rStuck
+  | rOutOfFuel
+
+-- The single propagation combinator. Charguéraud's duplication problem, paid
+-- off once instead of per rule.
+\func bindRes {A B : \Type} (r : Res A) (f : A -> Res B) : Res B \elim r
+  | rOk a => f a
+  | rStuck => rStuck
+  | rOutOfFuel => rOutOfFuel
+
+-- How an expression finished: with a value, or by throwing.
+\data ExprOut | eVal Value | eExc Value
+
+-- How an argument list finished: all values, or the first throw.
+\data ArgsOut | aVals (Array Value) | aExc Value
+
+-- How a statement finished (ClightBigstep's `outcome`, Java-specialised).
+--
+-- `oNormal` carries the environment out, because `jLocal` extends scope for the
+-- statements that follow it.
+--
+-- THERE IS NO `oBreak`, deliberately. `JavaAst.ard:165-171`: the printer emits
+-- the `break` and the block, so the fragment has no fallthrough and no break
+-- node. A case body that finishes normally simply falls out of the switch --
+-- which is where ClightBigstep's `outcome_switch` (`Out_break -> Out_normal`)
+-- would sit, and here does nothing.
+\data StmtOut | oNormal Env | oReturn Value | oExcS Value
+
+-- ---------------------------------------------------------------------------
+-- Array and store helpers
+--
+-- Spelled out rather than imported so that no import shadows String's `++`
+-- (the reason `LambdaBoxEval.ard` does the same).
+-- ---------------------------------------------------------------------------
+
+\func nthArr {A : \Type} (n : Nat) (xs : Array A) : Maybe A \elim n, xs
+  | _, nil => nothing
+  | 0, x :: _ => just x
+  | suc n, _ :: xs => nthArr n xs
+
+\func snocArr {A : \Type} (xs : Array A) (y : A) : Array A \elim xs
+  | nil => y :: nil
+  | x :: xs => x :: snocArr xs y
+
+-- Replace element `i`; out of range leaves the array alone (callers check).
+\func setArr {A : \Type} (i : Nat) (y : A) (xs : Array A) : Array A \elim i, xs
+  | _, nil => nil
+  | 0, _ :: xs => y :: xs
+  | suc i, x :: xs => x :: setArr i y xs
+
+\func replicateArr {A : \Type} (n : Nat) (y : A) : Array A \elim n
+  | 0 => nil
+  | suc n => y :: replicateArr n y
+
+\func natEq (m n : Nat) : Bool \elim m, n
+  | 0, 0 => true
+  | 0, suc _ => false
+  | suc _, 0 => false
+  | suc m, suc n => natEq m n
+
+\func storeGet (st : Store) (l : Loc) : Maybe (Array Value) => nthArr l st
+
+\func storeAlloc (st : Store) (cells : Array Value) : \Sigma Store Loc =>
+  (snocArr st cells, st.len)
+
+-- Write one cell. `nothing` when the location or the index is out of range --
+-- the caller turns that into `rStuck` or an exception, as appropriate.
+\func storeSet (st : Store) (l : Loc) (i : Nat) (v : Value) : Maybe Store =>
+  \case storeGet st l \with {
+    | nothing => nothing
+    | just cells => \case nthArr i cells \with {
+      | nothing => nothing
+      | just _ => just (setArr l (setArr i v cells) st)
+    }
+  }
+
+\func lookupVar (env : Env) (x : JIdent) : Maybe Value \elim env
+  | nil => nothing
+  | e :: env => \case e.1 == x \with {
+    | true => just e.2
+    | false => lookupVar env x
+  }
+
+-- Rebinding shadows by prepending; `jAssign` to a local uses this, and lookup
+-- scans from the head, so the newest binding wins.
+\func bindVar (env : Env) (x : JIdent) (v : Value) : Env => (x, v) :: env
+
+-- ---------------------------------------------------------------------------
+-- The runtime interface
+--
+-- `runtime/Rt.java` is hand-written Java: 618 lines using interfaces, nested
+-- classes, instance fields, `instanceof`, loops, real arithmetic, generics and
+-- `Thread` -- none of which is in this fragment. It is therefore NOT modelled.
+-- It is a PARAMETER, and this class is its contract.
+--
+-- That is CompCert's treatment of `external_call` (`Events.v`) and
+-- Malfunction's treatment of OCaml primitives. Two consequences worth stating:
+--
+--   * the correctness theorem quantifies over `RtSpec`, so it does not depend
+--     on Rt's arithmetic being right -- Rt's obligations become an explicit
+--     hypothesis instead of a silent assumption;
+--   * writing `builtinArity` down IS the fix for the `Rt.curry` class of bug.
+--     That bug (`ef2751a`) was a collector advertising an arity it did not need,
+--     and it was silent precisely because no arity contract existed anywhere.
+--
+-- What is NOT covered by an instance stays `nothing`, hence `rStuck` -- a named
+-- gap rather than a wrong answer.
+-- ---------------------------------------------------------------------------
+
+\class RtSpec
+  -- The value of the field `Rt.<name>`: `BOX`, `PRIM_ADD_LONG`, `TRUE`, ...
+  | rtField : JIdent -> Maybe Value
+  -- How many arguments `Rt.<name>` must collect before it computes.
+  | builtinArity : JIdent -> Maybe Nat
+  -- Run a saturated builtin. The argument array has length `builtinArity name`.
+  | builtinRun : JIdent -> Array Value -> Res Value
