@@ -1,0 +1,304 @@
+-- The correctness statement for the λ□ -> Java backend, and a proof spike.
+--
+-- This module lives in the EXAMPLES project, not in `lambox-to-java`, because
+-- it needs three things at once that only meet here: the compiler (`ToJava`),
+-- the two semantics (`LambdaBoxEval`, `JavaEval`), and a concrete program
+-- (`ExamplePeano`). `lambox-to-java` cannot import `ExamplePeano` -- the
+-- examples project depends on it, not the other way round.
+--
+-- WHAT IS PROVED HERE: one INSTANCE of the theorem, at `ExamplePeano.addProgram`,
+-- by computation. What is only STATED: the general theorem and the three
+-- auxiliary lemmas a real proof needs. The point of the exercise is to find out
+-- which of those lemmas is the obstacle, and the answer is recorded at the
+-- bottom of this file.
+
+\import Debug
+\import LambdaBox
+-- `natEq`/`nthArr` exist in both semantics modules with the same meaning; the
+-- Java ones are the ones used here, so the λ□ copies are hidden to keep the
+-- names unambiguous.
+\import LambdaBoxEval \hiding (natEq, nthArr)
+\import JavaAst
+\import JavaValue
+\import JavaEval
+\import RtLong
+\import ToJava
+\import StringUtil
+\import ExamplePeano
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Set
+
+-- ---------------------------------------------------------------------------
+-- Running a compiled program while KEEPING the store.
+--
+-- `JavaEval.runClass` discards it, which is right for the observable but wrong
+-- here: a λ□ constructor value corresponds to a Java `Rt.Data` whose fields
+-- live in the store, so relating the two needs the store. `callStatic` is the
+-- layer that still has it.
+-- ---------------------------------------------------------------------------
+
+\func runWithStore (cls : JClass) (n : Nat) : Res (\Sigma Store ExprOut) =>
+  callStatic rtLong cls n nil "__main" nil
+
+\func compiled (p : LBProgram) : JClass => compileClass {targetLong} p
+
+-- ---------------------------------------------------------------------------
+-- The value relation.
+--
+-- `compileValue : LBTerm -> Value` CANNOT be a function: a λ□ constructor value
+-- becomes an `Rt.Data` holding a `Loc`, and a pure function cannot allocate. So
+-- the correspondence is a relation over a store, and it is written as a decidable
+-- (fuel-indexed) Bool so that instances can be discharged by computation.
+--
+-- FIRST ORDER ONLY, and this is not a shortcut -- it is the same boundary the
+-- verified-extraction work reports: first-order data interoperates, higher-order
+-- does not. A λ□ `lambda`/`fix` value corresponds to a Java closure, and the two
+-- are equal only extensionally ("applying them to related arguments yields
+-- related results"), which is not decidable and needs a step-indexed logical
+-- relation. Those cases are `false` here, and `ValRelFirstOrder` below says so
+-- honestly rather than pretending.
+-- ---------------------------------------------------------------------------
+
+\func intEqB (a b : Int) : Bool => intToStr a == intToStr b
+
+\func valRelB (n : Nat) (st : Store) (jv : Value) (t : LBTerm) : Bool \elim n
+  | 0 => false
+  | suc n => \case jv, t \with {
+    -- An erased proof.
+    | vBox, box => true
+    -- A primitive integer under `targetLong`.
+    | vLong i, prim (primInt, j) => intEqB i j
+    -- A constructor: same tag, same arity, fields pointwise related through the
+    -- store. `Rt.Data.fields` holds ALL of the λ□ `construct` arguments
+    -- (parameters included), so this is a 1:1 correspondence.
+    | vData tg loc, construct _ c args => \case storeGet st loc \with {
+      | nothing => false
+      | just cells => natEq tg c and natEq cells.len args.len and valRelListB n st cells args
+    }
+    | _, _ => false
+  }
+
+\func valRelListB (n : Nat) (st : Store) (cells : Array Value) (args : Array LBTerm) : Bool \elim n, cells, args
+  | 0, _, _ => false
+  | suc _, nil, nil => true
+  | suc _, nil, _ :: _ => false
+  | suc _, _ :: _, nil => false
+  | suc n, c :: cs, a :: as => valRelB n st c a and valRelListB n st cs as
+
+\func ValRel (st : Store) (jv : Value) (t : LBTerm) : \Type =>
+  \Sigma (n : Nat) (valRelB n st jv t = true)
+
+-- ---------------------------------------------------------------------------
+-- THE THEOREM, stated. Not proved -- see the findings at the bottom.
+--
+-- Read: if λ□ says the program evaluates to `v`, then for some clock the
+-- generated class's `__main()` returns a Java value related to `v`.
+--
+-- Three things about the shape are deliberate:
+--   * `\Sigma (n : Nat)` rather than a fixed clock: this is the functional
+--     big-step idiom (Owens et al.), where "terminates" is "some clock suffices".
+--   * it is stated at `targetLong`, the default target, so `RtSpec` is fixed to
+--     `rtLong` here. The version quantified over `RtSpec` is `CorrectGeneric`.
+--   * an exception outcome is NOT allowed: λ□ evaluating to a value must give a
+--     Java VALUE, not a throw. That is the real content -- it forbids the
+--     "no matching branch" and ClassCastException paths.
+-- ---------------------------------------------------------------------------
+
+\func Correct : \Type =>
+  \Pi {p : LBProgram} {v : LBTerm} -> EvalProgram p v ->
+    \Sigma (n : Nat) (st : Store) (jv : Value)
+           (runWithStore (compiled p) n = rOk (st, eVal jv))
+           (ValRel st jv v)
+
+-- The same, quantified over any runtime satisfying the contract. This is the
+-- form that makes `Rt.java`'s obligations an explicit hypothesis instead of a
+-- silent assumption (CompCert's `external_call` treatment).
+\func CorrectGeneric : \Type =>
+  \Pi (rt : RtSpec) {p : LBProgram} {v : LBTerm} -> EvalProgram p v ->
+    \Sigma (n : Nat) (st : Store) (jv : Value)
+           (callStatic rt (compiled p) n nil "__main" nil = rOk (st, eVal jv))
+           (ValRel st jv v)
+
+-- ---------------------------------------------------------------------------
+-- The three auxiliary lemmas a proof of `Correct` needs, stated so that the
+-- obstacle is visible. None is proved.
+-- ---------------------------------------------------------------------------
+
+-- (1) FUEL MONOTONICITY. The induction combines clocks from sub-derivations, so
+-- a successful run must survive a bigger clock. Needed in every case.
+\func FuelMono : \Type =>
+  \Pi {rt : RtSpec} {cls : JClass} {n m : Nat} {st st' : Store} {env : Env} {e : JExpr}
+      {r : \Sigma Store ExprOut}
+   -> evalExpr rt cls n st env e = rOk r
+   -> \Sigma (k : Nat) (evalExpr rt cls (suc n) st env e = rOk r)
+
+-- (2) STORE EXTENSION. Allocation must not invalidate an established relation.
+-- NOTE the caveat that makes this non-trivial here: the fragment DOES mutate --
+-- the `fix` knot writes into an already-allocated array. So the store grows
+-- monotonically but its CONTENTS are not immutable, and this lemma is false as
+-- stated for arbitrary writes. It holds only for writes to knot slots, which
+-- means the invariant has to mention the knot. This is finding (C) below.
+\func StoreExt : \Type =>
+  \Pi {st st' : Store} {jv : Value} {t : LBTerm}
+   -> ValRel st jv t
+   -> (\Pi (l : Loc) -> storeGet st l = storeGet st' l)
+   -> ValRel st' jv t
+
+-- (3) THE SUBSTITUTION LEMMA -- the crux, see finding (A).
+--
+-- λ□'s `Eval` is SUBSTITUTION-based: `evalBeta` evaluates `csubst av 0 b`. The
+-- generated Java is ENVIRONMENT-based: a closure captures `cenv` and `bvar n`
+-- compiles to a lookup. So the proof needs: compiling a substituted term behaves
+-- like running the compiled body in an extended environment.
+--
+-- It cannot be stated as an equality of generated code. `compileExpr` threads a
+-- structural `path : String` used to invent binder names, so
+-- `compileExpr cenv path (csubst av 0 b)` and `compileExpr (a' :: cenv) path' b`
+-- are syntactically DIFFERENT Java -- different variable names, different paths.
+-- Only their behaviour agrees. Hence the statement below is about `evalExpr` on
+-- both, not about the two `JExpr`s.
+\func SubstLemma : \Type =>
+  \Pi {cenv : Array JExpr} {path path' : String} {av b : LBTerm} {a' : JExpr}
+      {n : Nat} {st : Store} {env : Env} {r : \Sigma Store ExprOut}
+   -> evalExpr rtLong (compiled (nil, box)) n st env
+        (compileExpr {targetLong} cenv path (csubst av 0 b)).2 = rOk r
+   -> evalExpr rtLong (compiled (nil, box)) n st env
+        (compileExpr {targetLong} (a' :: cenv) path' b).2 = rOk r
+
+-- ---------------------------------------------------------------------------
+-- WHAT IS ACTUALLY PROVED: the theorem at one real program, by computation.
+--
+-- `ExampleEval.evalMain : Eval decls mainTerm (suc' three)` is the λ□ side,
+-- machine-checked. Below is the Java side of the SAME program, produced by the
+-- real `ToJava.ard` and run by `JavaEval.ard`, together with the value relation
+-- between the two results. If these hold by `idp`, then `Correct` holds at
+-- `addProgram` -- a complete, machine-checked instance of the theorem.
+--
+-- `probeRun` is the diagnostic channel: Arend has no file IO, so a `putStrLn`
+-- that executes during typechecking is how the computed value is inspected.
+-- ---------------------------------------------------------------------------
+
+\func renderExprOut (o : ExprOut) : String => \case o \with {
+  | eVal v => "VALUE " ++ renderVal 8 v
+  | eExc _ => "THROWN"
+}
+
+\func renderVal (d : Nat) (v : Value) : String \elim d
+  | 0 => "..."
+  | suc d => \case v \with {
+    | vBox => "BOX"
+    | vData tg _ => "Data(" ++ natToStr tg ++ ")"
+    | vArr l => "arr@" ++ natToStr l
+    | vLong i => "long " ++ intToStr i
+    | vClos _ _ _ _ => "closure"
+    | vBuiltin nm _ => "builtin " ++ nm
+    | vNull => "null"
+    | vUninit => "UNINIT"
+    | _ => "other"
+  }
+
+\func renderRes (r : Res (\Sigma Store ExprOut)) : String => \case r \with {
+  | rOutOfFuel => "OUT OF FUEL"
+  | rStuck => "STUCK"
+  | rOk p => renderExprOut p.2 ++ " | store cells: " ++ natToStr p.1.len
+}
+
+\func probeRun => putStrLn (renderRes (runWithStore (compiled addProgram) 200))
+
+-- ---------------------------------------------------------------------------
+-- THE INSTANCE. `Correct` at `addProgram`, discharged by computation.
+-- ---------------------------------------------------------------------------
+
+\func peanoRun : Res (\Sigma Store ExprOut) => runWithStore (compiled addProgram) 200
+
+\func peanoStore : Store => \case peanoRun \with {
+  | rOk p => p.1
+  | _ => nil
+}
+
+\func peanoVal : Value => \case peanoRun \with {
+  | rOk p => \case p.2 \with { | eVal v => v | eExc v => v }
+  | _ => vUninit
+}
+
+-- The Java side of `ExampleEval.evalMain`, in the shape `Correct` demands: the
+-- compiled program's `__main()` returns a VALUE (not a throw), and that value is
+-- related to the λ□ value `suc' three` that `LambdaBoxEval` computes.
+--
+-- Both components are `idp`, so this is not a test that was run -- it is a
+-- proposition Arend checked by evaluating the whole pipeline: `ToJava`'s
+-- generator on a two-declaration global environment with a mutual inductive and
+-- a `fix`, then 200 clock ticks of the Java semantics, then the value relation
+-- across the resulting 8-cell store.
+\func correctAtPeano
+  : \Sigma (peanoRun = rOk (peanoStore, eVal peanoVal))
+           (valRelB 20 peanoStore peanoVal (suc' three) = true)
+  => (idp, idp)
+
+-- Same content, packaged as `ValRel`, so it reads as the theorem's conclusion.
+\func valRelAtPeano : ValRel peanoStore peanoVal (suc' three) => (20, idp)
+
+-- A NEGATIVE control on the relation itself: without it, `valRelB` returning
+-- `true` would be uninformative (a relation that accepts everything proves
+-- nothing). `4` is `suc' three`; `3` is `three`, and must NOT be related.
+\func valRelRejectsWrong : valRelB 20 peanoStore peanoVal three = false => idp
+
+-- ---------------------------------------------------------------------------
+-- FINDINGS OF THE SPIKE -- where a general proof gets stuck, and how far away
+-- it is. This is the deliverable of the exercise; the instance above is the
+-- evidence that the definitions at least fit together.
+-- ---------------------------------------------------------------------------
+--
+-- WHAT WORKED, and it is more than expected. The two semantics and the compiler
+-- compose and COMPUTE on a real program: `correctAtPeano` is a machine-checked
+-- instance of `Correct`, not a test. Notably the `RtSpec` parameterisation costs
+-- nothing here -- λ□ has no rule for an axiom (`evalDelta` requires
+-- `cstBody = just body`), so every case where Rt's arithmetic could matter is
+-- VACUOUS in the theorem. That is a real structural win: the correctness of
+-- `Rt.java`'s arithmetic is not on the critical path for the cases λ□ can
+-- evaluate at all.
+--
+-- (A) THE OBSTACLE IS THE BINDING REPRESENTATION, not closures per se.
+-- λ□'s `Eval` is substitution-based -- `evalBeta` recurses into
+-- `csubst av 0 b`. The generated Java is environment-based -- `jAnonFn`
+-- captures, and `bvar n` compiles to `nthVar n env`. So the induction on
+-- `Eval` produces a goal about a SUBSTITUTED term while the Java side has an
+-- EXTENDED ENVIRONMENT, and nothing bridges them. That is `SubstLemma`.
+-- It is worse here than in a textbook setting for a specific reason:
+-- `compileExpr` threads a structural `path : String` to invent binder names, so
+-- the two sides are not even syntactically comparable -- different generated
+-- variable names. The lemma has to be stated semantically, over `evalExpr`,
+-- which means it needs the logical relation before it can be stated, and the
+-- logical relation needs the lemma to be proved. That mutual dependency is the
+-- real cost, and it is why this is weeks rather than days.
+--
+-- (B) THE INDUCTION IS ON THE WRONG THING, and this is fixable but not free.
+-- `Eval` is `\elim t`, keyed on the term. `evalExpr` is `\elim n`, keyed on the
+-- clock. A proof must therefore do induction on the `Eval` derivation while
+-- EXISTENTIALLY producing a clock, and combine the clocks of sub-derivations --
+-- hence `FuelMono`. `FuelMono` is provable but it is not small: it needs one
+-- case per constructor of `JExpr` and `JStmt` and must be proved simultaneously
+-- for the whole mutual cycle (`evalExpr`/`evalArgs`/`execStmt`/`execStmts`/
+-- `applyVal`/`callStatic`). Estimate: this alone is the size of `JavaEval.ard`.
+--
+-- (C) THE STORE IS NOT MONOTONE, because the `fix` knot writes. `StoreExt` as
+-- stated above is therefore too strong to be true in general: `jAssign` into a
+-- knot slot changes the contents of an already-allocated location. So the
+-- invariant cannot be "the store only grows"; it has to be "the store only
+-- grows, and knot slots are written at most once, before any read". Getting that
+-- right is where a naive attempt would produce a false lemma and then a
+-- vacuous-looking proof. Note this is a direct consequence of modelling the knot
+-- honestly -- the rejected knot-as-a-value shortcut would have made (C)
+-- disappear along with the property being verified.
+--
+-- (D) WHAT IS CHEAP AND WORTH DOING NEXT, in order:
+--   1. `FuelMono` -- mechanical, large, no design risk. Unblocks everything.
+--   2. More instances like `correctAtPeano` on other corpus programs. Each is
+--      an `idp` and needs no new theory, and they are what would catch a real
+--      `ToJava` bug today. This is the highest value per unit effort in the file.
+--   3. Determinism is FREE and worth stating: `evalExpr` is a function, so
+--      `Eval`-style determinism lemmas have no analogue on the Java side. The
+--      relational approach would have owed a proof here.
+--   4. Only then attempt (A), and expect the logical relation to be the bulk.
