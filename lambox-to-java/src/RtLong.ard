@@ -26,17 +26,29 @@
 \import Arith.Int
 \import Algebra.Monoid
 \import Algebra.Group
+\import StringUtil
 \import Data.Bool
 \import Data.Maybe
 \import Data.String
 \import Set
 
--- `Rt.FALSE` / `Rt.TRUE` are `Data(0, {})` / `Data(1, {})` (`Rt.java:178`).
--- They need a `Loc` for their empty field array, and a value cannot allocate,
--- so they are not expressible as `rtField` results without a store. The corpus
--- reaches them only through `builtinRun` on comparison operators, which is the
--- same problem; both are therefore left out for now and named here rather than
--- being given a plausible-looking wrong encoding.
+-- `Rt.FALSE` / `Rt.TRUE` are `Data(0, {})` / `Data(1, {})` (`Rt.java:178`): a
+-- tag plus an EMPTY field array, which still has to be allocated. `builtinRun`
+-- threads the store precisely so that a comparison primitive can return one.
+--
+-- They remain absent from `rtField`, which is correct rather than a gap: the
+-- generated code never reads `Rt.TRUE`/`Rt.FALSE` as fields (they are not in
+-- `ToJava.javaAxioms`), only receives them as results.
+\func mkBool (st : Store) (b : Bool) : \Sigma Store Value =>
+  \case storeAlloc st nil \with {
+    | (st', l) => (st', vData (\case b \with { | true => 1 | false => 0 }) l)
+  }
+
+-- Decidable equality on `Int` via the canonical decimal form. `intToStr` is
+-- total and injective on `Int` (`neg 0` and `pos 0` both render "0", which is
+-- right: they are definitionally equal), so this is a genuine decision
+-- procedure and avoids hand-rolling a comparison over the `pos`/`neg` split.
+\func intEqB (a b : Int) : Bool => intToStr a == intToStr b
 
 \func rtFieldLong (f : JIdent) : Maybe Value =>
   \case f == "BOX" \with {
@@ -56,14 +68,18 @@
   \case f == "PRIM_ADD_LONG" \with { | true => just 2 | false =>
   \case f == "PRIM_SUB_LONG" \with { | true => just 2 | false =>
   \case f == "PRIM_MUL_LONG" \with { | true => just 2 | false =>
-  \case f == "NAT_SUB_LONG"  \with { | true => just 2 | false => nothing } } } }
+  \case f == "PRIM_EQB_LONG" \with { | true => just 2 | false =>
+  \case f == "NAT_SUB_LONG"  \with { | true => just 2 | false => nothing } } } } }
 
-\func builtinRunLong (f : JIdent) (vs : Array Value) : Res Value =>
+\func builtinRunLong (st : Store) (f : JIdent) (vs : Array Value) : Res (\Sigma Store Value) =>
   \case vs \with {
     | vLong x :: vLong y :: nil =>
-      \case f == "PRIM_ADD_LONG" \with { | true => rOk (vLong (x + y)) | false =>
-      \case f == "PRIM_SUB_LONG" \with { | true => rOk (vLong (x - y)) | false =>
-      \case f == "PRIM_MUL_LONG" \with { | true => rOk (vLong (x * y)) | false =>
+      \case f == "PRIM_ADD_LONG" \with { | true => rOk (st, vLong (x + y)) | false =>
+      \case f == "PRIM_SUB_LONG" \with { | true => rOk (st, vLong (x - y)) | false =>
+      \case f == "PRIM_MUL_LONG" \with { | true => rOk (st, vLong (x * y)) | false =>
+      -- Returns `Rt.TRUE`/`Rt.FALSE`, hence the allocation. This is the case the
+      -- old store-less `builtinRun` could not express at all.
+      \case f == "PRIM_EQB_LONG" \with { | true => rOk (mkBool st (intEqB x y)) | false =>
       -- Lean's `Nat.sub` truncates at zero (`ToJava.ard:142-145` explains why it
       -- is NOT `PRIM_SUB`), so a negative difference becomes 0. `neg 0` is
       -- DEFINITIONALLY `pos 0` (Prelude's constructor condition), so the true
@@ -71,12 +87,12 @@
       -- `StringUtil.intToStr` uses.
       \case f == "NAT_SUB_LONG" \with {
         | true => \case x - y \with {
-          | pos k => rOk (vLong (pos k))
-          | neg 0 => rOk (vLong 0)
-          | neg (suc _) => rOk (vLong 0)
+          | pos k => rOk (st, vLong (pos k))
+          | neg 0 => rOk (st, vLong 0)
+          | neg (suc _) => rOk (st, vLong 0)
         }
         | false => rStuck
-      } } } }
+      } } } } }
     | _ => rStuck
   }
 

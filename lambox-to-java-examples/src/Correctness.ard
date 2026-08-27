@@ -61,7 +61,7 @@
 -- honestly rather than pretending.
 -- ---------------------------------------------------------------------------
 
-\func intEqB (a b : Int) : Bool => intToStr a == intToStr b
+-- (`intEqB` now lives in `RtLong.ard`, which needs it for `PRIM_EQB_LONG`.)
 
 \func valRelB (n : Nat) (st : Store) (jv : Value) (t : LBTerm) : Bool \elim n
   | 0 => false

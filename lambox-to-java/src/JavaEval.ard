@@ -322,7 +322,9 @@
       | just k => \case snocArr got a \with {
         | got' => \case natEq got'.len k \with {
           | false => rOk (st, eVal (vBuiltin nm got'))
-          | true => bindRes (builtinRun {rt} nm got') (\lam v => rOk (st, eVal v))
+          -- The store goes in and comes back out: a primitive returning
+          -- `Rt.TRUE`/`Rt.FALSE` allocates a `Data`. See `RtSpec.builtinRun`.
+          | true => bindRes (builtinRun {rt} st nm got') (\lam pr => rOk (pr.1, eVal pr.2))
         }
       }
     }

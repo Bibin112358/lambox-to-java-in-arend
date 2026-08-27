@@ -224,4 +224,13 @@
   -- How many arguments `Rt.<name>` must collect before it computes.
   | builtinArity : JIdent -> Maybe Nat
   -- Run a saturated builtin. The argument array has length `builtinArity name`.
-  | builtinRun : JIdent -> Array Value -> Res Value
+  --
+  -- THE STORE IS THREADED THROUGH, and this is not incidental. A comparison
+  -- primitive returns `Rt.TRUE`/`Rt.FALSE`, i.e. `Data(1, {})`/`Data(0, {})`,
+  -- and a `Data`'s fields live in the store -- so a builtin that returns a
+  -- constructor must ALLOCATE. An earlier version of this field had type
+  -- `JIdent -> Array Value -> Res Value`, which made every such primitive
+  -- inexpressible: `PRIM_EQB`, `PRIM_BLE`, `PRIM_BLT` and the whole `DEC_*`
+  -- decidable family. That was found by running `ExampleMatMul.matMulProgram`,
+  -- which declares `prim_eqb_int` as an axiom, and getting `rStuck`.
+  | builtinRun : Store -> JIdent -> Array Value -> Res (\Sigma Store Value)

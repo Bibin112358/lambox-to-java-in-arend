@@ -1,0 +1,14 @@
+\import Debug
+\import LambdaBox
+\import JavaValue
+\import JavaEval
+\import RtLong
+\import ToJava
+\import Correctness
+\import Example (testProgram)
+\import ExampleMatMul (matMulProgram)
+\import Data.String
+
+\func probeBig => putStrLn (
+  "testProgram  @500 : " ++ renderRes (runWithStore (compiled testProgram) 500) ++ "\n" ++
+  "matMulProgram@500 : " ++ renderRes (runWithStore (compiled matMulProgram) 500))
