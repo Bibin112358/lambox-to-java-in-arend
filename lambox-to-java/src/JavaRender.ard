@@ -1,0 +1,124 @@
+-- Rendering a `JavaValue.Value` as the text a real `java` run would print, and
+-- the one-line `observed` entry point that turns a λ□ program into that text.
+--
+-- WHY A SEPARATE, TRACKED MODULE. These definitions were written inside
+-- `ProbeCorpus.ard`, which imports `Imported.*` -- generated, gitignored output
+-- of `test/tools/ast-to-arend`, absent from a fresh checkout. So the only
+-- transcription of `Rt.Data.render` in the tree lived in a module that does not
+-- typecheck when cloned. Nothing here depends on `Imported.*`, so this module
+-- does, and `ProbeCorpus.ard` is left holding only the corpus wiring and the
+-- assertions.
+--
+-- WHAT `renderJ` IS. A transcription of `Rt.Data.render` (`Rt.java:44-62`), which
+-- is its own oracle: the printed form of a program's result is what `run.py`
+-- records and compares, so reproducing it exactly is what makes this semantics
+-- differential-testable against `javac` + `java` at all.
+--
+--   * a NULLARY constructor prints as just its tag -- `Rt.java:46` returns early
+--     on `fields.length == 0`;
+--   * otherwise `tag(f1,f2)`, recursively;
+--   * `String.valueOf` on a `Long` is the bare number.
+--
+-- LAYOUT IS DELIBERATELY OMITTED. `Rt.Data.render` indents by nesting depth;
+-- `test/run.py`'s `normalize` DELETES all whitespace before comparing (its
+-- docstring explains why: the four backends do not share a layout). Reproducing
+-- the indentation would be work that the comparison then throws away.
+--
+-- `Rt.BOX` IS NOT REPRODUCIBLE, and this is a real limit, not an oversight.
+-- `Rt.BOX` is `new Object()` (`Rt.java`), so `Rt.runMain`'s
+-- `System.out.println(body.apply(BOX))` prints `java.lang.Object@1b6d3586` -- a
+-- per-run identity hashcode. No model can produce that. It renders as "BOX"
+-- here, and any program whose output contains one is simply not comparable this
+-- way; the plan's fallback for a harness row is to normalize the hashcode on
+-- both sides, but for an `idp` assertion the program is just excluded.
+
+\import JavaValue
+\import JavaEval
+\import LambdaBox
+\import ToJava
+-- `observed` is specifically the `targetLong` observable: `compileClass` is
+-- instantiated at `targetLong` (`ToJava.ard`'s default) and run under the
+-- matching `rtLong`. That pairing is the point -- it is the configuration
+-- `test/run.py`'s recorded java output was produced by.
+\import RtLong
+\import StringUtil
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+
+-- A short diagnostic form: says WHICH shape a value has without descending into
+-- it. For probing, not for comparison -- `renderJ` is the comparable one.
+\func rr (v : Value) : String => \case v \with {
+  | vBox => "BOX" | vData tg _ => "Data(" ++ natToStr tg ++ ")"
+  | vLong i => "long " ++ intToStr i | vClos _ _ _ _ => "closure"
+  | vBuiltin nm _ => "builtin " ++ nm | vNull => "null" | vUninit => "UNINIT"
+  | vArr l => "arr@" ++ natToStr l | vStr s => "str " ++ s
+  | vExcObj c m => "EXC " ++ c ++ ": " ++ m
+  | _ => "other"
+}
+
+-- `d` bounds the nesting depth. A `Data`'s fields live in the store, so this
+-- follows `Loc`s and cannot be structural on the value; the depth bound is what
+-- makes it total. "..." marks a truncation, so a too-small `d` can never be
+-- mistaken for agreement.
+\func renderJ (d : Nat) (st : Store) (v : Value) : String \elim d
+  | 0 => "..."
+  | suc d => \case v \with {
+    | vLong i => intToStr i
+    | vInt k => natToStr k
+    | vStr t => t
+    | vBox => "BOX"
+    | vData tg loc => \case storeGet st loc \with {
+      | nothing => "?nostore"
+      -- Tested on the length rather than by matching the array, which Arend
+      -- rejects inside this nested \case.
+      | just cells => \case natEq cells.len 0 \with {
+        | true => natToStr tg
+        | false => natToStr tg ++ "(" ++ renderFields d st cells ++ ")"
+      }
+    }
+    | vClos _ _ _ _ => "closure"
+    | vBuiltin nm _ => "builtin " ++ nm
+    | vNull => "null"
+    | vUninit => "UNINIT"
+    | vArr l => "arr@" ++ natToStr l
+    | vExcObj c m => "EXC " ++ c ++ ": " ++ m
+    | _ => "other"
+  }
+
+\func renderFields (d : Nat) (st : Store) (cells : Array Value) : String \elim cells
+  | nil => ""
+  | c :: nil => renderJ d st c
+  | c :: (c2 :: cs) => renderJ d st c ++ "," ++ renderFields d st (c2 :: cs)
+
+-- The observable of a compiled program, as text, comparable with the value
+-- `run.py` recorded from javac + java.
+--
+-- `__main` is the entry point `ToJava.compileClass` emits, and `jExprStmt` is
+-- emitted only for `Rt.runMain` (`ToJava.ard:386`) -- never
+-- `System.out.println` -- so a program's whole observable IS the value `__main`
+-- returns, and no output stream needs modelling. That was checked, not assumed.
+--
+-- The three non-value outcomes are named rather than collapsed, because the
+-- difference is exactly what a differential test needs: "STUCK" is a real
+-- disagreement with `java`, "OUT OF FUEL" is a budget that was too small.
+\func observed (p : LBProgram) (n : Nat) : String =>
+  \case callStatic rtLong (compileClass {targetLong} p) n nil "__main" nil \with {
+    | rOutOfFuel => "OUT OF FUEL"
+    | rStuck => "STUCK"
+    | rOk q => \case q.2 \with {
+      | eVal v => renderJ 40 q.1 v
+      | eExc v => "THROWN"
+    }
+  }
+
+-- The short form of the same, for probing an unfamiliar program.
+\func go (p : LBProgram) (n : Nat) : String =>
+  \case callStatic rtLong (compileClass {targetLong} p) n nil "__main" nil \with {
+    | rOutOfFuel => "OUT OF FUEL"
+    | rStuck => "STUCK"
+    | rOk q => \case q.2 \with {
+      | eVal v => "VALUE " ++ rr v
+      | eExc v => "THROWN " ++ rr v
+    }
+  }

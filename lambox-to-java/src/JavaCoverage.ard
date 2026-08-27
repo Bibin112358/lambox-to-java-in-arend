@@ -1,0 +1,302 @@
+-- CLAUSE COVERAGE for `JavaEval.ard`.
+--
+-- `JavaEval` has exactly one clause per `JavaAst` constructor -- 14 `JExpr` plus
+-- 7 `JStmt` -- so counting constructor occurrences in the Java that `ToJava`
+-- generates for a program counts the `JavaEval` clauses that program's
+-- evaluation can reach. This module does that counting; `ProbeCorpus.ard`'s
+-- `coverageReport` prints the table for the corpus.
+--
+-- WHY BOTHER. Adapted from K-Java's `--coverage-file` (Bogdănaș & Roșu, POPL
+-- 2015): the KJS payoff was discovering that the ECMAScript conformance suite
+-- MISSED rules, and tests written for the missed ones found bugs in V8, WebKit
+-- and SpiderMonkey. It is also the mirror of the λ□-side constructor counting
+-- that justified "no more corpora" (`tApp` 10375, `tConst` 5432, ...) -- that
+-- count is likewise static occurrences in the corpus terms, so the two numbers
+-- are comparable. Cheap, and it turns "the corpus covers the semantics" from an
+-- assumption into a number. Expect it to find clauses nothing exercises; that
+-- result is the point, not a failure.
+--
+-- ============================================================================
+-- WHAT THIS NUMBER IS NOT. Read this before quoting it.
+--
+-- It is STATIC, so it is an UPPER BOUND on dynamic clause coverage: it says the
+-- constructor is in the generated program, not that evaluation reached it. The
+-- two differ in exactly one interesting place -- a `jSwitch`'s `default` block
+-- holds the `jThrow` for "no matching branch", which `ToJava` emits for EVERY
+-- switch and which a correct program never runs. So a nonzero `jThrow` here
+-- means "the throw was compiled", not "the throw was taken".
+--
+-- Direction of the error, stated plainly: a ZERO is exact and trustworthy -- the
+-- constructor is absent, so the clause certainly never runs. A NONZERO is an
+-- upper bound. That asymmetry is the useful way round, because the zeroes are
+-- what the count exists to find.
+--
+-- Making it dynamic would mean threading a hit-set through `evalExpr`/`execStmt`
+-- and their whole mutual cycle, i.e. changing the type of the semantics to
+-- measure it. Not worth it for the zeroes, which are what this is for. The
+-- clauses known to be exercised ONLY by a hand-written assertion and never by a
+-- corpus program are named in `ExampleJEval.ard`: the unmatched-tag default
+-- throw, the bad cast, and the `vUninit` read (JLS 16).
+-- ============================================================================
+--
+-- ============================================================================
+-- THE RESULT, as printed by `ProbeCorpus.coverageReport` (3m9s, 7 programs).
+-- Recorded here because it is a handover number, and because reproducing it
+-- needs the gitignored `Imported.*` modules.
+--
+--   clause          progs   occs        clause          progs   occs
+--   jVar            2       73          jLocal          2       29
+--   jStatic         2       8           jAssign         2       16
+--   jField          3       16          jSwitch         2       6
+--   jIndex          2       15          jThrow          2       6
+--   jCast           5       72          jReturn         7       58
+--   jInvoke         5       61          jExprStmt       7       7
+--   jCallStatic     7       73          jComment        0       0
+--   jNew            6       32
+--   jNewArrayInit   6       26        nodes per program:
+--   jNewArraySized  2       3           peano            78
+--   jAnonFn         7       31          leanbench-unit   20
+--   jStringLit      2       6           mangle           15
+--   jIntLit         6       44          axiom-mangle     20
+--   jLongLit        2       20          leanbench-demo0  34
+--                                       peregrine-lean   35
+--                                       leanbench-even  400
+--
+-- THREE FINDINGS, and the second is the one worth acting on.
+--
+-- 1. ONE clause is at zero: `jComment`. And it is not a corpus gap -- it is
+--    UNREACHABLE. `ToJava.ard` contains no `jComment` at all (checked: zero
+--    occurrences); the comment an erased inductive produces is a
+--    `jMemberComment`, a class-body member, which `JavaEval` correctly has no
+--    clause for. So no corpus can ever cover `JavaEval`'s `jComment` clause, and
+--    adding programs will not change that. It exists because `JavaAst` offers
+--    the constructor, and the honest status is "dead in the current backend".
+--
+-- 2. THE CORPUS IS MUCH NARROWER THAN SEVEN PROGRAMS SUGGESTS. Only TWO programs
+--    -- peano and leanbench-even -- exercise `jVar`, `jIndex`, `jLocal`,
+--    `jAssign`, `jSwitch`, `jThrow` and `jNewArraySized`. That is the whole of
+--    control flow, local binding, pattern matching and the `fix` knot resting on
+--    two programs. The other five (leanbench-unit, mangle, axiom-mangle,
+--    leanbench-demo0, peregrine-lean) are 15-35 nodes of essentially nothing but
+--    constructor building: they hit `jCallStatic`, `jNew`, `jNewArrayInit`,
+--    `jAnonFn`, `jReturn`, `jExprStmt` and stop. Five programs at 100% pass rate
+--    reads as much better coverage than it is -- the same lesson `f040517`
+--    recorded when six hand-built instances found nothing and one real program
+--    found an interface defect.
+--
+-- 3. ONE PROGRAM IS TWO THIRDS OF THE CORPUS: leanbench-even is 400 of the 602
+--    total nodes, and is the sole source of most of the `jVar`/`jCast`/`jInvoke`
+--    counts. It is also the only program contributing `jLongLit` beyond peano's
+--    zero, i.e. nearly all primitive-integer coverage.
+--
+-- What this says about where to spend corpus effort: not more Lean benchmarks
+-- that build constructors, but programs with matching and recursion. It does NOT
+-- say the semantics is wrong anywhere -- coverage is not correctness.
+-- ============================================================================
+
+\import JavaAst
+\import JavaValue
+\import LambdaBox
+\import ToJava
+\import StringUtil
+-- Imported selectively, as `JavaPrint.ard` and `ToJava.ard` do: an unrestricted
+-- `\import Data.Array` shadows `String`'s `++`.
+\import Data.Array (map, mkArray)
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+
+-- 14 `JExpr` constructors then 7 `JStmt` ones, in `JavaAst.ard` declaration
+-- order. The index IS the clause identity, so `clauseName` and the `countExpr` /
+-- `countStmt` clauses below must stay in step.
+\func nClauses : Nat => 21
+
+\func clauseName (i : Nat) : String
+  | 0 => "jVar" | 1 => "jStatic" | 2 => "jField" | 3 => "jIndex"
+  | 4 => "jCast" | 5 => "jInvoke" | 6 => "jCallStatic" | 7 => "jNew"
+  | 8 => "jNewArrayInit" | 9 => "jNewArraySized" | 10 => "jAnonFn"
+  | 11 => "jStringLit" | 12 => "jIntLit" | 13 => "jLongLit"
+  | 14 => "jLocal" | 15 => "jAssign" | 16 => "jSwitch" | 17 => "jThrow"
+  | 18 => "jReturn" | 19 => "jExprStmt" | 20 => "jComment"
+  | _ => "?"
+
+\func zeroCounts : Array Nat => replicateArr nClauses 0
+
+-- A single occurrence of clause `i`.
+\func one (i : Nat) : Array Nat => setArr i 1 zeroCounts
+
+-- Pointwise. The `nil` clauses make this total; every vector here has length
+-- `nClauses`, so they are never taken with a nonempty other side.
+\func addCounts (a b : Array Nat) : Array Nat \elim a, b
+  | nil, bs => bs
+  | as, nil => as
+  | a :: as, b :: bs => (a Nat.+ b) :: addCounts as bs
+
+\func sumCounts (xs : Array (Array Nat)) : Array Nat \elim xs
+  | nil => zeroCounts
+  | x :: xs => addCounts x (sumCounts xs)
+
+-- ---------------------------------------------------------------------------
+-- The counters.
+--
+-- Sub-arrays are traversed as `mkArray ... (\lam i => count... (xs i))` rather
+-- than with `map`, which is the discipline `ToJava.ard:22-38` and
+-- `JavaPrint.ard:65-79` document: applying the array to an index keeps the
+-- structural link the termination checker needs across the `countExpr` /
+-- `countStmt` mutual cycle. `map` breaks it.
+--
+-- `jLocal`'s `Maybe` is matched by NESTED patterns for the same reason -- an
+-- inner `\case` on the initialiser would lose that link (`JavaPrint.ard:87-89`).
+-- ---------------------------------------------------------------------------
+
+\func countExpr (e : JExpr) : Array Nat \elim e
+  | jVar _ => one 0
+  | jStatic _ => one 1
+  | jField e _ => addCounts (one 2) (countExpr e)
+  | jIndex a i => addCounts (one 3) (addCounts (countExpr a) (countExpr i))
+  | jCast _ e => addCounts (one 4) (countExpr e)
+  | jInvoke e _ args =>
+    addCounts (one 5) (addCounts (countExpr e)
+      (sumCounts (mkArray {Array Nat} {args.len} (\lam i => countExpr (args i)))))
+  | jCallStatic _ args =>
+    addCounts (one 6) (sumCounts (mkArray {Array Nat} {args.len} (\lam i => countExpr (args i))))
+  | jNew _ args =>
+    addCounts (one 7) (sumCounts (mkArray {Array Nat} {args.len} (\lam i => countExpr (args i))))
+  | jNewArrayInit _ es =>
+    addCounts (one 8) (sumCounts (mkArray {Array Nat} {es.len} (\lam i => countExpr (es i))))
+  | jNewArraySized _ n => addCounts (one 9) (countExpr n)
+  | jAnonFn _ _ body =>
+    addCounts (one 10) (sumCounts (mkArray {Array Nat} {body.len} (\lam i => countStmt (body i))))
+  | jStringLit _ => one 11
+  | jIntLit _ => one 12
+  | jLongLit _ => one 13
+
+\func countStmt (s : JStmt) : Array Nat \elim s
+  | jLocal _ _ _ nothing => one 14
+  | jLocal _ _ _ (just e) => addCounts (one 14) (countExpr e)
+  | jAssign l r => addCounts (one 15) (addCounts (countExpr l) (countExpr r))
+  | jSwitch scrut cs dflt =>
+    addCounts (one 16) (addCounts (countExpr scrut) (addCounts
+      (sumCounts (mkArray {Array Nat} {cs.len} (\lam i =>
+        sumCounts (mkArray {Array Nat} {((cs i).2).len} (\lam j => countStmt ((cs i).2 j))))))
+      (sumCounts (mkArray {Array Nat} {dflt.len} (\lam j => countStmt (dflt j))))))
+  | jThrow e => addCounts (one 17) (countExpr e)
+  | jReturn e => addCounts (one 18) (countExpr e)
+  | jExprStmt e => addCounts (one 19) (countExpr e)
+  | jComment _ => one 20
+
+-- Outside the mutual cycle, so `map` is fine from here down.
+--
+-- `jMemberComment` contributes nothing: it is a `JMember`, not a `JStmt`, and
+-- `JavaEval` has no clause for it -- the class-body comment an erased inductive
+-- produces is not an evaluable thing.
+\func countMember (mem : JMember) : Array Nat \elim mem
+  | jMethod m => sumCounts (map countStmt m.mBody)
+  | jMemberComment _ => zeroCounts
+
+\func countClass (c : JClass) : Array Nat => sumCounts (map countMember c.classMembers)
+
+-- The counts for one λ□ program, compiled exactly as the harness compiles it.
+\func countProgram (p : LBProgram) : Array Nat => countClass (compileClass {targetLong} p)
+
+-- ---------------------------------------------------------------------------
+-- The report.
+--
+-- STRUCTURED FOR COST, and the cost is not incidental -- the first version of
+-- this section did not finish in nine minutes.
+--
+-- `countProgram` runs `ToJava.compileClass`, which is seconds per program
+-- (measured: peano 0.85 s / 78 nodes, leanbench-even 4.5 s / 400 nodes). The
+-- obvious shape -- `\let counts => map countProgram ps` and then a
+-- `progsWith i counts` / `occsOf i counts` per clause row -- re-evaluates the
+-- whole vector at every access, because `map` builds a lazy `DArray` whose `at`
+-- is re-invoked. That is 21 rows x 3 references x 7 programs, so roughly 440
+-- compilations instead of 7.
+--
+-- So the whole report is ONE structural fold (`scan`) that visits each program
+-- once and returns the three things the table needs already accumulated: the
+-- per-program rows, the per-clause totals, and the per-clause presence counts.
+-- `coverageTable` destructures it with `\case`, which forces it exactly once.
+-- ---------------------------------------------------------------------------
+
+\func nthOr0 (i : Nat) (c : Array Nat) : Nat => \case nthArr i c \with {
+  | nothing => 0
+  | just v => v
+}
+
+-- A count vector reduced to presence: 1 where the clause occurs at all. Summing
+-- these across programs gives "how many programs exercise this clause", which is
+-- the headline number the plan asks for.
+\func signs (xs : Array Nat) : Array Nat \elim xs
+  | nil => nil
+  | 0 :: xs => 0 :: signs xs
+  | suc _ :: xs => 1 :: signs xs
+
+\func spacesStr (n : Nat) : String \elim n
+  | 0 => ""
+  | suc n => " " ++ spacesStr n
+
+-- The negative case is `neg (suc _)`, not `neg _`: `neg 0` is DEFINITIONALLY
+-- `pos 0` (Prelude's constructor condition on `Int`), and Arend rightly rejects
+-- a `neg 0` clause returning `s` beside a `pos 0` one returning `s ++ ""` --
+-- those are equal only up to a lemma, not by reduction.
+\func padRight (width : Nat) (s : String) : String =>
+  \case width Nat.- (s.bytes).len \with {
+    | pos k => s ++ spacesStr k
+    | neg (suc _) => s
+  }
+
+\func sumOf (xs : Array Nat) : Nat \elim xs
+  | nil => 0
+  | x :: xs => x Nat.+ sumOf xs
+
+-- One clause's summary line, read out of the two ALREADY-ACCUMULATED vectors, so
+-- nothing is recompiled here.
+\func clauseRow (i : Nat) (progs occs : Array Nat) : String =>
+  padRight 16 (clauseName i)
+    ++ padRight 8 (natToStr (nthOr0 i progs))
+    ++ padRight 10 (natToStr (nthOr0 i occs))
+    ++ (\case nthOr0 i progs \with {
+      | 0 => "  <-- NOTHING EXERCISES THIS"
+      | suc _ => ""
+    })
+    ++ "\n"
+
+-- Rows 0 .. k-1, in index order: `rowsUpTo (suc k) = rowsUpTo k ++ row k`.
+\func rowsUpTo (k : Nat) (progs occs : Array Nat) : String \elim k
+  | 0 => ""
+  | suc k => rowsUpTo k progs occs ++ clauseRow k progs occs
+
+-- The 21 numbers of one program, in clause order.
+\func renderVec (xs : Array Nat) : String \elim xs
+  | nil => ""
+  | x :: xs => padRight 5 (natToStr x) ++ renderVec xs
+
+-- Taking the vector as a PARAMETER is what keeps it to one evaluation: the
+-- caller normalizes `countProgram p.2` once and this consumes the result three
+-- times without re-running the compiler.
+\func combine (name : String) (v : Array Nat)
+              (rest : \Sigma String (Array Nat) (Array Nat))
+  : \Sigma String (Array Nat) (Array Nat) =>
+  ("  " ++ padRight 18 name ++ padRight 7 (natToStr (sumOf v)) ++ renderVec v ++ "\n" ++ rest.1,
+   addCounts v rest.2,
+   addCounts (signs v) rest.3)
+
+-- (per-program rows, per-clause totals, per-clause presence counts).
+\func scan (ps : Array (\Sigma String LBProgram))
+  : \Sigma String (Array Nat) (Array Nat) \elim ps
+  | nil => ("", zeroCounts, zeroCounts)
+  | p :: ps => combine p.1 (countProgram p.2) (scan ps)
+
+\func coverageTable (ps : Array (\Sigma String LBProgram)) : String =>
+  \case scan ps \with {
+    | (rows, occs, progs) =>
+      "JavaEval clause coverage over " ++ natToStr ps.len ++ " corpus program(s).\n" ++
+      "STATIC counts -- an upper bound on dynamic coverage; a ZERO is exact.\n" ++
+      "See this module's header before quoting these numbers.\n\n" ++
+      "per program (nodes, then the 21 clause counts in the order below):\n" ++
+      "  " ++ padRight 18 "program" ++ padRight 7 "nodes" ++ "\n" ++
+      rows ++ "\n" ++
+      padRight 16 "clause" ++ padRight 8 "progs" ++ padRight 10 "occs" ++ "\n" ++
+      rowsUpTo nClauses progs occs
+  }

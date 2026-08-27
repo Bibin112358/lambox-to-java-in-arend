@@ -137,8 +137,14 @@
   -- name, body): it is always `public Object apply(Object)`, and a record field
   -- would put `JMethod` into the JExpr/JStmt recursion, which Arend rejects
   -- (records cannot be part of a mutual `\data` cycle).
-  -- This node is temporary by design: closure conversion (step 5) replaces it
-  -- with named `Closure_<path>` classes.
+  -- PERMANENT, and load-bearing. This node was once described here as
+  -- "temporary by design", to be replaced by named `Closure_<path>` classes at a
+  -- closure-conversion step; the 2026-08-06 decision kept anonymous classes
+  -- instead. Its capture rule is now depended on: JLS 15.9.5 and 4.12.4 capture
+  -- effectively-final locals BY VALUE at instantiation, so what a `fix` knot
+  -- captures is a reference to a still-empty `Rt.Fn[]` and the slot assignments
+  -- that follow are visible through it. `JavaEval.ard`'s `jAnonFn` clause cites
+  -- exactly that, and it is the only reason the knot works.
   | jAnonFn JType JIdent (Array JStmt)
   -- A `String` literal; the printer is responsible for quoting and escaping.
   | jStringLit String

@@ -1,11 +1,20 @@
--- Diagnostic: run REAL corpus programs (test/tools/ast-to-arend output) under
--- the Java semantics. Not a test -- a bug-finding probe. The `Imported/` modules
--- it reads are gitignored generated files, so this module is only typecheckable
--- where they have been copied in.
+-- REAL corpus programs (`test/tools/ast-to-arend` output) run under the Java
+-- semantics: the differential agreement with recorded `javac` + `java` output,
+-- plus a probe for programs that have no recorded expectation yet.
+--
+-- THIS MODULE DOES NOT TYPECHECK IN A FRESH CHECKOUT. The `Imported.*` modules
+-- it reads are gitignored generated files (19 MB), so they must be regenerated
+-- (`test/stages/java.sh gen`, or `test/tools/import-ast.sh`) or copied in first.
+-- Everything reusable has been moved OUT for exactly that reason: `renderJ`,
+-- `observed` and `go` now live in `JavaRender.ard`, and the clause counters in
+-- `JavaCoverage.ard`, both of which are tracked and check anywhere. What is left
+-- here is only what genuinely needs the corpus.
 \import Debug
 \import LambdaBox
 \import JavaValue
 \import JavaEval
+\import JavaRender
+\import JavaCoverage
 \import RtLong
 \import ToJava
 \import Data.Bool
@@ -19,84 +28,6 @@
 \import Imported.LeanbenchDemo0 ()
 \import Imported.PeregrineLeanDemo ()
 \import Imported.LeanbenchEven ()
-
-\func rr (v : Value) : String => \case v \with {
-  | vBox => "BOX" | vData tg _ => "Data(" ++ natToStr tg ++ ")"
-  | vLong i => "long " ++ intToStr i | vClos _ _ _ _ => "closure"
-  | vBuiltin nm _ => "builtin " ++ nm | vNull => "null" | vUninit => "UNINIT"
-  | vArr l => "arr@" ++ natToStr l | vStr s => "str " ++ s
-  | vExcObj c m => "EXC " ++ c ++ ": " ++ m
-  | _ => "other"
-}
-
--- `Rt.Data.render` (Rt.java:44-62), transcribed. The Java printer emits
--- `tag` for a nullary constructor and `tag(f1,\n f2)` otherwise, with
--- per-level indentation; `run.py` DELETES whitespace before comparing, so this
--- renders the same text minus the layout. `String.valueOf` on a Long is just the
--- number. `Rt.BOX` is `new Object()` and prints as java.lang.Object@<hashcode>,
--- which no model can reproduce -- it is rendered "BOX" here and any program
--- whose output contains one is simply not comparable this way.
-\func renderJ (d : Nat) (st : Store) (v : Value) : String \elim d
-  | 0 => "..."
-  | suc d => \case v \with {
-    | vLong i => intToStr i
-    | vInt k => natToStr k
-    | vStr t => t
-    | vBox => "BOX"
-    | vData tg loc => \case storeGet st loc \with {
-      | nothing => "?nostore"
-      -- A nullary constructor prints as just its tag (Rt.java:46: `if
-      -- (fields.length == 0) return;`). Tested on the length rather than by
-      -- matching the array, which Arend rejects inside this nested \case.
-      | just cells => \case natEq cells.len 0 \with {
-        | true => natToStr tg
-        | false => natToStr tg ++ "(" ++ renderFields d st cells ++ ")"
-      }
-    }
-    | vClos _ _ _ _ => "closure"
-    | vBuiltin nm _ => "builtin " ++ nm
-    | vNull => "null"
-    | vUninit => "UNINIT"
-    | vArr l => "arr@" ++ natToStr l
-    | vExcObj c m => "EXC " ++ c ++ ": " ++ m
-    | _ => "other"
-  }
-
-\func renderFields (d : Nat) (st : Store) (cells : Array Value) : String \elim cells
-  | nil => ""
-  | c :: nil => renderJ d st c
-  | c :: (c2 :: cs) => renderJ d st c ++ "," ++ renderFields d st (c2 :: cs)
-
--- The observable of a compiled program, as text, comparable with the value
--- `run.py` recorded from javac + java.
-\func observed (p : LBProgram) (n : Nat) : String =>
-  \case callStatic rtLong (compileClass {targetLong} p) n nil "__main" nil \with {
-    | rOutOfFuel => "OUT OF FUEL"
-    | rStuck => "STUCK"
-    | rOk q => \case q.2 \with {
-      | eVal v => renderJ 40 q.1 v
-      | eExc v => "THROWN"
-    }
-  }
-
-\func go (p : LBProgram) (n : Nat) : String =>
-  \case callStatic rtLong (compileClass {targetLong} p) n nil "__main" nil \with {
-    | rOutOfFuel => "OUT OF FUEL"
-    | rStuck => "STUCK"
-    | rOk q => \case q.2 \with {
-      | eVal v => "VALUE " ++ rr v
-      | eExc v => "THROWN " ++ rr v
-    }
-  }
-
-\func probeCorpus => putStrLn (
-  "peano          : " ++ go Imported.Peano.program 400 ++ "\n" ++
-  "leanbench-unit : " ++ go Imported.LeanbenchUnit.program 400 ++ "\n" ++
-  "mangle         : " ++ go Imported.MangleCollision.program 400 ++ "\n" ++
-  "axiom-mangle   : " ++ go Imported.AxiomMangleCollision.program 400 ++ "\n" ++
-  "leanbench-demo0: " ++ go Imported.LeanbenchDemo0.program 400 ++ "\n" ++
-  "peregrine-lean : " ++ go Imported.PeregrineLeanDemo.program 400 ++ "\n" ++
-  "leanbench-even : " ++ go Imported.LeanbenchEven.program 400)
 
 -- ---------------------------------------------------------------------------
 -- DIFFERENTIAL AGREEMENT with recorded javac + java output.
@@ -129,3 +60,32 @@
   "mangle         : " ++ observed Imported.MangleCollision.program 400 ++ "\n" ++
   "axiom-mangle   : " ++ observed Imported.AxiomMangleCollision.program 400 ++ "\n" ++
   "leanbench-demo0: " ++ observed Imported.LeanbenchDemo0.program 400)
+
+\func probeCorpus => putStrLn (
+  "peano          : " ++ go Imported.Peano.program 400 ++ "\n" ++
+  "leanbench-unit : " ++ go Imported.LeanbenchUnit.program 400 ++ "\n" ++
+  "mangle         : " ++ go Imported.MangleCollision.program 400 ++ "\n" ++
+  "axiom-mangle   : " ++ go Imported.AxiomMangleCollision.program 400 ++ "\n" ++
+  "leanbench-demo0: " ++ go Imported.LeanbenchDemo0.program 400 ++ "\n" ++
+  "peregrine-lean : " ++ go Imported.PeregrineLeanDemo.program 400 ++ "\n" ++
+  "leanbench-even : " ++ go Imported.LeanbenchEven.program 400)
+
+-- ---------------------------------------------------------------------------
+-- CLAUSE COVERAGE.
+--
+-- Typechecking this definition prints the table: one row per `JavaEval` clause,
+-- one column per corpus program, counting occurrences of the corresponding
+-- `JavaAst` constructor in the Java that `ToJava` generates for it. Read
+-- `JavaCoverage.ard`'s header for what the numbers do and do not mean -- in
+-- particular they are an UPPER BOUND on dynamic clause coverage, and the zeroes
+-- are the exact ones.
+-- ---------------------------------------------------------------------------
+
+\func coverageReport => putStrLn (coverageTable (
+  ("peano", Imported.Peano.program) ::
+  ("leanbench-unit", Imported.LeanbenchUnit.program) ::
+  ("mangle", Imported.MangleCollision.program) ::
+  ("axiom-mangle", Imported.AxiomMangleCollision.program) ::
+  ("leanbench-demo0", Imported.LeanbenchDemo0.program) ::
+  ("peregrine-lean", Imported.PeregrineLeanDemo.program) ::
+  ("leanbench-even", Imported.LeanbenchEven.program) :: nil))
