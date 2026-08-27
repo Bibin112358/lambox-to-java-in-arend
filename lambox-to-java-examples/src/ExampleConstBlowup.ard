@@ -1,0 +1,182 @@
+\import LambdaBox
+\import StringUtil (natToStr)
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+
+-- =============================================================================
+-- `const-blowup`: the program that shows the Java backend's loss of CONSTANT
+-- SHARING is asymptotic, not the bounded constant factor every other gap in
+-- test/results.tsv is.
+--
+-- ToJava.ard:267 compiles every `const k` reference to `mangleKername k ()` --
+-- a call of a zero-argument `public static Object` method whose body is the
+-- constant's whole λ□ body (compileDecl, ToJava.ard:348-365). There is no
+-- memoization anywhere, so a constant referenced twice is EVALUATED twice.
+-- Peregrine's OCaml backend instead emits `(module ($def__foo <expr>) ...)`:
+-- a module binding, evaluated once at load, and every reference is a variable.
+--
+-- So a program whose constant-reference graph is a DAG rather than a tree costs
+-- 2^N in Java and N in OCaml. This is deliberately NOT a `letIn` problem:
+-- ToJava.ard:279-283 compiles `letIn` to a real Java local, evaluated once. It
+-- is specifically `const`.
+--
+-- The chain -- TWO interleaved chains, which is not the obvious shape; see
+-- "WHY TWO CHAINS" below:
+--
+--   a0     = true            b0     = false
+--   a(k+1) = pick a(k) b(k)  b(k+1) = pick b(k) a(k)
+--   main   = a N
+--
+-- `pick x y` returns `x` after forcing `y`, so a(k) = true and b(k) = false for
+-- every k, and `main` is `true` -- but establishing that requires evaluating
+-- both references at every level.
+--
+-- Java  : c___a30() calls c___a29() and c___b29(), each of which calls two
+--         more, ... => 2^N executions.
+-- OCaml : $def__a30 is a variable reference to $def__a29 and $def__b29
+--         => 2N+2 evaluations, once each at module load.
+--
+-- WHY TWO CHAINS, not the obvious `d(k+1) = pick d(k) d(k)`. That single-chain
+-- version states the defect more clearly -- one constant, referenced twice,
+-- evaluated twice -- and it was written and measured first. It does not work as
+-- a corpus program, because HotSpot removes most of its cost: `c___dk()` is a
+-- nullary, pure, static call, and TWO IDENTICAL such calls in one expression
+-- are exactly what the inliner plus CSE collapse. Measured (best of 3, this
+-- machine, the harness's own JAVA_RUN_FLAGS):
+--
+--   N            20     24     26     28     30
+--   java_run   0.10s  0.63s  4.21s  4.33s  4.96s      <- flat above ~26
+--
+-- so it stops responding to N before reaching a useful running time, and
+-- `blowupLevels` stops being a tuning knob. That the *generated code* is still
+-- exponential was confirmed by disabling the two optimizations in turn:
+--
+--   N=24  default 0.77s   -XX:-Inline 0.91s   -Xint  7.45s
+--   N=30  default 4.46s   -XX:-Inline 40.5s   -Xint  > 5 min
+--
+-- i.e. 2.07x per +1 in N interpreted and ~1.9x per +1 with inlining off, and it
+-- is INLINING (not the JIT as such) that masks it. Interleaving two chains
+-- makes the two references in each body calls to DIFFERENT methods, which CSE
+-- cannot merge directly; the cost still grows with N where the single chain's
+-- had stopped.
+--
+-- Two further design choices, because the obvious alternatives break the
+-- demonstration:
+--
+-- * `pick x y` MATCHES ON `y` and returns `x`. Matching on the second argument
+--   is what keeps the second reference load-bearing: with `pick x y = x` the
+--   argument is dead and either the λ□ middle end or HotSpot could drop the
+--   call, and the exponent with it. Forcing `y` to a constructor value means
+--   the whole subtree below it must run.
+--
+-- * The result is a nullary constructor (`true`), not a tree node
+--   `node a(k) b(k)`. A tree would materialise 2^N LIVE nodes and turn the
+--   demonstration into an OutOfMemoryError; here every allocation dies
+--   immediately, so peak heap is flat in N (measured -- see the corpus meta)
+--   and the cost is purely time.
+--
+-- BinderName values are all `anon`: compileExpr never reads the textual name of
+-- a binder, only its position (see ExamplePeano.ard).
+-- =============================================================================
+
+-- N. One edit retunes the whole program; see the corpus meta file for the
+-- measured (N, java_run, ocaml_run) triples that picked this value.
+\func blowupLevels : Nat => 30
+
+-- ---------------------------------------------------------------------------
+-- Bool = false | true, a Lean-shaped 2-constructor inductive with no fields.
+-- The `peano` runtime bundle's drivers print a nullary constructor's ordinal,
+-- so `true` prints as 1 on every backend (runtime/peano/README.md).
+-- ---------------------------------------------------------------------------
+
+\func boolInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "Bool") 0
+
+\func falseC : LBTerm => construct boolInd 0 nil
+\func trueC  : LBTerm => construct boolInd 1 nil
+
+\func boolMutual : MutualInductiveBody =>
+  \new MutualInductiveBody finite 0
+      ((\new OneInductiveBody "Bool" false IntoAny
+             ((\new ConstructorBody "false" 0) :: (\new ConstructorBody "true" 0) :: nil)
+             nil) :: nil)
+
+-- ---------------------------------------------------------------------------
+-- pick : Bool -> Bool -> Bool,  pick x y = case y of { false => x ; true => x }
+--
+-- de Bruijn trace (no fix):
+--   after \lam x: [x(0)]
+--   after \lam y: [y(0), x(1)]        <- scrutinee y = bvar 0
+--   both branches bind 0 fields, so the env is unchanged and x = bvar 1.
+-- ---------------------------------------------------------------------------
+
+\func pickBody : LBTerm =>
+  lambda anon (lambda anon (
+    case boolInd 0 (bvar 0) (
+      (nil, bvar 1) ::   -- tag 0 = false
+      (nil, bvar 1) ::   -- tag 1 = true
+      nil
+    )
+  ))
+
+\func pickRef : LBTerm => const (\new Kername (mpFile nil) "pick")
+
+-- ---------------------------------------------------------------------------
+-- The two chains. `aName`/`bName` are the only Kername-valued \funcs in the
+-- examples (every other module writes each Kername inline, see
+-- ExampleMatMul.ard's header): 2N of them cannot be hand-written.
+--
+-- That this is safe was checked before generating anything, because it is the
+-- shape ExampleMatMul.ard's header warns against -- a String field read through
+-- a helper \func can stay stuck at typecheck time (the known
+-- String-field/isProperty bug) and print `{...}` instead of the name. It does
+-- reduce here: an identically-built `\func dName (k : Nat) : Kername =>
+-- \new Kername (mpFile nil) ("d" ++ natToStr k)` printed `c___d5` / `d5` for
+-- `mangleKername (dName 5)` / `(dName 5).kerName`. The difference from matmul is
+-- that these unfold to a literal `\new`, whose field access reduces fine. The
+-- checked-in `prog.ast`, which names `a30`/`b29` throughout, is the standing
+-- evidence for `aName`/`bName` themselves.
+-- ---------------------------------------------------------------------------
+
+\func aName (k : Nat) : Kername => \new Kername (mpFile nil) ("a" ++ natToStr k)
+\func bName (k : Nat) : Kername => \new Kername (mpFile nil) ("b" ++ natToStr k)
+
+-- a(k+1) = pick a(k) b(k) and b(k+1) = pick b(k) a(k): each body references two
+-- DIFFERENT constants, so the two calls are not a CSE candidate, and each
+-- constant is referenced twice across the pair, so sharing is what is at stake.
+\func aBody (k : Nat) : LBTerm => app (app pickRef (const (aName k))) (const (bName k))
+\func bBody (k : Nat) : LBTerm => app (app pickRef (const (bName k))) (const (aName k))
+
+-- Dependents first, dependencies last: EWellformed.v's `wf_glob` checks each
+-- entry's body against only the TAIL of the list, so a declaration may only
+-- reference declarations that come AFTER it (see ExamplePeano.ard:53-59).
+-- `aN :: bN :: ... :: a1 :: b1 :: a0 :: b0 :: pick :: Bool :: nil`, built by
+-- recursion on N with the four fixed entries as the base case -- no array
+-- append, and the order stays obviously correct.
+\func declsUpTo (k : Nat) : GlobalDeclarations \elim k
+  | 0 =>
+    (aName 0, constantDecl (\new ConstantBody (just trueC))) ::
+    (bName 0, constantDecl (\new ConstantBody (just falseC))) ::
+    (\new Kername (mpFile nil) "pick", constantDecl (\new ConstantBody (just pickBody))) ::
+    (\new Kername (mpFile nil) "Bool", inductiveDecl boolMutual) ::
+    nil
+  | suc k =>
+    (aName (suc k), constantDecl (\new ConstantBody (just (aBody k)))) ::
+    (bName (suc k), constantDecl (\new ConstantBody (just (bBody k)))) ::
+    declsUpTo k
+
+\func decls : GlobalDeclarations => declsUpTo blowupLevels
+
+-- The entry point is the CONSTANT `a N`, not an application. Peregrine's
+-- Malfunction module exports `(export $<c> $main)` where `$<c>` is the constant
+-- `main` refers to, and Malfunction module fields are POSITIONAL while the
+-- runtime bundles' hand-written `.mli` declares a single `val main` -- so the
+-- driver reads export slot 0. A bare `tConst` main keeps slot 0 and `$main`
+-- equal; see ExampleAxiomCollision.ard, where an application in that position
+-- printed a closure.
+\func mainTerm : LBTerm => const (aName blowupLevels)
+
+\func constBlowupProgram : LBProgram => (decls, mainTerm)
+
+-- Printing the generated Java source / s-expression lives in ExamplePrint.ard:
+-- it needs a much larger stack than checking these definitions does.

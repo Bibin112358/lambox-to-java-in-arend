@@ -1,0 +1,75 @@
+\import LambdaBox
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+
+-- =============================================================================
+-- `mangle-collision`: a witness that `mangleKername` is NOT INJECTIVE, despite
+-- StringUtil.ard:63-66 advertising "a collision-free encoding".
+--
+-- The encoding of one identifier IS collision-free: `javaIdentPart` passes
+-- letters, digits and `_` through and writes every other byte as `$<decimal>$`
+-- (StringUtil.ard:74-98). The JOIN is not. `joinDirs` (ToJava.ard:221-224)
+-- separates DirPath components with `"_"`, and `_` is byte 95, which
+-- `isJavaIdentByte` lets through unescaped -- so a component containing `_` is
+-- indistinguishable from a component boundary:
+--
+--   mangleKername (mpFile ["A_B"],   "f")  ==  "c_A_B__f"
+--   mangleKername (mpFile ["A","B"], "f")  ==  "c_A_B__f"
+--
+-- (Both verified by running `ExamplePrint:manglingProbe`, since deleted.)
+--
+-- This program declares two DIFFERENT constants at exactly those two kernames,
+-- with different bodies (`true` and `false`), and returns the first. Peregrine
+-- keeps them apart and prints 1; our backend emits two methods with the same
+-- name and `javac` rejects the class -- a LOUD failure, which is the good case.
+-- The silent one is `axiom-mangle-collision`.
+--
+-- The fix is a `joinDirs` that escapes `_` in a component, or any separator
+-- outside `javaIdentPart`'s output alphabet; it would change every generated
+-- method name, hence the `javaAxioms` keys too.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- Bool = false | true. Same shape as ExampleConstBlowup.ard's: the `peano`
+-- runtime bundle's drivers print a nullary constructor's ordinal, so `true`
+-- prints as 1 on every backend (runtime/peano/README.md).
+-- ---------------------------------------------------------------------------
+
+\func boolInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "Bool") 0
+
+\func falseC : LBTerm => construct boolInd 0 nil
+\func trueC  : LBTerm => construct boolInd 1 nil
+
+\func boolMutual : MutualInductiveBody =>
+  \new MutualInductiveBody finite 0
+      ((\new OneInductiveBody "Bool" false IntoAny
+             ((\new ConstructorBody "false" 0) :: (\new ConstructorBody "true" 0) :: nil)
+             nil) :: nil)
+
+-- ---------------------------------------------------------------------------
+-- The two colliding constants. Both kernames are written inline at every
+-- occurrence, as everywhere else in these examples.
+--
+-- Dependents first, dependencies last (EWellformed.v's `wf_glob`; see
+-- ExamplePeano.ard:53-59). Neither constant references the other, so only
+-- `Bool` has to come last.
+-- ---------------------------------------------------------------------------
+
+\func decls : GlobalDeclarations =>
+  -- module path ["A_B"], one component containing an underscore
+  (\new Kername (mpFile ("A_B" :: nil)) "f",       constantDecl (\new ConstantBody (just trueC))) ::
+  -- module path ["A", "B"], two components -- a genuinely different kername
+  (\new Kername (mpFile ("A" :: "B" :: nil)) "f",  constantDecl (\new ConstantBody (just falseC))) ::
+  (\new Kername (mpFile nil) "Bool",               inductiveDecl boolMutual) ::
+  nil
+
+-- Returns the FIRST of the two, i.e. `true` = 1. Which one is returned only
+-- decides what a backend that keeps them apart prints; a backend that conflates
+-- them cannot compile the program at all.
+\func mainTerm : LBTerm => const (\new Kername (mpFile ("A_B" :: nil)) "f")
+
+\func mangleCollisionProgram : LBProgram => (decls, mainTerm)
+
+-- Printing the generated Java source / s-expression lives in ExamplePrint.ard:
+-- it needs a much larger stack than checking these definitions does.

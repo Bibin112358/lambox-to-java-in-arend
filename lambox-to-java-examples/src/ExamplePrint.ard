@@ -1,5 +1,8 @@
 \import Debug
 \import Example (testProgram)
+\import ExampleAxiomCollision (axiomCollisionAttrsOCaml, axiomCollisionProgram)
+\import ExampleConstBlowup (constBlowupProgram)
+\import ExampleMangleCollision (mangleCollisionProgram)
 \import ExampleMatMul (matMulAttrsC, matMulAttrsOCaml, matMulProgram)
 \import ExamplePeano (addProgram)
 \import Serialize
@@ -37,3 +40,17 @@
 \func matMulSexpr => putStrLn (LambdaBoxToSrting matMulProgram)
 \func matMulAttrsCText => putStrLn (AttributesToString matMulAttrsC)
 \func matMulAttrsOCamlText => putStrLn (AttributesToString matMulAttrsOCaml)
+
+-- The three programs that exist to state a property of the GENERATOR rather
+-- than to be a sample computation; the last two are open bugs. The `*Java`
+-- entry points are for reading the generated source by hand -- only the
+-- `*Sexpr` ones (and the attribute text) are what the corpus checks in.
+\func constBlowupJava => putStrLn (compileProgram constBlowupProgram)
+\func constBlowupSexpr => putStrLn (LambdaBoxToSrting constBlowupProgram)
+
+\func mangleCollisionJava => putStrLn (compileProgram mangleCollisionProgram)
+\func mangleCollisionSexpr => putStrLn (LambdaBoxToSrting mangleCollisionProgram)
+
+\func axiomCollisionJava => putStrLn (compileProgram axiomCollisionProgram)
+\func axiomCollisionSexpr => putStrLn (LambdaBoxToSrting axiomCollisionProgram)
+\func axiomCollisionAttrsOCamlText => putStrLn (AttributesToString axiomCollisionAttrsOCaml)

@@ -1,0 +1,102 @@
+\import LambdaBox
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+
+-- =============================================================================
+-- `axiom-mangle-collision`: the same non-injective mangling as
+-- ExampleMangleCollision.ard, but reaching a SILENT WRONG ANSWER instead of a
+-- build failure -- the class of bug notes/INTERNSHIP_TODOS.md singles out as
+-- the valuable one.
+--
+-- `compileDecl` (ToJava.ard:355) resolves a bodiless constant with
+-- `lookupAxiom name javaAxioms`, where `name` is the ALREADY-MANGLED kername
+-- and the table's keys (ToJava.ard:133-183) are mangled strings too. The
+-- comment at ToJava.ard:129-131 states the intent -- "Keeping the module path
+-- avoids treating an unrelated `Foo.add` as Nat.add" -- and the mangling does
+-- keep it; it just does not keep it INJECTIVELY. Decomposing the key
+-- "c__Nat__add" as "c_" ++ M ++ "__" ++ N gives M = "_Nat", N = "add", and M is
+-- reachable at least three ways:
+--
+--   mpDot (mpFile nil) "Nat"   -- the genuine Lean `Nat.add`
+--   mpFile ["_Nat"]            -- this program: a module literally named `_Nat`
+--   mpFile ["", "Nat"]         -- an empty first component
+--
+-- (The first two were checked to mangle identically by `ExamplePrint:manglingProbe`,
+-- since deleted.)
+--
+-- So this program's axiom `_Nat.add`, declared and remapped to int63
+-- MULTIPLICATION, is realized by our backend as `Rt.PRIM_ADD_LONG`: no
+-- exception, no build failure, just 6 + 7 = 13 where the program says 42.
+-- The intended behaviour for an axiom our table does not know is the throwing
+-- stub `compileDecl` builds in its `nothing` branch -- which is exactly what a
+-- correct, injective mangling would produce here.
+--
+-- The values 6, 7 and 42 are tiny on purpose: this has nothing to do with the
+-- int63-vs-long mismatch that `matmul` documents.
+--
+-- No inductive types and no `case`: the whole program is one axiom applied to
+-- two primitive-int literals, so nothing but the axiom lookup can differ.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- The colliding axiom: a bodiless constant, i.e. `ConstantBody nothing`.
+-- Its kername is written inline at each occurrence (see ExampleMatMul.ard's
+-- header for why no Kername-valued \func appears here).
+-- ---------------------------------------------------------------------------
+
+-- Dependents first, dependencies last (EWellformed.v's `wf_glob`; see
+-- ExamplePeano.ard:53-59), so `res` precedes the axiom it applies.
+\func decls : GlobalDeclarations =>
+  (\new Kername (mpFile nil) "res",
+   constantDecl (\new ConstantBody (just
+     (app (app (const (\new Kername (mpFile ("_Nat" :: nil)) "add")) (prim (primInt, 6)))
+          (prim (primInt, 7)))))) ::
+  (\new Kername (mpFile ("_Nat" :: nil)) "add", constantDecl (\new ConstantBody nothing)) ::
+  nil
+
+-- The entry point is the CONSTANT `res` (= 6 `mul` 7 = 42), not the application
+-- itself, which matters for the OCaml backend and cost one wrong answer to
+-- learn. Peregrine's Malfunction module exports `(export $<c> $main)` where
+-- `$<c>` is the constant `main` refers to, and Malfunction module fields are
+-- POSITIONAL: the bundle's hand-written `.mli` declares a single `val main`, so
+-- the driver reads export SLOT 0 -- i.e. `$<c>`, not `$main`. Every other
+-- program in the corpus gets away with this because its `main` is a bare
+-- `tConst` and slot 0 therefore holds the same value (`matmul` exports
+-- `($sumRes $main)`, both 2197000). With `main` an APPLICATION, slot 0 held the
+-- remapped `Prim_int63.mul` CLOSURE and the driver printed it as an int
+-- (47978189223556). Naming the application as `res` restores the invariant the
+-- runtime bundles rely on.
+\func mainTerm : LBTerm => const (\new Kername (mpFile nil) "res")
+
+\func axiomCollisionProgram : LBProgram => (decls, mainTerm)
+
+-- ---------------------------------------------------------------------------
+-- Peregrine attributes: realize the axiom as int63 MULTIPLICATION, on the
+-- `int63` runtime bundle's hand-written `Prim_int63` wrapper module
+-- (test/runtime/int63/prim_int63.ml, already in that bundle's OCAML_EXTRA).
+-- Only `reConstS` is consumed by the OCaml backend (OCamlBackend.v's
+-- `mk_remaps` ignores ext/arity/gc/inl), and it must be a single
+-- "Module.value" path naming a real OCaml global.
+--
+-- `\new RemappedConstant ...` is written INLINE, like ExampleMatMul.ard's:
+-- reading a String field through a helper \func stays stuck at typecheck time
+-- (the known String-field/isProperty bug) and prints `reConstS {...}` instead
+-- of the target name.
+--
+-- No `prog-c.attr`: the `c` backend is excluded from this program, because
+-- `peregrine c` refuses any program with unrealized axioms
+-- (test/runtime/peano/README.md) and a remapping onto the CertiRocq runtime
+-- would not change what the Java backend does, which is the point here.
+-- ---------------------------------------------------------------------------
+
+\func axiomCollisionAttrsOCaml : AttributesConfig =>
+  \new AttributesConfig nil
+      ((\new Kername (mpFile ("_Nat" :: nil)) "add",
+        \new RemappedConstant nothing 2 false false "Prim_int63.mul") ::
+       nil)
+      nil nil nil
+
+-- Printing the generated Java source / s-expression / attribute file lives in
+-- ExamplePrint.ard: it needs a much larger stack than checking these
+-- definitions does.

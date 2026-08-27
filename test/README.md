@@ -61,6 +61,7 @@ Everything else belongs to `--all` before a commit.
                    taking `gen|build|run` as its first argument
     corpora/       one script per corpus, each printing TSV rows:
                      handwritten.sh     our own programs, one directory each
+                     regression.sh      our own DEFECT WITNESSES, one dir each
                      lean-benchmarks.sh lean-to-lambdabox's benchmark suite (upstream)
                      peregrine.sh       peregrine's own .ast fixtures (upstream)
     runtime/       C/OCaml driver bundles: lean, peano, int63 (each a vars.sh + README)
@@ -97,6 +98,30 @@ If the program is written in Arend rather than coming from Lean/Rocq, add its
 `\func` to the `lambox-to-java-examples` project, not `lambox-to-java` itself
 (see `lambox-to-java-examples/README.md`), and run
 `tools/regen-arend-asts.sh <name>` once to serialize and commit the `.ast`.
+
+## The `regression` corpus: our own defect witnesses
+
+`corpora/regression/` has the identical layout and `meta` format, and differs
+only in intent. A `handwritten` program is a computation we want the backends to
+get right; a `regression` program is a **claim about the generator**, built so a
+specific defect is the only thing its result can be about — it is worthless as a
+computation. `mangle-collision` returns a boolean nobody cares about, and the
+point is that `javac` rejects the class.
+
+So a program here may be **expected to fail with `xfail=` empty**, deliberately
+keeping `run.py --all` non-zero until the bug is fixed. That is the opposite of
+the `xfail` convention the wide external corpora need (a documented limitation,
+absorbed), which is why the two live in separate corpora. Currently:
+
+| program | claim | status |
+|---|---|---|
+| `const-blowup` | every `const` reference re-executes its body, so a DAG of constants costs 2^N in Java and N in OCaml/C | `ok` — the gap is a timing, not a failure |
+| `mangle-collision` | `mangleKername` is not injective, so `javac` rejects a duplicate method | **`build-fail(java)` — open bug** |
+| `axiom-mangle-collision` | `javaAxioms` is keyed by *mangled* names, so an unrelated axiom is silently realized as a Lean primitive | **`wrong(java)` — open bug** |
+
+`--all` is therefore expected to exit non-zero, naming exactly those two. Read
+each program's `meta` for the mechanism, the file and line it lives on, and (for
+`const-blowup`) the measurements that chose its size parameter.
 
 ## Adding a corpus
 
@@ -162,6 +187,16 @@ of the whole of it. The value itself is always in
 * **The OCaml `lean` runtime bundle can only print a `Nat`** (its driver is
   `print_endline (Z.to_string Bench.main)`), so a program returning `Unit` or a
   list declares `java` only.
+* **The OCaml drivers read malfunction export slot 0, not `$main`.** Peregrine
+  emits `(export $<c> $main)`, where `$<c>` is the constant the program's `main`
+  refers to; Malfunction module fields are positional and every bundle's
+  hand-written `.mli` declares a single `val main`, so the driver picks up the
+  *first* export. A program whose `main` is a bare `tConst` is unaffected
+  (`matmul` exports `($sumRes $main)`, both 2197000) — which is every program
+  here, so nothing has ever caught this. Make a new program's entry point a
+  named constant: with an *application* as `main`, slot 0 held a remapped
+  closure and the driver printed it as an int. See
+  `corpora/regression/axiom-mangle-collision/meta`.
 * **No artifact caching**: every run regenerates from the `.ast`; java
   generation costs 20-60 s per program because an Arend CLI start loads
   arend-lib.
