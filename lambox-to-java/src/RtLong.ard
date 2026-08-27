@@ -6,13 +6,6 @@
 -- `rStuck` -- a named gap, not a wrong answer.
 --
 -- NAMED GAPS, all deliberate:
---   * `wrap64` IS NOT IMPLEMENTED. Arend's `Int` is unbounded; `Rt.java`'s
---     `PRIM_*_LONG` family computes on Java `long`, which wraps at 2^63
---     (JLS 4.2.2). The operations below are therefore faithful ONLY on programs
---     that never overflow, and the harness cannot tell you which those are.
---     This is the single most likely place this model silently diverges from the
---     JVM -- CertiCoq-Wasm found an unsoundness in exactly this spot -- so it is
---     the next thing to write, with adversarial tests crossing 2^63.
 --   * `ARRAY_*` and `EQ_REC` are absent: they stay abstract, so Lean programs
 --     using Array or eq-rec are outside the differential test.
 --   * The `PRIM_*_INT` (BigInteger) family is absent: it belongs to the other
@@ -31,6 +24,58 @@
 \import Data.Maybe
 \import Data.String
 \import Set
+
+-- ---------------------------------------------------------------------------
+-- 64-BIT WRAPAROUND
+--
+-- `Rt.java`'s `PRIM_*_LONG` family computes on Java `long` via `lng(x) + lng(y)`
+-- and friends (`Rt.java:205-227`). Arend's `Int` is UNBOUNDED, so without this
+-- the model would silently disagree with the JVM on every overflowing program.
+--
+-- JLS 4.2.2 ("Integer Operations"): the integer operators `+`, `-` and `*` on
+-- `long` "do not indicate overflow or underflow in any way"; JLS 4.2.1 fixes
+-- `long`'s range at -2^63 .. 2^63-1. The specified result is therefore the
+-- mathematical one taken modulo 2^64 and reinterpreted as a signed two's
+-- complement 64-bit value -- which is exactly `wrap64`.
+--
+-- This is the one arithmetic function written against the spec text rather than
+-- from memory, because it is the most likely place a hand model diverges
+-- silently: CertiCoq-Wasm (Meier et al., CPP 2025) found a real unsoundness in
+-- precisely this spot, in their primitive integer operations.
+--
+-- MEASURED, not assumed: `Nat.divMod` is a bodyless Prelude builtin, and Arend's
+-- evaluator also computes `Nat`'s `+`, `-` and `*` natively on big literals --
+-- a module doing 2^32 * 2^32 and 2^64 - 2^63 typechecks in 217 ms. So these may
+-- be used freely on 2^64-scale numbers. What must NOT be used is a hand-rolled
+-- comparison in the style of `JavaValue.natEq`, which peels `suc` one at a time
+-- and would need 2^63 steps; the sign test below goes through `Nat.-`, whose
+-- result is an `Int`, for that reason.
+-- ---------------------------------------------------------------------------
+
+\func pow2_63 : Nat => 9223372036854775808
+\func pow2_64 : Nat => 18446744073709551616
+
+-- `x` reduced modulo 2^64 into [0, 2^64) -- the unsigned bit pattern.
+--
+-- The `neg` clause is `2^64 - (n mod 2^64)`, guarded on the zero case because
+-- `2^64 - 0` is `2^64`, not `0`. `neg 0` is DEFINITIONALLY `pos 0` (Prelude's
+-- constructor condition on `Int`), and the two clauses agree there: both give 0.
+\func modU64 (x : Int) : Nat \elim x
+  | pos n => n Nat.mod pow2_64
+  | neg n => \case n Nat.mod pow2_64 \with {
+    | 0 => 0
+    | suc k => iabs (pow2_64 Nat.- suc k)
+  }
+
+-- The unsigned bit pattern read back as a signed `long`: the top half of the
+-- range denotes the negatives, so `r >= 2^63` becomes `r - 2^64`.
+\func wrap64 (x : Int) : Int =>
+  \let r => modU64 x
+  \in \case r Nat.- pow2_63 \with {
+    -- `pos _` is `r >= 2^63`, equality included.
+    | pos _ => r Nat.- pow2_64
+    | neg (suc _) => pos r
+  }
 
 -- `Rt.FALSE` / `Rt.TRUE` are `Data(0, {})` / `Data(1, {})` (`Rt.java:178`): a
 -- tag plus an EMPTY field array, which still has to be allocated. `builtinRun`
@@ -74,21 +119,38 @@
 \func builtinRunLong (st : Store) (f : JIdent) (vs : Array Value) : Res (\Sigma Store Value) =>
   \case vs \with {
     | vLong x :: vLong y :: nil =>
-      \case f == "PRIM_ADD_LONG" \with { | true => rOk (st, vLong (x + y)) | false =>
-      \case f == "PRIM_SUB_LONG" \with { | true => rOk (st, vLong (x - y)) | false =>
-      \case f == "PRIM_MUL_LONG" \with { | true => rOk (st, vLong (x * y)) | false =>
+      -- Each of the three wraps, because `Rt.java` computes them on `long`
+      -- (`:207`, `:219`, `:213`) and JLS 4.2.2 makes that modulo 2^64.
+      \case f == "PRIM_ADD_LONG" \with { | true => rOk (st, vLong (wrap64 (x + y))) | false =>
+      \case f == "PRIM_SUB_LONG" \with { | true => rOk (st, vLong (wrap64 (x - y))) | false =>
+      \case f == "PRIM_MUL_LONG" \with { | true => rOk (st, vLong (wrap64 (x * y))) | false =>
       -- Returns `Rt.TRUE`/`Rt.FALSE`, hence the allocation. This is the case the
       -- old store-less `builtinRun` could not express at all.
-      \case f == "PRIM_EQB_LONG" \with { | true => rOk (mkBool st (intEqB x y)) | false =>
+      --
+      -- `Rt.java:225` is `lng(x) == lng(y)`, a comparison of two `long`s with no
+      -- arithmetic, so nothing can overflow. The `wrap64`s are here for the
+      -- INVARIANT, not the result: they make the clause correct even if a caller
+      -- ever hands in an unwrapped `vLong`, and cost nothing when it does not.
+      \case f == "PRIM_EQB_LONG" \with {
+        | true => rOk (mkBool st (intEqB (wrap64 x) (wrap64 y))) | false =>
       -- Lean's `Nat.sub` truncates at zero (`ToJava.ard:142-145` explains why it
-      -- is NOT `PRIM_SUB`), so a negative difference becomes 0. `neg 0` is
-      -- DEFINITIONALLY `pos 0` (Prelude's constructor condition), so the true
-      -- negatives are exactly `neg (suc _)` -- the same three-clause split
-      -- `StringUtil.intToStr` uses.
+      -- is NOT `PRIM_SUB`), so a negative difference becomes 0.
+      --
+      -- THE WRAP COMES FIRST, and this is not cosmetic. `Rt.java:262-263` is
+      --     long d = lng(x) - lng(y);  return d < 0L ? 0L : d;
+      -- so the subtraction wraps on `long` BEFORE the sign is tested. The two
+      -- orders genuinely disagree: at x = -2^63, y = 1 the mathematical
+      -- difference is -2^63-1 (negative, so truncating gives 0), while the JVM's
+      -- wrapped `d` is 2^63-1, which is not negative and is returned unchanged.
+      -- Testing the sign of the unbounded `x - y` would report 0 there and be
+      -- wrong. `natSubWrapsFirst` below is that case, pinned.
+      --
+      -- After `wrap64` the negatives are exactly `neg (suc _)`: `neg 0` is
+      -- DEFINITIONALLY `pos 0` (Prelude's constructor condition on `Int`), which
+      -- the `pos k` clause already covers.
       \case f == "NAT_SUB_LONG" \with {
-        | true => \case x - y \with {
+        | true => \case wrap64 (x - y) \with {
           | pos k => rOk (st, vLong (pos k))
-          | neg 0 => rOk (st, vLong 0)
           | neg (suc _) => rOk (st, vLong 0)
         }
         | false => rStuck

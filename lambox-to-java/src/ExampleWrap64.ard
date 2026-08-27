@@ -1,0 +1,233 @@
+-- Adversarial tests for `RtLong.wrap64`: 64-bit wraparound, checked against the
+-- REAL runtime.
+--
+-- WHERE THE RIGHT-HAND SIDES COME FROM. Every expected value below was printed
+-- by a Java program that calls `Rt.PRIM_ADD_LONG`, `Rt.PRIM_MUL_LONG`,
+-- `Rt.PRIM_SUB_LONG`, `Rt.NAT_SUB_LONG` and `Rt.PRIM_EQB_LONG` directly, compiled
+-- against `lambox-to-java/runtime/Rt.java` by the same JDK the harness uses
+-- (`$JAVA` in `test/lib.sh`, openjdk-26.0.1) and run. They are therefore RECORDED
+-- JVM BEHAVIOUR, not a second hand-derivation of JLS 4.2.2 -- which is the whole
+-- point: a hand model checked against a hand reading of the spec would share its
+-- mistakes. The probe is reproduced at the end of this file so the numbers can be
+-- regenerated.
+--
+-- WHY THIS FILE EXISTS AT ALL. `wrap64` is where the plan predicted this model
+-- was most likely to diverge from the JVM silently, and it is the one place
+-- CertiCoq-Wasm (Meier et al., CPP 2025) found a genuine unsoundness in the
+-- analogous position. Arend's `Int` is unbounded, so the DEFAULT behaviour here
+-- is the wrong one: nothing overflows unless overflow is written down.
+--
+-- Note what these tests can and cannot do. They check `RtLong` against
+-- `Rt.java`. They say nothing about `ToJava.ard`, which neither side runs --
+-- the same limitation the plan's oracle table records for the `jeval` row.
+
+\import JavaAst
+\import JavaValue
+\import RtLong
+\import Arith.Int
+\import Algebra.Monoid
+\import Algebra.Group
+\import Data.Bool
+\import Data.Maybe
+-- The builtin names are `String` literals, so `String` must be in scope.
+\import Data.String
+
+-- The two boundaries of Java's `long` (JLS 4.2.1).
+\func maxLong : Int => 9223372036854775807
+\func minLong : Int => neg 9223372036854775808
+
+-- ---------------------------------------------------------------------------
+-- `wrap64` on its own: the four corners.
+-- ---------------------------------------------------------------------------
+
+\func wrapMax : wrap64 maxLong = maxLong => idp
+\func wrapMin : wrap64 minLong = minLong => idp
+\func wrapZero : wrap64 0 = 0 => idp
+
+-- One past each end: 2^63 is the smallest value that wraps, and -2^63-1 wraps
+-- to the top of the range.
+\func wrapJustOver : wrap64 9223372036854775808 = minLong => idp
+\func wrapJustUnder : wrap64 (neg 9223372036854775809) = maxLong => idp
+
+-- 2^64 and its multiples are congruent to 0 -- the property `wrap64` is FOR.
+\func wrapPow64 : wrap64 18446744073709551616 = 0 => idp
+\func wrapPow65 : wrap64 36893488147419103232 = 0 => idp
+
+-- `wrap64` is idempotent: applying it to an already-wrapped value is identity.
+-- (Stated at the two ends, not proved in general -- see the note in RtLong.)
+\func wrapIdemMin : wrap64 (wrap64 minLong) = minLong => idp
+\func wrapIdemMax : wrap64 (wrap64 maxLong) = maxLong => idp
+
+-- ---------------------------------------------------------------------------
+-- The primitives, through `builtinRunLong` -- i.e. what the semantics actually
+-- calls. The store is `nil` and stays `nil`: arithmetic allocates nothing.
+-- ---------------------------------------------------------------------------
+
+\func runL (f : JIdent) (x y : Int) : Res (\Sigma Store Value) =>
+  builtinRunLong nil f (vLong x :: vLong y :: nil)
+
+\func okL (i : Int) : Res (\Sigma Store Value) => rOk (nil, vLong i)
+
+-- --- ADD ---------------------------------------------------------------
+-- JVM: ADD 9223372036854775807 1 -> -9223372036854775808
+\func addMaxPlusOne : runL "PRIM_ADD_LONG" maxLong 1 = okL minLong => idp
+
+-- JVM: ADD -9223372036854775808 -9223372036854775808 -> 0
+\func addMinPlusMin : runL "PRIM_ADD_LONG" minLong minLong = okL 0 => idp
+
+-- JVM: ADD 9223372036854775807 9223372036854775807 -> -2
+\func addMaxPlusMax : runL "PRIM_ADD_LONG" maxLong maxLong = okL (neg 2) => idp
+
+-- --- SUB ---------------------------------------------------------------
+-- JVM: SUB -9223372036854775808 1 -> 9223372036854775807
+\func subMinMinusOne : runL "PRIM_SUB_LONG" minLong 1 = okL maxLong => idp
+
+-- JVM: SUB 9223372036854775807 -9223372036854775808 -> -1
+\func subMaxMinusMin : runL "PRIM_SUB_LONG" maxLong minLong = okL (neg 1) => idp
+
+-- --- MUL -- the case the plan names explicitly ------------------------
+-- JVM: MUL 4294967296 4294967296 -> 0        (2^32 * 2^32 = 2^64)
+\func mulPow32 : runL "PRIM_MUL_LONG" 4294967296 4294967296 = okL 0 => idp
+
+-- JVM: MUL 3037000500 3037000500 -> -9223372036709301616
+-- The classic just-over-2^63 square: the true product is 9223372037000250000.
+\func mulJustOver
+  : runL "PRIM_MUL_LONG" 3037000500 3037000500 = okL (neg 9223372036709301616) => idp
+
+-- JVM: MUL -9223372036854775808 -1 -> -9223372036854775808
+-- Negating the most negative `long` overflows to ITSELF. A model that computed
+-- the mathematical -(-2^63) = 2^63 and stopped there would be wrong here.
+\func mulMinByNegOne : runL "PRIM_MUL_LONG" minLong (neg 1) = okL minLong => idp
+
+-- JVM: MUL 9223372036854775807 9223372036854775807 -> 1
+\func mulMaxSquared : runL "PRIM_MUL_LONG" maxLong maxLong = okL 1 => idp
+
+-- JVM: MUL -9223372036854775808 2 -> 0
+\func mulMinByTwo : runL "PRIM_MUL_LONG" minLong 2 = okL 0 => idp
+
+-- --- NAT_SUB -- the ORDER-SENSITIVE one ------------------------------
+--
+-- THE ONE THAT DISTINGUISHES THE TWO READINGS. `Rt.java:262-263` wraps the
+-- subtraction on `long` and only then tests `d < 0`:
+--     long d = lng(x) - lng(y);  return Long.valueOf(d < 0L ? 0L : d);
+-- At x = -2^63, y = 1 the mathematical difference is -2^63-1, which is negative,
+-- so a truncate-the-unbounded-difference model returns 0. The JVM's `d` is the
+-- WRAPPED 2^63-1, which is not negative, and is returned unchanged.
+--
+-- JVM: NATSUB -9223372036854775808 1 -> 9223372036854775807
+\func natSubWrapsFirst : runL "NAT_SUB_LONG" minLong 1 = okL maxLong => idp
+
+-- JVM: NATSUB 3 5 -> 0                       (ordinary Lean `Nat.sub` truncation)
+\func natSubTruncates : runL "NAT_SUB_LONG" 3 5 = okL 0 => idp
+
+-- JVM: NATSUB 9223372036854775807 -9223372036854775808 -> 0
+-- Here wrapping goes the other way: the true difference 2^64-1 wraps to -1, which
+-- IS negative, so this one truncates. An unbounded model would return 2^64-1 --
+-- not even a `long`.
+\func natSubWrapsIntoNegative : runL "NAT_SUB_LONG" maxLong minLong = okL 0 => idp
+
+-- --- EQB ---------------------------------------------------------------
+-- A comparison, not arithmetic, so nothing overflows -- asserted to pin that
+-- claim rather than because it is at risk.
+--
+-- The tag is read back instead of comparing against a `Value` literal: `vData`
+-- carries a `Loc`, so a literal would hard-code an allocation index and break
+-- for reasons unrelated to correctness (the plan's readback argument).
+\func tagOf (r : Res (\Sigma Store Value)) : Maybe Nat => \case r \with {
+  | rOk q => \case q.2 \with { | vData t _ => just t | _ => nothing }
+  | rStuck => nothing
+  | rOutOfFuel => nothing
+}
+
+-- JVM: EQB -9223372036854775808 -9223372036854775808 -> tag 1 (Rt.TRUE)
+\func eqbMinMin : tagOf (runL "PRIM_EQB_LONG" minLong minLong) = just 1 => idp
+
+-- Rt.FALSE is tag 0 (`Rt.java:178`).
+\func eqbMinMax : tagOf (runL "PRIM_EQB_LONG" minLong maxLong) = just 0 => idp
+
+-- ---------------------------------------------------------------------------
+-- NEGATIVE CONTROLS.
+--
+-- Without these the file above is consistent with `wrap64` being the identity on
+-- everything the tests happen to touch. Each states that the value a PLAUSIBLE
+-- WRONG MODEL would produce is not the value we produce, in the `= false` style
+-- of `CorrectnessInstances.jPrimRejects`.
+-- ---------------------------------------------------------------------------
+
+\func runLEq (f : JIdent) (x y expect : Int) : Bool =>
+  \case builtinRunLong nil f (vLong x :: vLong y :: nil) \with {
+    | rOk q => \case q.2 \with { | vLong i => intEqB i expect | _ => false }
+    | rStuck => false
+    | rOutOfFuel => false
+  }
+
+-- The control for `natSubWrapsFirst`: a model that truncated the UNBOUNDED
+-- difference would answer 0 here. If this ever becomes `true`, the wrap has been
+-- moved after the sign test.
+\func natSubNotTruncatedFirst : runLEq "NAT_SUB_LONG" minLong 1 0 = false => idp
+
+-- The control for the whole file: an unbounded (no-wrap) model would answer with
+-- the mathematical products and sums. None of these may hold.
+\func addNotUnbounded
+  : runLEq "PRIM_ADD_LONG" maxLong 1 9223372036854775808 = false => idp
+
+\func mulNotUnbounded
+  : runLEq "PRIM_MUL_LONG" 4294967296 4294967296 18446744073709551616 = false => idp
+
+\func mulJustOverNotUnbounded
+  : runLEq "PRIM_MUL_LONG" 3037000500 3037000500 9223372037000250000 = false => idp
+
+-- And `-(-2^63)` is not 2^63.
+\func mulMinNotNegated
+  : runLEq "PRIM_MUL_LONG" minLong (neg 1) 9223372036854775808 = false => idp
+
+-- ---------------------------------------------------------------------------
+-- THE PROBE THAT PRODUCED THE NUMBERS ABOVE.
+--
+-- Compile next to `lambox-to-java/runtime/Rt.java` and run:
+--
+--   javac -d . Rt.java WrapProbe.java && java -cp . WrapProbe
+--
+--   public class WrapProbe {
+--     static long ap2(Rt.Fn f, long x, long y) {
+--       Object g = f.apply(Long.valueOf(x));
+--       return ((Long) ((Rt.Fn) g).apply(Long.valueOf(y))).longValue();
+--     }
+--     static void show(String name, Rt.Fn f, long x, long y) {
+--       System.out.println(name + "\t" + x + "\t" + y + "\t" + ap2(f, x, y));
+--     }
+--     public static void main(String[] args) {
+--       final long MAX = Long.MAX_VALUE, MIN = Long.MIN_VALUE;
+--       show("ADD", Rt.PRIM_ADD_LONG, MAX, 1L);
+--       show("ADD", Rt.PRIM_ADD_LONG, MIN, MIN);
+--       show("ADD", Rt.PRIM_ADD_LONG, MAX, MAX);
+--       show("SUB", Rt.PRIM_SUB_LONG, MIN, 1L);
+--       show("SUB", Rt.PRIM_SUB_LONG, MAX, MIN);
+--       show("MUL", Rt.PRIM_MUL_LONG, 4294967296L, 4294967296L);
+--       show("MUL", Rt.PRIM_MUL_LONG, 3037000500L, 3037000500L);
+--       show("MUL", Rt.PRIM_MUL_LONG, MIN, -1L);
+--       show("MUL", Rt.PRIM_MUL_LONG, MAX, MAX);
+--       show("MUL", Rt.PRIM_MUL_LONG, MIN, 2L);
+--       show("NATSUB", Rt.NAT_SUB_LONG, MIN, 1L);
+--       show("NATSUB", Rt.NAT_SUB_LONG, 3L, 5L);
+--       show("NATSUB", Rt.NAT_SUB_LONG, MAX, MIN);
+--     }
+--   }
+--
+-- Its output, verbatim (op, x, y, result):
+--
+--   ADD     9223372036854775807     1                       -9223372036854775808
+--   ADD     -9223372036854775808    -9223372036854775808    0
+--   ADD     9223372036854775807     9223372036854775807     -2
+--   SUB     -9223372036854775808    1                       9223372036854775807
+--   SUB     9223372036854775807     -9223372036854775808    -1
+--   MUL     4294967296              4294967296              0
+--   MUL     3037000500              3037000500              -9223372036709301616
+--   MUL     -9223372036854775808    -1                      -9223372036854775808
+--   MUL     9223372036854775807     9223372036854775807     1
+--   MUL     -9223372036854775808    2                       0
+--   NATSUB  -9223372036854775808    1                       9223372036854775807
+--   NATSUB  3                       5                       0
+--   NATSUB  9223372036854775807     -9223372036854775808    0
+--   EQB     -9223372036854775808    -9223372036854775808    1
+-- ---------------------------------------------------------------------------
