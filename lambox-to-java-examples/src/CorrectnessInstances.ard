@@ -1,0 +1,254 @@
+-- More instances of `Correctness.Correct`, on small programs chosen to cover the
+-- λ□ constructors that `ExamplePeano.addProgram` does NOT reach.
+--
+-- This is finding (D)2 of the spike: each instance is an `idp` and needs no new
+-- theory, and together they are what would catch a real `ToJava.ard` bug today --
+-- because unlike the harness's java/c/ocaml rows, which all share
+-- `peregrine ast box`, the λ□ side here is an independent hand-written
+-- derivation against `LambdaBoxEval`.
+--
+-- HOW EACH INSTANCE IS BUILT. Three things must line up:
+--   1. a λ□ derivation `Eval decls t v`, written by hand, so `v` is pinned down
+--      by the source semantics and not by what the backend happens to produce;
+--   2. the compiled program run by `JavaEval` -- the real `compileClass`;
+--   3. `valRelB` between the two results, plus a NEGATIVE check that the
+--      relation rejects a wrong value (otherwise (3) proves nothing).
+--
+-- COVERAGE, and what is still uncovered, is tabulated at the bottom.
+
+\import Debug
+\import LambdaBox
+\import LambdaBoxEval \hiding (natEq, nthArr)
+\import JavaAst
+\import JavaValue
+\import JavaEval
+\import RtLong
+\import ToJava
+\import Correctness
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Set
+
+-- ---------------------------------------------------------------------------
+-- Shared machinery: run a program, project out its store and value.
+--
+-- Written once, parameterised by the program and the clock, so each instance
+-- below is three short lines.
+-- ---------------------------------------------------------------------------
+
+\func runP (p : LBProgram) (n : Nat) : Res (\Sigma Store ExprOut) => runWithStore (compiled p) n
+
+\func stOf (r : Res (\Sigma Store ExprOut)) : Store => \case r \with {
+  | rOk q => q.1
+  | _ => nil
+}
+
+\func valOf (r : Res (\Sigma Store ExprOut)) : Value => \case r \with {
+  | rOk q => \case q.2 \with { | eVal v => v | eExc v => v }
+  | _ => vUninit
+}
+
+-- "The compiled program returns a VALUE related to `v`" -- the conclusion of
+-- `Correct`, as one computable proposition.
+\func relatedTo (p : LBProgram) (n : Nat) (v : LBTerm) : Bool =>
+  \case runP p n \with {
+    | rOk q => \case q.2 \with {
+      | eVal jv => valRelB 20 q.1 jv v
+      -- A throw is a FAILURE of the theorem, not a pass: λ□ produced a value.
+      | eExc _ => false
+    }
+    | _ => false
+  }
+
+-- ---------------------------------------------------------------------------
+-- 1. `box` -- the erased proof. Compiles to `Rt.BOX`.
+-- ---------------------------------------------------------------------------
+
+\func boxProgram : LBProgram => (nil, box)
+
+\func lbBox : EvalProgram boxProgram box => evalAtomBox idp
+
+\func jBox : relatedTo boxProgram 20 box = true => idp
+
+-- ---------------------------------------------------------------------------
+-- 2. `letIn` -- exercises `jLocal` with an initialiser, which the Peano program
+-- reaches only incidentally.
+--
+--   \let x := box \in x            ==>   final Object l = Rt.BOX; ... l
+-- ---------------------------------------------------------------------------
+
+\func letProgram : LBProgram => (nil, letIn anon box (bvar 0))
+
+\func lbLet : EvalProgram letProgram box => evalZeta (evalAtomBox idp) (evalAtomBox idp)
+
+\func jLet : relatedTo letProgram 20 box = true => idp
+
+-- ---------------------------------------------------------------------------
+-- 3. beta -- a closure applied to an argument. Exercises `jAnonFn`, the
+-- `.apply` call and `jVar` on a parameter.
+--
+--   (\lam x => x) box
+-- ---------------------------------------------------------------------------
+
+\func idTerm : LBTerm => lambda anon (bvar 0)
+
+\func betaProgram : LBProgram => (nil, app idTerm box)
+
+\func lbBeta : EvalProgram betaProgram box =>
+  evalBeta (evalAtomLambda idp) (evalAtomBox idp) (evalAtomBox idp)
+
+\func jBeta : relatedTo betaProgram 20 box = true => idp
+
+-- ---------------------------------------------------------------------------
+-- 4. `prim` -- a primitive integer. This is the first instance to exercise
+-- `targetLong`'s `Long.valueOf(7L)`, `JavaEval`'s `jCallStatic "Long.valueOf"`
+-- path, AND `valRelB`'s `vLong`/`prim` case, none of which the Peano program
+-- touches (Peano numerals are constructors, not primitives).
+-- ---------------------------------------------------------------------------
+
+\func primProgram : LBProgram => (nil, prim (primInt, 7))
+
+\func lbPrim : EvalProgram primProgram (prim (primInt, 7)) => evalPrim idp
+
+\func jPrim : relatedTo primProgram 20 (prim (primInt, 7)) = true => idp
+
+-- The relation must distinguish integers, or `jPrim` is vacuous.
+\func jPrimRejects : relatedTo primProgram 20 (prim (primInt, 8)) = false => idp
+
+-- ---------------------------------------------------------------------------
+-- 5. `proj` -- THE VALUABLE ONE.
+--
+-- Primitive projection out of a single-constructor block. `ToJava.ard` compiles
+-- it to `((Rt.Data)(s)).fields[npars + idx]`, folding the addition on the Arend
+-- side into one `jIntLit`. "Drop the `npars` offset in `evalProj`" is one of the
+-- ten mutation candidates in INTERNSHIP_TODOS.md, so an instance with
+-- `npars > 0` is exactly the guard that would catch it.
+--
+-- The inductive: one parameter, one constructor with two fields. So a
+-- `construct` node carries 1 + 2 = 3 arguments, and projecting field 1 must read
+-- index `1 + 1 = 2` -- NOT index 1. The three arguments are made
+-- DISTINGUISHABLE (`box`, then two different primitives) so that an off-by-one
+-- in the offset changes the answer instead of hiding.
+-- ---------------------------------------------------------------------------
+
+\func pairKername : Kername => \new Kername (mpFile nil) "Pair"
+
+\func pairInd : InductiveId => \new InductiveId pairKername 0
+
+\func pairCtors : Array ConstructorBody => (\new ConstructorBody "mk" 2) :: nil
+
+\func pairMutual : MutualInductiveBody =>
+  \new MutualInductiveBody finite 1
+    ((\new OneInductiveBody "Pair" false IntoAny pairCtors ((\new ProjectionBody "fst") :: (\new ProjectionBody "snd") :: nil)) :: nil)
+
+\func pairDecls : GlobalDeclarations => (pairKername, inductiveDecl pairMutual) :: nil
+
+-- `mk <param> 20 21`, the parameter erased to `box`.
+\func pairTerm : LBTerm =>
+  construct pairInd 0 (box :: prim (primInt, 20) :: prim (primInt, 21) :: nil)
+
+-- Project field 1 (the second field), i.e. store index `npars + 1 = 2`, value 21.
+\func projInfo1 : ProjectionInfo => \new ProjectionInfo pairInd 1 1
+
+\func projProgram : LBProgram => (pairDecls, proj projInfo1 pairTerm)
+
+-- The λ□ derivation. `evalProj`'s side conditions pin down the offset
+-- arithmetic: `constructorInfo` must report `(false, 1, 2)`, the argument array
+-- must have length `1 + 2`, and `nthArr (1 + 1)` must select the right field.
+\func lbPair : Eval pairDecls pairTerm pairTerm =>
+  evalConstruct idp idp
+    (\lam i => \case \elim i \with {
+      | 0 => evalAtomBox idp
+      | 1 => evalPrim idp
+      | 2 => evalPrim idp
+    })
+    idp
+
+\func lbProj : EvalProgram projProgram (prim (primInt, 21)) =>
+  evalProj lbPair idp idp idp (evalPrim idp)
+
+-- And the Java side agrees.
+\func jProj : relatedTo projProgram 40 (prim (primInt, 21)) = true => idp
+
+-- The off-by-one guard: field 0 of the same value is 20, not 21. If either side
+-- dropped the `npars` offset, `jProj` would land on 20 and this pair of checks
+-- would disagree with the λ□ derivation.
+\func jProjNotFieldZero : relatedTo projProgram 40 (prim (primInt, 20)) = false => idp
+
+-- ---------------------------------------------------------------------------
+-- 6. A `fix` block with TWO definitions -- the knot array with k > 1.
+--
+-- This is the instance the store exists for. `ToJava.ard` compiles a `fix` to
+--   final Rt.Fn[] x = new Rt.Fn[2];  x[0] = ...;  x[1] = ...;  x[idx]
+-- so with k = 2 the semantics must allocate a 2-cell array, mutate both slots
+-- after the closures that read them were created, and select the right one.
+--
+-- The two definitions are deliberately DIFFERENT so that selecting the wrong
+-- slot changes the answer: definition 0 discards its argument and returns `box`,
+-- definition 1 is the identity. Taking index 1 and applying it to `5` must give
+-- `5`; a knot that picked slot 0 would give `box`. "Wrong `fix` unfolding point"
+-- is one of the ten mutation candidates, and this is the guard for it.
+-- ---------------------------------------------------------------------------
+
+\func constBoxTerm : LBTerm => lambda anon box
+
+\func twoDefs : Array (FixDef LBTerm) =>
+  (\new FixDef LBTerm anon constBoxTerm 0) ::
+  (\new FixDef LBTerm anon idTerm 0) :: nil
+
+-- `fix { f := \lam _ => box ; g := \lam x => x } 1` applied to `5`.
+\func fix2Program : LBProgram => (nil, app (fix twoDefs 1) (prim (primInt, 5)))
+
+\func lbFix2 : EvalProgram fix2Program (prim (primInt, 5)) =>
+  evalFix (evalAtomFix idp) idp (evalPrim idp)
+          (evalBeta (evalAtomLambda idp) (evalPrim idp) (evalPrim idp))
+
+\func jFix2 : relatedTo fix2Program 40 (prim (primInt, 5)) = true => idp
+
+-- The slot-selection guard: had either side read slot 0, the result would be
+-- `box`, so this must NOT hold.
+\func jFix2NotSlotZero : relatedTo fix2Program 40 box = false => idp
+
+-- ---------------------------------------------------------------------------
+-- 7. A diagnostic for the whole set: what each program actually computed.
+-- Typechecking this prints the six results, which is how a surprising value gets
+-- noticed rather than silently satisfying a weaker check.
+-- ---------------------------------------------------------------------------
+
+\func probeAll => putStrLn (
+  "box  : " ++ renderRes (runP boxProgram 20) ++ "\n" ++
+  "let  : " ++ renderRes (runP letProgram 20) ++ "\n" ++
+  "beta : " ++ renderRes (runP betaProgram 20) ++ "\n" ++
+  "prim : " ++ renderRes (runP primProgram 20) ++ "\n" ++
+  "proj : " ++ renderRes (runP projProgram 40) ++ "\n" ++
+  "fix2 : " ++ renderRes (runP fix2Program 40))
+
+-- ---------------------------------------------------------------------------
+-- COVERAGE. λ□ constructor -> is there an instance whose derivation reaches it?
+--
+--   box        yes (1, and as the erased parameter in 5)
+--   bvar       yes (2 via letIn, 3 via the lambda parameter)
+--   lambda     yes (3)
+--   app        yes (3; and Peano)
+--   letIn      yes (2)
+--   const      Peano only (evalDelta)
+--   construct  yes (5; and Peano)
+--   case       Peano only (evalIota)
+--   proj       yes (5)  <- new, and the npars offset is guarded
+--   fix        yes (6, k = 2, with a slot-selection guard; Peano covers k = 1)
+--   prim       yes (4)
+--   fvar       NO -- deliberately: it has no `Eval` rule (it is stuck), so it
+--              cannot appear in an instance of `Correct` at all. `ToJava.ard`
+--              compiles it to a throwing `Rt.freeVar` call, which `JavaEval`
+--              models; that pairing is untestable this way and would need a
+--              separate "ill-formed input throws" statement.
+--
+-- STILL UNCOVERED, in value order:
+--   * `case` with more than one non-default arm reached, and a `case` whose
+--     scrutinee tag matches NO arm (the `default: throw` path) -- the latter is
+--     covered in `ExampleJEval.jevalNoBranch` at the Java level, but not as a
+--     λ□/Java agreement.
+--   * `targetBigInteger`: every instance here is at `targetLong`.
+--   * the `Rt` axiom table: unreachable by construction (λ□ has no rule for an
+--     axiom), which is finding (D)'s vacuousness result restated.
