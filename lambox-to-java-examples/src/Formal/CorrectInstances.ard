@@ -269,6 +269,48 @@
 
 \func int63Value : LBTerm => prim (primInt, 9223372036854775807)
 
+-- ---------------------------------------------------------------------------
+-- FIRST, THE ROOT CAUSE, proved rather than attributed: the hypothesis of
+-- `CorrectGeneric` does not hold at the pair this project ships.
+--
+-- Worth doing separately, because "the program-level refutation is caused by
+-- the oracles disagreeing" would otherwise be an inference through
+-- `CorrectGeneric`, which nobody has proved -- the program-level failure could
+-- as well have been limitation (L) or a bug in the translation. Refuting
+-- `OracleAgree` directly settles which it is.
+-- ---------------------------------------------------------------------------
+
+-- AND `OracleAgree` IS NOT VACUOUS, which has to be checked before refuting it
+-- means anything: if `axiomRtName` were `nothing` everywhere, both halves would
+-- be trivially satisfiable and `CorrectGeneric`'s hypothesis would carry no
+-- content at all. It is not -- the correspondence really does go
+-- `prim_sub_int` -> `c___prim_sub_int` -> `Rt.PRIM_SUB_LONG`.
+\func subHasRuntimeName : axiomRtName subAxiomKn = just "PRIM_SUB_LONG" => idp
+
+-- The ARITY half HOLDS. So the two runtimes agree on when an axiom fires and
+-- disagree only on what it computes, which is the sharper statement of the
+-- defect -- saturation is not the problem.
+\func subArityAgrees
+  : axiomArity {lbAxioms} subAxiomKn = builtinArity {rtLong} "PRIM_SUB_LONG" => idp
+
+-- The VALUE half fails. On arguments that are related pointwise (1 and 2, each
+-- a `prim`/`vLong` pair `agrees` accepts), λ□'s oracle computes 2^63-1 and the
+-- runtime computes -1, and no fuel relates those.
+\func oracleDisagrees (oa : OracleAgree lbAxioms rtLong) : Empty =>
+  \case oa.2 subAxiomKn "PRIM_SUB_LONG"
+             (prim (primInt, 1) :: prim (primInt, 2) :: nil)
+             (vLong 1 :: vLong 2 :: nil)
+             int63Value
+             idp
+             (\lam i => \case \elim i \with { | 0 => (1, idp) | 1 => (1, idp) })
+             idp
+  \with {
+    | (jv, run, (k, rel)) =>
+      \let related : agrees k int63Value (vLong (neg 1)) = true
+        => transport (\lam w => agrees k int63Value w = true) (inv (rOk-inj run)) rel
+      \in true/=false (inv related *> int63NotRelated k)
+  }
+
 \func lbInt63 : EvalProgram lbAxioms int63Program int63Value
   => evalT-sound lbAxioms 200 idp
 
