@@ -29,22 +29,25 @@ if [ ! -f "$AREND_JAR" ]; then
 fi
 
 # The compiler project: the semantics of the Java fragment, λ□'s semantics and
-# its runner, and the generated-names lemma.
+# its runner, the correctness statement, and the generated-names lemma.
 compiler_modules=(
   Formal.JavaEval
   Formal.LambdaBoxEval
   Formal.LambdaBoxRun
   Formal.LambdaBoxSound
   Formal.LbAxioms
+  Formal.Correct
   Formal.RtLong
   Formal.NodePathUnique
 )
 
-# The examples project: the semantics RUN on committed λ□ programs, and the two
-# semantics agreeing on them.
+# The examples project: the semantics RUN on committed λ□ programs, the two
+# semantics agreeing on them, and the instances and refutation of the
+# correctness statement.
 example_modules=(
   Formal.JavaEvalRuns
   Formal.Agreement
+  Formal.CorrectInstances
 )
 
 fail=0

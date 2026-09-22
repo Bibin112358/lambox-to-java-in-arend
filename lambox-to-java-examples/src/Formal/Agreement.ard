@@ -5,6 +5,7 @@
 \import ExamplePeano
 \import Formal.JavaEval
 \import Formal.JavaValue
+\import Formal.Correct
 \import Formal.LambdaBoxEval
 \import Formal.LambdaBoxRun
 \import Formal.LambdaBoxSound
@@ -63,42 +64,12 @@
 --     `agrees` below.
 -- =============================================================================
 
--- Do a λ□ value and a Java value denote the same thing?
---
--- FIRST-ORDER VALUES ONLY: a λ□ `lambda`/`fix` corresponds to a Java closure,
--- and comparing those would mean comparing an open term with a captured
--- environment. `false` for them is not a gap in the checks below -- every value
--- compared there is data -- and it is the same restriction the harness works
--- under, since what `run.py` compares is the PRINTED value.
---
--- A PARTIALLY-APPLIED AXIOM is in that class too: λ□ leaves it as the stuck
--- application `app (const kn) a1` and Java as `vBuiltin nm (a1 :: nil)`, which
--- do correspond -- one collected argument each -- but relating the two names
--- would mean re-deriving `ToJava.ard`'s mangling and `javaAxioms`' table here.
--- So `false`, like a closure, and for the same reason: it is a function.
---
--- Fuel, because the recursion goes through an array of fields; the branch this
--- was modelled on (`valRelB`) did the same.
-\func agrees (n : Nat) (t : LBTerm) (v : Value) : Bool \elim n
-  | 0 => false
-  | suc n => \case t, v \with {
-    | box, vBox => true
-    -- λ□'s `prim` int is unbounded; the Java side is a `long`. They agree only
-    -- while the value is in range, which `wrap64` makes explicit rather than
-    -- assumed -- this is the int63 mismatch, at the one place it is observable.
-    | prim (primInt, i), vLong j => intEqB (wrap64 i) j
-    -- A constructor: same tag, same fields, pointwise. The fields include the
-    -- inductive parameters on both sides (constructor-block form on the λ□
-    -- side, every `construct` argument passed to `new Rt.Data` on the Java
-    -- side), so there is no offset to account for here.
-    | construct _ c args, vData tg fs => (c == tg) and agreesAll n args fs
-    | _, _ => false
-  }
-
-\func agreesAll (n : Nat) (ts : Array LBTerm) (vs : Array Value) : Bool \elim ts, vs
-  | nil, nil => true
-  | t :: ts, v :: vs => agrees n t v and agreesAll n ts vs
-  | _, _ => false
+-- The value relation is `Formal/Correct.ard`'s `agrees`, imported rather than
+-- defined here: it is part of the CORRECTNESS STATEMENT, and having a second
+-- copy next to the checks that exercise it would let the two drift. Its
+-- restrictions -- first-order values only, so a closure or a partially-applied
+-- axiom is `false`; and the `Nat` truncation it is too forgiving about -- are
+-- documented there, with limitation (L).
 
 -- Run a program through both semantics and compare. `false` covers every way
 -- this can fail to be an agreement, including either side not finishing.
@@ -106,7 +77,7 @@
 -- The two oracles are fixed here, once: `lbAxioms` against `rtLong`.
 \func bothAgree (p : LBProgram) (fuel : Nat) : Bool =>
   \case runProgram lbAxioms p fuel,
-        runClass rtLong (compileClass "Prog" p) bodyMethodName fuel \with {
+        runClass rtLong (compileClass progClassName p) bodyMethodName fuel \with {
     | rOk t, rOk (rvValue v) => agrees fuel t v
     | _, _ => false
   }
@@ -187,7 +158,7 @@
   : runProgram lbAxioms addAxiomProgram 200 = rOk (prim (primInt, 5)) => idp
 
 \func axiomRunsInJava
-  : runClass rtLong (compileClass "Prog" addAxiomProgram) bodyMethodName 200
+  : runClass rtLong (compileClass progClassName addAxiomProgram) bodyMethodName 200
   = rOk (rvValue (vLong 5))
   => idp
 
@@ -252,7 +223,7 @@
   = rOk (app (const natAddKn) (prim (primInt, 20))) => idp
 
 \func partialRunsInJava
-  : runClass rtLong (compileClass "Prog" partialProgram) bodyMethodName 200
+  : runClass rtLong (compileClass progClassName partialProgram) bodyMethodName 200
   = rOk (rvValue (vBuiltin "PRIM_ADD_LONG" (vLong 20 :: nil))) => idp
 
 \func partialIsNotCompared : bothAgree partialProgram 200 = false => idp
@@ -359,7 +330,7 @@
   => idp
 
 \func int63InJava
-  : runClass rtLong (compileClass "Prog" int63Program) bodyMethodName 200
+  : runClass rtLong (compileClass progClassName int63Program) bodyMethodName 200
   = rOk (rvValue (vLong (neg 1)))
   => idp
 

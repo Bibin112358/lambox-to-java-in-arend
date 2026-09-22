@@ -1,0 +1,287 @@
+\import Arith.Nat   -- the `DecSet Nat` instance behind `==`
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Formal.JavaEval
+\import Formal.JavaValue
+\import Formal.LambdaBoxEval
+\import Formal.LbAxioms
+\import Formal.Res
+\import Formal.RtLong
+\import JavaAst
+\import JavaAxioms
+\import LambdaBox
+\import NodePath
+\import Set
+\import StringUtil (intEqB)
+\import ToJava
+
+-- =============================================================================
+-- THE CORRECTNESS STATEMENT for the λ□ -> Java backend, and the list of what a
+-- proof still owes.
+--
+-- Nothing here is proved. That is the point: the deliverable is a STATEMENT
+-- precise enough that its obligations are nameable, plus -- in
+-- `Formal/CorrectInstances.ard` (examples project) -- instances discharged by
+-- computation, and one REFUTATION. Read this file for what correctness means
+-- here; read that one for what is known about it.
+--
+-- ---------------------------------------------------------------------------
+-- LINEAGE. This is the second attempt. The first is on branch
+-- `lambox-formal-semantics` (`Correctness.ard`, `CorrectnessInstances.ard`),
+-- which stated the theorem, listed THREE obligations, proved seven instances,
+-- and recorded where it stalled. Three things have changed since, and two of
+-- them make this cheaper:
+--
+--   * THE STORE IS GONE. The old `ValRel` was a relation over a `Store`,
+--     because an `Rt.Data`'s fields lived in the heap; and its obligation (2),
+--     `StoreExt`, was false as stated, because the `fix` knot WROTE into an
+--     already-allocated array (its finding (C): "the store is not monotone").
+--     `fix` is a local class now, `vData` holds values, and obligation (2) and
+--     finding (C) are both simply gone -- not worked around, deleted.
+--   * `compileExpr` THREADS A `Path`, not a `String`, and `renderName` is
+--     proved injective (`Formal/NodePathUnique.ard`). This does not remove the
+--     substitution obstacle (below), but the old file's remark that the two
+--     sides are "not even syntactically comparable" is now a statement about
+--     paths rather than about invented strings.
+--   * THE AXIOM ORACLE EXISTS, and it makes the theorem HARDER, not easier.
+--     The old file's happiest finding was that `RtSpec` "costs nothing here --
+--     λ□ has no rule for an axiom, so every case where Rt's arithmetic could
+--     matter is VACUOUS in the theorem". That vacuousness is gone: λ□ now
+--     evaluates axioms, so the theorem depends on the two runtimes agreeing.
+--     That is obligation (3) below, and it is the one that turns out to FAIL.
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- THE VALUE RELATION.
+--
+-- Lives here rather than with the agreement checks because it is part of the
+-- STATEMENT: "the generated Java computes what λ□ says" is only as strong as
+-- what "computes the same thing" means. `Formal/Agreement.ard` imports it, so
+-- there is one relation and not two.
+--
+-- Decidable and fuel-indexed (a `Bool`), so that instances can be discharged by
+-- computation; `ValRel` wraps it as the proposition the theorem states.
+--
+-- FIRST-ORDER VALUES ONLY, and this is a real boundary rather than a shortcut:
+-- a λ□ `lambda`/`fix` corresponds to a Java closure, and the two are equal only
+-- extensionally ("applied to related arguments they give related results"),
+-- which is not decidable and needs a step-indexed logical relation. The same
+-- boundary the verified-extraction literature reports: first-order data
+-- interoperates, higher-order does not. Those cases are `false`, and a
+-- partially-applied axiom is in the same class (see the header of
+-- `Formal/Agreement.ard`).
+--
+-- IT IS FIXED TO THE `Long` REPRESENTATION. `wrap64` is `rtLong`'s, so although
+-- `CorrectGeneric` below quantifies over the runtime's BEHAVIOUR it does not
+-- quantify over the representation of a primitive int; `JavaAxioms.intLit`
+-- picks that, once, for the whole backend. A `BigInteger` target would need its
+-- own relation.
+--
+-- Fuel, because the recursion goes through an array of fields.
+\func agrees (n : Nat) (t : LBTerm) (v : Value) : Bool \elim n
+  | 0 => false
+  | suc n => \case t, v \with {
+    | box, vBox => true
+    -- λ□'s `prim` int is unbounded; the Java side is a `long`. They agree only
+    -- while the value is in range, which `wrap64` makes explicit rather than
+    -- assumed -- this is the int63 mismatch, at the one place it is observable.
+    --
+    -- AND IT IS TOO FORGIVING FOR `Nat`. See LIMITATION (L) at the bottom: for
+    -- a value that came from Lean's arbitrary-precision `Nat`, `wrap64` here
+    -- accepts the backend's 64-bit truncation as an agreement. `LBTerm` does
+    -- not record which of the two a `prim` came from, so the relation has
+    -- nothing to split on and the weakness cannot be fixed locally.
+    | prim (primInt, i), vLong j => intEqB (wrap64 i) j
+    -- A constructor: same tag, same fields, pointwise. The fields include the
+    -- inductive parameters on both sides (constructor-block form on the λ□
+    -- side, every `construct` argument passed to `new Rt.Data` on the Java
+    -- side), so there is no offset to account for here.
+    | construct _ c args, vData tg fs => (c == tg) and agreesAll n args fs
+    | _, _ => false
+  }
+
+\func agreesAll (n : Nat) (ts : Array LBTerm) (vs : Array Value) : Bool \elim ts, vs
+  | nil, nil => true
+  | t :: ts, v :: vs => agrees n t v and agreesAll n ts vs
+  | _, _ => false
+
+-- The relation as a proposition: "some amount of fuel sees the correspondence".
+\func ValRel (t : LBTerm) (v : Value) : \Type => \Sigma (n : Nat) (agrees n t v = true)
+
+-- ---------------------------------------------------------------------------
+-- The name under which the backend realizes an axiom.
+--
+-- The two oracles are keyed differently on purpose -- `LBSpec` by `Kername`,
+-- `RtSpec` by the runtime's `JIdent` -- and this is the function that relates
+-- them, by going the way the compiler goes: mangle, then look the mangled name
+-- up in `javaAxioms`, then read off the runtime constant. `nothing` means the
+-- backend compiles that axiom to a throwing stub rather than to a runtime
+-- constant, and then there is nothing to agree about.
+-- ---------------------------------------------------------------------------
+
+\func axiomRtName (kn : Kername) : Maybe JIdent => \case axiomImpl (mangleKername kn) \with {
+  | just (jField _ nm) => just nm
+  | _ => nothing
+}
+
+-- ---------------------------------------------------------------------------
+-- OBLIGATION (3), and the primary hypothesis: THE TWO RUNTIMES AGREE.
+--
+-- CompCert's treatment of `external_call`, which both semantics already follow
+-- by taking their runtime as a parameter: the compiler is correct MODULO the
+-- runtime doing the same thing on both sides, and that "modulo" is written down
+-- instead of assumed.
+--
+-- Two halves, and the first is not optional. If the arities disagree, the two
+-- sides saturate at different points -- λ□ computing while Java is still
+-- collecting, or the reverse -- and the value half is never even reached.
+-- Writing the arity half down is the same contract `RtSpec.builtinArity` and
+-- `LBSpec.axiomArity` each state alone; this is the statement that they match.
+--
+-- `jargs` is indexed by `args.len`, which is how "same length, pointwise" is
+-- said here (the same device `evalConstruct` uses).
+-- ---------------------------------------------------------------------------
+
+\func OracleAgree (spec : LBSpec) (rt : RtSpec) : \Type =>
+  \Sigma
+    (\Pi (kn : Kername) (nm : JIdent)
+      -> axiomRtName kn = just nm
+      -> axiomArity {spec} kn = builtinArity {rt} nm)
+    (\Pi (kn : Kername) (nm : JIdent) (args : Array LBTerm) (jargs : Array Value args.len)
+         (v : LBTerm)
+      -> axiomRtName kn = just nm
+      -> (\Pi (i : Fin args.len) -> ValRel (args i) (jargs i))
+      -> axiomRun {spec} kn args = just v
+      -> \Sigma (jv : Value) (builtinRun {rt} nm jargs = rOk jv) (ValRel v jv))
+
+-- ---------------------------------------------------------------------------
+-- THE THEOREM.
+--
+-- Read `CorrectGeneric` as the real statement and `Correct` as its instance at
+-- the pair the project ships. That order matters, because the instance is
+-- FALSE at a program (`Formal/CorrectInstances.ard`) and what fails is exactly
+-- `OracleAgree lbAxioms rtLong`.
+--
+-- Three things about the shape are deliberate, and two are inherited from the
+-- first attempt:
+--   * the conclusion is `JEval`, i.e. `\Sigma (n : Nat) (runClass ... n = ...)`
+--     -- "terminates" is "some clock suffices", the functional big-step idiom
+--     (Owens-Myreen-Kumar-Tan).
+--   * AN EXCEPTION OUTCOME IS NOT ALLOWED. `JEval` demands `rvValue`, not
+--     `rvThrown`. This is the real content of the statement: it forbids the
+--     `Rt.noBranch`, `Rt.unbound`, `Rt.freeVar` and ClassCastException paths for
+--     any program λ□ can evaluate.
+--   * the class name is the compiler's own; nothing depends on it.
+-- ---------------------------------------------------------------------------
+
+\func progClassName : JIdent => "Prog"
+
+\func CorrectGeneric : \Type =>
+  \Pi (spec : LBSpec) (rt : RtSpec) -> OracleAgree spec rt ->
+    \Pi {p : LBProgram} {v : LBTerm} -> EvalProgram spec p v ->
+      \Sigma (jv : Value)
+             (JEval rt (compileClass progClassName p) bodyMethodName jv)
+             (ValRel v jv)
+
+-- The shipped pair. REFUTED -- see `Formal/CorrectInstances.ard`.
+\func Correct : \Type =>
+  \Pi {p : LBProgram} {v : LBTerm} -> EvalProgram lbAxioms p v ->
+    \Sigma (jv : Value)
+           (JEval rtLong (compileClass progClassName p) bodyMethodName jv)
+           (ValRel v jv)
+
+-- `Correct` AT ONE PROGRAM, with the clock named rather than existential.
+--
+-- This is the form the refutation attacks, and the shape is chosen carefully,
+-- because the two obvious variants both prove less than they look like they do:
+--
+--   * `Correct` itself quantifies the clock EXISTENTIALLY (via `JEval`), so
+--     contradicting it means contradicting every clock at once -- which needs
+--     "a bigger clock computes the same value", i.e. obligation (1), which is
+--     open. A counterexample run at one clock is not enough.
+--   * a clock-fixed version quantified over ALL PROGRAMS,
+--     `\Pi n -> \Pi {p} ... runClass ... n = ...`, is refutable for a reason
+--     that has nothing to do with correctness: some program needs more fuel
+--     than `n` (`ExamplePeano.addProgram` already needs 2000). Refuting THAT
+--     would be a statement about fuel, dressed up as a statement about the
+--     backend.
+--
+-- Fixing the program and the clock together avoids both. The program below is
+-- then chosen so that the clock demonstrably SUFFICES -- the run finishes and
+-- returns a value -- which leaves the value relation as the only thing that can
+-- fail, and so makes the refutation a statement about the translation.
+\func CorrectAtProgram (n : Nat) (p : LBProgram) (v : LBTerm) : \Type =>
+  EvalProgram lbAxioms p v ->
+    \Sigma (jv : Value)
+           (runClass rtLong (compileClass progClassName p) bodyMethodName n = rOk (rvValue jv))
+           (ValRel v jv)
+
+-- ---------------------------------------------------------------------------
+-- THE REMAINING OBLIGATIONS. Neither is proved; both are stated so that the
+-- obstacle is visible rather than discovered later.
+-- ---------------------------------------------------------------------------
+
+-- (1) FUEL MONOTONICITY. A successful run must survive a bigger clock.
+--
+-- Needed in every case of the induction, because `Eval` is `\elim t` (keyed on
+-- the term) while `evalExpr` is `\elim n` (keyed on the clock): a proof does
+-- induction on the derivation while EXISTENTIALLY producing a clock, and then
+-- has to combine the clocks of sub-derivations. It is also what would lift the
+-- refutation from `CorrectAt` to `Correct`.
+--
+-- Mechanical, large, no design risk: one case per constructor of `JExpr` and
+-- `JStmt`, proved simultaneously for the whole mutual cycle
+-- (`evalExpr`/`evalArgs`/`execStmt`/`execStmts`/`applyVal`/`invokeMethod`/
+-- `callStatic`/`newObject`). The first attempt estimated it at the size of
+-- `Formal/JavaEval.ard`, and nothing since has changed that.
+\func FuelMono : \Type =>
+  \Pi {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} {e : JExpr} {r : ExprOut}
+   -> evalExpr rt cls n env e = rOk r
+   -> evalExpr rt cls (suc n) env e = rOk r
+
+-- (2) THE SUBSTITUTION LEMMA -- the crux, and unchanged in substance since the
+-- first attempt.
+--
+-- λ□'s `Eval` is SUBSTITUTION-based: `evalBeta` evaluates `csubst av 0 b`. The
+-- generated Java is ENVIRONMENT-based: a closure captures `cenv`, and `bvar n`
+-- compiles to a lookup. So induction on `Eval` produces a goal about a
+-- substituted TERM while the Java side has an extended ENVIRONMENT, and nothing
+-- bridges them.
+--
+-- It cannot be stated as an equality of generated code. `compileExpr` threads a
+-- `Path` used to invent binder names, so `compileExpr cenv pth (csubst av 0 b)`
+-- and `compileExpr (a' :: cenv) pth' b` are different Java -- different
+-- variable names, different paths -- and only their BEHAVIOUR agrees. Hence the
+-- statement below quantifies over `evalExpr` on both rather than relating the
+-- two `JExpr`s.
+--
+-- The cost is the mutual dependency this creates: stated semantically, the
+-- lemma needs the logical relation, and the logical relation needs the lemma.
+-- That is why the first attempt put this at weeks rather than days, and why it
+-- is last.
+\func SubstLemma : \Type =>
+  \Pi {cenv : Array JExpr} {pth pth' : Path} {av b : LBTerm} {a' : JExpr}
+      {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} {r : ExprOut}
+   -> evalExpr rt cls n env (compileExpr cenv pth (csubst av 0 b)).2 = rOk r
+   -> evalExpr rt cls n env (compileExpr (a' :: cenv) pth' b).2 = rOk r
+
+-- ---------------------------------------------------------------------------
+-- LIMITATION (L), which is not an obligation but a weakness OF THE STATEMENT,
+-- and so belongs next to it.
+--
+-- `agrees` relates a λ□ `prim (primInt, i)` to a Java `vLong j` when
+-- `wrap64 i = j`. For a value that really is a `Uint63` literal that is the
+-- right reading -- one bit pattern, two interpretations. For a value that came
+-- from Lean's arbitrary-precision `Nat` it is too generous: `Nat.add` at
+-- 2^63-1 and 1 gives 2^63 in λ□ (unbounded, as Lean's `Nat` is) and -2^63 on
+-- the JVM, and `wrap64` identifies them. So a backend that silently truncates
+-- Lean's `Nat` to 64 bits SATISFIES this theorem.
+--
+-- It cannot be repaired inside the relation: `LBTerm`'s `prim (primInt, _)` does
+-- not record whether it came from a `Nat` or a `Uint63`, so there is nothing to
+-- split on. Repairing it means either a tagged primitive in the AST or a typed
+-- correspondence indexed by the source type -- both changes to `LambdaBox.ard`,
+-- not to this file. `Formal/CorrectInstances.ard` pins the instance so the
+-- weakness is on record as a checked fact rather than a caveat.
+-- ---------------------------------------------------------------------------
