@@ -121,8 +121,20 @@
   listS (atomS ("projection") :: toSExprInductiveId p.projIndType
                                         :: toSExprNat p.projParamCount :: toSExprNat p.projFieldIdx :: nil)
 
+-- THE WIRE NAME IS STILL `primInt`, and must be: it is peregrine's tag, not
+-- ours. `primInt63` is what WE call that kind (`LambdaBox.ard` renamed it so
+-- the width is in the name), and renaming our constructor must not rename the
+-- serialized form.
+--
+-- `primInt64` HAS NO WIRE NAME. It is our extension, peregrine's deserializer
+-- knows nothing of it, and export is allowed to be partial here -- λ□ is a
+-- stepping stone for this project rather than an interchange format. The atom
+-- below is deliberately one peregrine will reject loudly, in the same style as
+-- `tVar_UNREACHABLE` elsewhere in this file, rather than a silent lowering to
+-- `primInt` that would export a program meaning something else.
 \func toSExprPrimTag (t : PrimTag) : Sexpr \elim t
-  | primInt => atomS ("primInt")
+  | primInt63 => atomS ("primInt")
+  | primInt64 => atomS ("primInt64_NOT_REPRESENTABLE")
 
 -- Lean's Serialize.lean quotes the BitVec 63 payload as a decimal string, but
 -- that's specific to Lean's own serializer; Peregrine's native Ceres-based
@@ -131,7 +143,8 @@
 -- fails Peregrine's deserializer ("could not read integral type, got a
 -- non-Num atom"). So: bare `intToStr`, no `quoteAtom`.
 \func toSExprPrimVal (pv : PrimVal) : Sexpr \elim pv
-  | (primInt, i) => listS (toSExprPrimTag primInt :: atomS (intToStr i) :: nil)
+  | (primInt63, i) => listS (toSExprPrimTag primInt63 :: atomS (natToStr i) :: nil)
+  | (primInt64, i) => listS (toSExprPrimTag primInt64 :: atomS (natToStr i) :: nil)
 
 
 -- ---------------------------------------------------------------------------

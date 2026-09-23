@@ -14,6 +14,7 @@
 \import Formal.RtInt63
 \import Formal.RtLong (builtinRunLong, wrap64)
 \import JavaAst
+\import Int63 (wrap63)
 \import LambdaBox
 \import Paths
 \import Set
@@ -139,7 +140,7 @@
 -- A primitive integer. Nothing to normalize at 42, so this checks only that a
 -- literal survives `intLit` and comes back as the same number; the values where
 -- normalization matters are at the bottom of this module.
-\func litProgram : LBProgram => (nil, prim (primInt, 42))
+\func litProgram : LBProgram => (nil, prim (primInt63, 42))
 
 \func litAgrees : bothAgree litProgram 100 = true => idp
 
@@ -155,14 +156,14 @@
 
 \func addAxiomProgram : LBProgram =>
   ((axiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const axiomKn) (prim (primInt, 2))) (prim (primInt, 3)))
+   app (app (const axiomKn) (prim (primInt63, 2))) (prim (primInt63, 3)))
 
 \func axiomAgrees : bothAgree addAxiomProgram 200 = true => idp
 
 -- Each side separately, so a future change that breaks one is localized rather
 -- than showing up only as `bothAgree = false`.
 \func axiomRunsInLambdaBox
-  : runProgram lbAxioms addAxiomProgram 200 = rOk (prim (primInt, 5)) => idp
+  : runProgram lbAxioms addAxiomProgram 200 = rOk (prim (primInt63, 5)) => idp
 
 \func axiomRunsInJava
   : runClass rtInt63 (compileClass progClassName addAxiomProgram) bodyMethodName 200
@@ -172,7 +173,7 @@
 -- WITH SOUNDNESS AGAIN: the λ□ run above is a derivation, so this is `Eval`
 -- deriving a value for a program with an AXIOM in it -- which is the whole
 -- extension, exercised end to end through `evalAxiom` and `evalAxiomApp`.
-\func axiomEvaluates : EvalProgram lbAxioms addAxiomProgram (prim (primInt, 5))
+\func axiomEvaluates : EvalProgram lbAxioms addAxiomProgram (prim (primInt63, 5))
   => evalT-sound lbAxioms 200 idp
 
 -- AND THE SAME PROGRAM IS STUCK WITHOUT THE ORACLE, which is what makes the
@@ -213,7 +214,7 @@
 
 \func natAddProgram : LBProgram =>
   ((natAddKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const natAddKn) (prim (primInt, 20))) (prim (primInt, 22)))
+   app (app (const natAddKn) (prim (primInt63, 20))) (prim (primInt63, 22)))
 
 \func natAddAgrees : bothAgree natAddProgram 200 = true => idp
 
@@ -223,11 +224,11 @@
 -- both sides really did produce a value here.
 \func partialProgram : LBProgram =>
   ((natAddKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (const natAddKn) (prim (primInt, 20)))
+   app (const natAddKn) (prim (primInt63, 20)))
 
 \func partialRunsInLambdaBox
   : runProgram lbAxioms partialProgram 200
-  = rOk (app (const natAddKn) (prim (primInt, 20))) => idp
+  = rOk (app (const natAddKn) (prim (primInt63, 20))) => idp
 
 \func partialRunsInJava
   : runClass rtInt63 (compileClass progClassName partialProgram) bodyMethodName 200
@@ -277,19 +278,19 @@
 \func boolCaseProgram : LBProgram =>
   (boolDecls,
    case boolInd 0
-     (app (app (const natBeqKn) (prim (primInt, 3))) (prim (primInt, 3)))
-     (((nil : Array BinderName), prim (primInt, 100)) ::
-      ((nil : Array BinderName), prim (primInt, 200)) :: nil))
+     (app (app (const natBeqKn) (prim (primInt63, 3))) (prim (primInt63, 3)))
+     (((nil : Array BinderName), prim (primInt63, 100)) ::
+      ((nil : Array BinderName), prim (primInt63, 200)) :: nil))
 
 \func boolCaseAgrees : bothAgree boolCaseProgram 500 = true => idp
 
 \func boolCaseInLambdaBox
-  : runProgram lbAxioms boolCaseProgram 500 = rOk (prim (primInt, 200)) => idp
+  : runProgram lbAxioms boolCaseProgram 500 = rOk (prim (primInt63, 200)) => idp
 
 -- And the unscrutinized boolean itself, so that what `lbBool` builds is on
 -- record next to what `mkBool` builds (`vData 1 nil`).
 \func boolProgram : LBProgram =>
-  (boolDecls, app (app (const natBeqKn) (prim (primInt, 3))) (prim (primInt, 4)))
+  (boolDecls, app (app (const natBeqKn) (prim (primInt63, 3))) (prim (primInt63, 4)))
 
 \func boolFalseInLambdaBox
   : runProgram lbAxioms boolProgram 500 = rOk (construct boolInd 0 nil) => idp
@@ -304,10 +305,10 @@
 
 \func natSubProgram : LBProgram =>
   ((natSubKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const natSubKn) (prim (primInt, 3))) (prim (primInt, 5)))
+   app (app (const natSubKn) (prim (primInt63, 3))) (prim (primInt63, 5)))
 
 \func natSubTruncates
-  : runProgram lbAxioms natSubProgram 200 = rOk (prim (primInt, 0)) => idp
+  : runProgram lbAxioms natSubProgram 200 = rOk (prim (primInt63, 0)) => idp
 
 \func natSubAgrees : bothAgree natSubProgram 200 = true => idp
 
@@ -331,13 +332,13 @@
 
 \func int63Program : LBProgram =>
   ((subAxiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const subAxiomKn) (prim (primInt, 1))) (prim (primInt, 2)))
+   app (app (const subAxiomKn) (prim (primInt63, 1))) (prim (primInt63, 2)))
 
 \func int63Agrees : bothAgree int63Program 200 = true => idp
 
 -- The two values, which are now the SAME value.
 \func int63InLambdaBox
-  : runProgram lbAxioms int63Program 200 = rOk (prim (primInt, 9223372036854775807))
+  : runProgram lbAxioms int63Program 200 = rOk (prim (primInt63, 9223372036854775807))
   => idp
 
 \func int63InJava
@@ -369,10 +370,10 @@
 
 \func natDivProgram : LBProgram =>
   ((natDivKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const natDivKn) (prim (primInt, 42))) (prim (primInt, 5)))
+   app (app (const natDivKn) (prim (primInt63, 42))) (prim (primInt63, 5)))
 
 \func natDivInLambdaBox
-  : runProgram lbAxioms natDivProgram 200 = rOk (prim (primInt, 8)) => idp
+  : runProgram lbAxioms natDivProgram 200 = rOk (prim (primInt63, 8)) => idp
 
 \func natDivDisagrees : bothAgree natDivProgram 200 = false => idp
 
@@ -383,7 +384,7 @@
 
 \func arrayProgram : LBProgram =>
   ((arrayPushKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const arrayPushKn) box) (prim (primInt, 1)))
+   app (app (const arrayPushKn) box) (prim (primInt63, 1)))
 
 \func arrayStuckInLambdaBox : runProgram lbAxioms arrayProgram 200 = rStuck => idp
 
@@ -398,29 +399,30 @@
 
 \func agreesRejectsTag : agrees 20 zero' (vData 1 nil) = false => idp
 
--- THE `prim` CLAUSE AT 2^63, AND WHAT THE TWO RELATIONS DO WITH IT. This is
--- the sharpest statement of what the representation change bought.
+-- 2^63 IS NOT A λ□ VALUE, and can no longer be written as one. This is the
+-- sharpest statement of what putting the kind in the term bought.
 --
--- λ□'s value is 2^63; the JVM `long` holding it is -2^63. The two `Int`s really
--- are different:
+-- These checks used to be about how GENEROUS the value relation had to be. The
+-- λ□ side could hold 2^63 (the payload was an unbounded `Int`), the JVM `long`
+-- holding those bits reads -2^63, and `agrees` was parameterized by a
+-- normalization so that the `longRepr` pairing could call them equal -- "one
+-- bit pattern, two readings". The two `Int`s really are different:
 \func int63TwoReadingsDiffer
   : intEqB (pos 9223372036854775808) (neg 9223372036854775808) = false => idp
 
--- `agreesLong` ACCEPTS them, because `wrap64` reads one bit pattern two ways.
--- That is the relation the `longRepr` pairing needs, and it is exactly as
--- generous as that representation requires.
-\func agreesLongWrapsInt63
-  : agreesLong 20 (prim (primInt, 9223372036854775808)) (vLong (neg 9223372036854775808)) = true
-  => idp
+-- Now `PrimModel primInt63` is `Fin int63Mod` and `wrap63` is the only way in,
+-- so the out-of-range term does not exist to be compared. Writing the literal
+-- gives the value λ□ means by it, which is 0:
+\func int63LiteralNormalizes
+  : prim (primInt63, wrap63 (pos 9223372036854775808)) = prim (primInt63, 0) => idp
 
--- THE SHIPPED RELATION REJECTS THEM, and is right to: under `Uint63` the value
--- 2^63 IS 0, so a Java `long` holding -2^63 is not it. Generosity was never a
--- property of the correspondence, only of the representation that needed it --
--- and with `int63Repr` no value in range is ever read two ways.
-\func agreesRejectsTheTwoReadings
-  : agrees 20 (prim (primInt, 9223372036854775808)) (vLong (neg 9223372036854775808)) = false
-  => idp
+-- ... and THAT agrees with what the backend computes, exactly -- no
+-- normalization in the relation, because there is nothing left to normalize.
+\func int63NormalizedAgrees
+  : agrees 20 (prim (primInt63, wrap63 (pos 9223372036854775808))) (vLong 0) = true => idp
 
--- What λ□ actually means by 2^63, and what the backend now produces for it.
-\func int63NormalizesToZero
-  : agrees 20 (prim (primInt, 9223372036854775808)) (vLong 0) = true => idp
+-- The relation is still not constant-true at this value.
+\func int63NormalizedRejectsOld
+  : agrees 20 (prim (primInt63, wrap63 (pos 9223372036854775808)))
+              (vLong (neg 9223372036854775808)) = false
+  => idp

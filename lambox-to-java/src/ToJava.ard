@@ -177,7 +177,12 @@
   -- serializer likewise emits `tVar_UNREACHABLE`); see `rtFreeVar`.
   | fvar v => (nil, rtFreeVar v.varName path)
 
-  | prim (primInt, i) => (nil, intLit i)
+  -- The payload is bounded by construction, so no normalization happens here:
+  -- the literal emitted is the value the term holds. Which Java constant it
+  -- becomes is the TAG's business, not a compiler flag's -- that is the whole
+  -- point of the kind being in the term.
+  | prim (primInt63, i) => (nil, int63Lit i)
+  | prim (primInt64, i) => (nil, int64Lit i)
 
   | const k => (nil, jCallStatic (mangleKername k) nil)
 
@@ -349,4 +354,4 @@
 
 -- Print a generated program with `putStrLn` (Data.String -> console).
 -- \import Debug
--- \func main => putStrLn (compileProgram "Prog" (nil, prim (primInt, -44)))
+-- \func main => putStrLn (compileProgram "Prog" (nil, prim (primInt63, -44)))

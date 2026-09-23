@@ -6,7 +6,7 @@
 -- `wrap63` is SHARED with the backend (`Int63.ard`), not re-derived here: that
 -- the two sides normalize with the same function is the whole content of the
 -- int63 representation.
-\import Int63 (norm63, wrap63)
+\import Int63 (wrap63)
 \import LambdaBox
 \import Set
 \import StringUtil (intEqB)
@@ -129,13 +129,20 @@
   construct boolInd (\case b \with { | true => 1 | false => 0 }) nil
 
 -- A primitive int, as both semantics' arguments and results are spelled.
-\func lbInt (i : Int) : LBTerm => prim (primInt, i)
+--
+-- NORMALIZATION IS NO LONGER A DISCIPLINE. `PrimModel primInt63` is
+-- `Fin int63Mod`, so building a payload goes through `wrap63` by construction
+-- and there is no way to produce an out-of-range λ□ integer -- the `norm63`
+-- calls the operations below used to make by hand are now the type's job. That
+-- is the difference between "every clause remembers to wrap" and "an
+-- un-wrapped value cannot be written down".
+\func lbInt (i : Int) : LBTerm => prim (primInt63, wrap63 i)
 
 -- The two arguments every axiom here takes, decoded. `nothing` covers both "not
 -- two arguments" and "not primitive ints", which are the same kind of failure:
 -- the runtime was handed something it does not compute on.
 \func twoInts (args : Array LBTerm) : Maybe (\Sigma Int Int) => \case args \with {
-  | prim (primInt, x) :: prim (primInt, y) :: nil => just (x, y)
+  | prim (primInt63, x) :: prim (primInt63, y) :: nil => just (x, y)
   | _ => nothing
 }
 
@@ -204,8 +211,8 @@
 -- Prelude builtin with the same convention -- so there is no guard here. Their
 -- results cannot leave the range either.
 \func natRun (op : String) (x y : Nat) : Maybe LBTerm =>
-  \case op == "add" \with { | true => just (lbInt (norm63 (pos (x Nat.+ y)))) | false =>
-  \case op == "mul" \with { | true => just (lbInt (norm63 (pos (x Nat.* y)))) | false =>
+  \case op == "add" \with { | true => just (lbInt (pos (x Nat.+ y))) | false =>
+  \case op == "mul" \with { | true => just (lbInt (pos (x Nat.* y))) | false =>
   \case op == "sub" \with { | true => just (lbInt (\case x Nat.- y \with {
       | pos k => pos k
       | neg (suc _) => 0
@@ -228,13 +235,13 @@
        | b => wrap63 y
   \in
   \case op == "prim_add_int" \with {
-    | true => just (lbInt (pos (wrap63 (pos (a Nat.+ b))))) | false =>
+    | true => just (lbInt (pos (a Nat.+ b))) | false =>
   \case op == "prim_mul_int" \with {
-    | true => just (lbInt (pos (wrap63 (pos (a Nat.* b))))) | false =>
+    | true => just (lbInt (pos (a Nat.* b))) | false =>
   -- Subtraction is where UNSIGNED wrapping is visible: `1 - 2` is `2^63 - 1`,
   -- not `-1`. `Nat.-` lands in `Int`, which `wrap63` takes directly.
   \case op == "prim_sub_int" \with {
-    | true => just (lbInt (pos (wrap63 (a Nat.- b)))) | false =>
+    | true => just (lbInt (a Nat.- b)) | false =>
   \case op == "prim_eqb_int" \with {
     | true => just (lbBool (intEqB (pos a) (pos b))) | false =>
     nothing } } } }
@@ -251,7 +258,7 @@
   \case twoInts args \with {
     | nothing => nothing
     -- BOTH FAMILIES NORMALIZE THEIR ARGUMENTS, because there is only one
-    -- integer kind: a λ□ `prim (primInt, _)` is an i63 whichever frontend put
+    -- integer kind: a λ□ `prim (primInt63, _)` is an i63 whichever frontend put
     -- it there. The families differ in the OPERATIONS they provide and in their
     -- conventions (Lean's truncating `sub`), not in the numbers they range over.
     | just (x, y) => \case modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") \with {

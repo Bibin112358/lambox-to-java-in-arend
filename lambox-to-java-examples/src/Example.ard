@@ -77,7 +77,7 @@
 
 -- wrapped := wrap 42            (construct with args + prim int)
 \func wrappedTerm : LBTerm =>
-  construct wrapId 0 (prim (primInt, 42) :: nil)
+  construct wrapId 0 (prim (primInt63, 42) :: nil)
 
 -- openTerm := let v := wrapped.unwrap in y   (proj, const, fvar)
 \func openTerm : LBTerm =>

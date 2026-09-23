@@ -75,7 +75,7 @@
 -- the accumulator.
 \func letsThen (k : Nat) (body : LBTerm) : LBTerm \elim k
   | 0 => body
-  | suc k => letIn anon (app2 primAddRef (bvar 0) (prim (primInt, 1))) (letsThen k body)
+  | suc k => letIn anon (app2 primAddRef (bvar 0) (prim (primInt63, 1))) (letsThen k body)
 
 -- letChainInner, the loop whose body is the chain.
 --
@@ -84,10 +84,10 @@
 -- why `letsThen` is given a body computed from `n`.
 \func innerBody (n : Nat) : LBTerm =>
   lambda anon (lambda anon (
-    case boolInd 0 (app2 primEqbRef (bvar 1) (prim (primInt, 0))) (
+    case boolInd 0 (app2 primEqbRef (bvar 1) (prim (primInt63, 0))) (
       -- j /= 0: run the chain, then recurse on (j - 1) with the last binding
       (nil, letsThen n (app2 (bvar (n Nat.+ 2))
-                             (app2 primSubRef (bvar (n Nat.+ 1)) (prim (primInt, 1)))
+                             (app2 primSubRef (bvar (n Nat.+ 1)) (prim (primInt63, 1)))
                              (bvar 0))) ::
       -- j == 0: the accumulator
       (nil, bvar 0) ::
@@ -102,10 +102,10 @@
 -- product. Environment inside its fix body is [acc, i, self].
 \func outerBody (inner : Nat) : LBTerm =>
   lambda anon (lambda anon (
-    case boolInd 0 (app2 primEqbRef (bvar 1) (prim (primInt, 0))) (
+    case boolInd 0 (app2 primEqbRef (bvar 1) (prim (primInt63, 0))) (
       (nil, app2 (bvar 2)
-                 (app2 primSubRef (bvar 1) (prim (primInt, 1)))
-                 (app2 innerRef (prim (primInt, inner)) (bvar 0))) ::
+                 (app2 primSubRef (bvar 1) (prim (primInt63, 1)))
+                 (app2 innerRef (prim (primInt63, inner)) (bvar 0))) ::
       (nil, bvar 0) ::
       nil
     )
@@ -113,7 +113,7 @@
 
 \func outerFix (inner : Nat) : LBTerm => fix ((\new FixDef LBTerm anon (outerBody inner) 0) :: nil) 0
 
-\func resBodyOf (outer : Nat) : LBTerm => app2 outerRef (prim (primInt, outer)) (prim (primInt, 0))
+\func resBodyOf (outer : Nat) : LBTerm => app2 outerRef (prim (primInt63, outer)) (prim (primInt63, 0))
 
 -- Dependents first, as in ExampleMatMul.declsOf.
 \func declsOf (lets inner outer : Nat) : GlobalDeclarations =>

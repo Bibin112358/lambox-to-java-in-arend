@@ -1,5 +1,6 @@
 \import Data.Maybe
 \import Data.String
+\import Int63 (wrap63)
 \import LambdaBox
 \import Formal.RtInt63
 \import Formal.RtLong
@@ -88,7 +89,10 @@
 \func axiomDecls : GlobalDeclarations =>
   (primAddKn, constantDecl (\new ConstantBody nothing)) :: nil
 
-\func litT (i : Int) : LBTerm => prim (primInt, i)
+-- `wrap63`, because the payload is `Fin int63Mod` -- there is no way to build a
+-- λ□ primitive int without normalizing, which is what makes the runs below
+-- comparable without any reconciliation.
+\func litT (i : Int) : LBTerm => prim (primInt63, wrap63 i)
 
 \func addT (a b : LBTerm) : LBTerm => app (app (const primAddKn) a) b
 

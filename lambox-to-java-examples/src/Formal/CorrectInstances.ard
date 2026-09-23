@@ -108,14 +108,14 @@
 -- numerals are constructors, not primitives).
 -- ---------------------------------------------------------------------------
 
-\func primProgram : LBProgram => (nil, prim (primInt, 7))
+\func primProgram : LBProgram => (nil, prim (primInt63, 7))
 
-\func lbPrim (spec : LBSpec) : EvalProgram spec primProgram (prim (primInt, 7)) => evalPrim idp
+\func lbPrim (spec : LBSpec) : EvalProgram spec primProgram (prim (primInt63, 7)) => evalPrim idp
 
-\func jPrim : relatedTo primProgram 20 (prim (primInt, 7)) = true => idp
+\func jPrim : relatedTo primProgram 20 (prim (primInt63, 7)) = true => idp
 
 -- The relation must distinguish integers, or `jPrim` is vacuous.
-\func jPrimRejects : relatedTo primProgram 20 (prim (primInt, 8)) = false => idp
+\func jPrimRejects : relatedTo primProgram 20 (prim (primInt63, 8)) = false => idp
 
 -- ---------------------------------------------------------------------------
 -- 5. `proj` -- the offset guard.
@@ -146,7 +146,7 @@
 
 -- `mk <param> 20 21`, the parameter erased to `box`.
 \func pairTerm : LBTerm =>
-  construct pairInd 0 (box :: prim (primInt, 20) :: prim (primInt, 21) :: nil)
+  construct pairInd 0 (box :: prim (primInt63, 20) :: prim (primInt63, 21) :: nil)
 
 -- Project field 1 (the second field), i.e. index `npars + 1 = 2`, value 21.
 \func projInfo1 : ProjectionInfo => \new ProjectionInfo pairInd 1 1
@@ -165,14 +165,14 @@
     })
     idp
 
-\func lbProj (spec : LBSpec) : EvalProgram spec projProgram (prim (primInt, 21)) =>
+\func lbProj (spec : LBSpec) : EvalProgram spec projProgram (prim (primInt63, 21)) =>
   evalProj (lbPair spec) idp idp idp (evalPrim idp)
 
-\func jProj : relatedTo projProgram 40 (prim (primInt, 21)) = true => idp
+\func jProj : relatedTo projProgram 40 (prim (primInt63, 21)) = true => idp
 
 -- The off-by-one guard: field 0 of the same value is 20. If either side dropped
 -- the `npars` offset, `jProj` would land on 20 and disagree with `lbProj`.
-\func jProjNotFieldZero : relatedTo projProgram 40 (prim (primInt, 20)) = false => idp
+\func jProjNotFieldZero : relatedTo projProgram 40 (prim (primInt63, 20)) = false => idp
 
 -- ---------------------------------------------------------------------------
 -- 6. A `fix` block with TWO definitions -- the which-definition-got-selected
@@ -199,13 +199,13 @@
   (\new FixDef LBTerm anon constBoxTerm 0) ::
   (\new FixDef LBTerm anon idTerm 0) :: nil
 
-\func fix2Program : LBProgram => (nil, app (fix twoDefs 1) (prim (primInt, 5)))
+\func fix2Program : LBProgram => (nil, app (fix twoDefs 1) (prim (primInt63, 5)))
 
-\func lbFix2 (spec : LBSpec) : EvalProgram spec fix2Program (prim (primInt, 5)) =>
+\func lbFix2 (spec : LBSpec) : EvalProgram spec fix2Program (prim (primInt63, 5)) =>
   evalFix (evalAtomFix idp) idp (evalPrim idp)
           (evalBeta (evalAtomLambda idp) (evalPrim idp) (evalPrim idp))
 
-\func jFix2 : relatedTo fix2Program 40 (prim (primInt, 5)) = true => idp
+\func jFix2 : relatedTo fix2Program 40 (prim (primInt63, 5)) = true => idp
 
 -- The selection guard: had either side taken definition 0, the result is `box`.
 \func jFix2NotSlotZero : relatedTo fix2Program 40 box = false => idp
@@ -233,12 +233,12 @@
 -- `RtSpec` "costs nothing here" held only because these cases were vacuous.
 -- ---------------------------------------------------------------------------
 
-\func lbAxiom : EvalProgram lbAxioms addAxiomProgram (prim (primInt, 5))
+\func lbAxiom : EvalProgram lbAxioms addAxiomProgram (prim (primInt63, 5))
   => evalT-sound lbAxioms 200 idp
 
-\func jAxiom : relatedTo addAxiomProgram 200 (prim (primInt, 5)) = true => idp
+\func jAxiom : relatedTo addAxiomProgram 200 (prim (primInt63, 5)) = true => idp
 
-\func jAxiomRejects : relatedTo addAxiomProgram 200 (prim (primInt, 6)) = false => idp
+\func jAxiomRejects : relatedTo addAxiomProgram 200 (prim (primInt63, 6)) = false => idp
 
 -- ---------------------------------------------------------------------------
 -- THE REFUTATION. The backend is incorrect, and here is the proof.
@@ -272,7 +272,7 @@
 -- satisfy the hypothesis, and that is the fix this points at.
 -- ---------------------------------------------------------------------------
 
-\func int63Value : LBTerm => prim (primInt, 9223372036854775807)
+\func int63Value : LBTerm => prim (primInt63, 9223372036854775807)
 
 -- ---------------------------------------------------------------------------
 -- THE INT63 DEFECT, FIXED. This section used to hold a refutation.
@@ -335,10 +335,10 @@
 
 \func natOverflowProgram : LBProgram =>
   ((natAddKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const natAddKn) (prim (primInt, 9223372036854775807))) (prim (primInt, 1)))
+   app (app (const natAddKn) (prim (primInt63, 9223372036854775807))) (prim (primInt63, 1)))
 
 -- 2^63-1 plus 1 is 0, in BOTH semantics: i63 wraps at 2^63.
-\func natOverflowValue : LBTerm => prim (primInt, 0)
+\func natOverflowValue : LBTerm => prim (primInt63, 0)
 
 \func lbNatOverflow : EvalProgram lbAxioms natOverflowProgram natOverflowValue
   => evalT-sound lbAxioms 200 idp
@@ -370,7 +370,7 @@
 \func natSubKeepsItsOwnConstant : axiomRtName natSubKn = just "NAT_SUB_LONG" => idp
 
 \func natSubStillTruncates
-  : runProgram lbAxioms natSubProgram 200 = rOk (prim (primInt, 0)) => idp
+  : runProgram lbAxioms natSubProgram 200 = rOk (prim (primInt63, 0)) => idp
 
 -- ---------------------------------------------------------------------------
 -- SO WHAT IS STILL OPEN? Not a defect, as far as anything here can tell.

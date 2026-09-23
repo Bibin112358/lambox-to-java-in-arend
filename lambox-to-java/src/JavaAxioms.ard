@@ -19,78 +19,46 @@
 -- assuming it.) The split leaves `ToJava.ard` naming no runtime member at all.
 
 -- ---------------------------------------------------------------------------
--- REPRESENTATION OF λ□ PRIMITIVE INTS.
+-- LITERALS, one per primitive kind.
 --
--- A representation is two things that must agree: how a literal is emitted, and
--- which `Rt.PRIM_*_<suffix>` family realizes the operations. Pairing them
--- wrongly is not a type error but a runtime ClassCastException (the `_INT`
--- family takes `BigInteger`), which is why they travel together in one record
--- rather than as two loose constants.
+-- THE `PrimRepr` RECORD IS GONE, and its disappearance is the point of putting
+-- the kind in the term. It paired "how a literal is emitted" with "which
+-- runtime family realizes the operations", and let the two be chosen by a
+-- backend constant. The first half is now answered by the TAG -- a
+-- `primInt63` literal and a `primInt64` literal are different terms and emit
+-- differently, with nothing to configure. What survives below is the second
+-- half, the operation family, which the tag cannot reach (see
+-- `primOpSuffix`).
 --
--- THIS IS NOT A GENERATOR OPTION. `compileClass` takes no target parameter and
--- the examples have no variants -- the `JavaTarget` record that used to thread
--- one through the generator is gone and is not coming back. `primRepr` below is
--- a NAMED CONSTANT with a documented alternative: changing it is a one-line
--- edit to this file, not a knob a caller can turn.
+-- Both kinds are `java.lang.Long` at runtime. That is not a conflation: a
+-- `Uint63` lives in [0, 2^63), exactly `long`'s non-negative half, so one JVM
+-- type carries both and the difference is in the ARITHMETIC, which is what
+-- `Rt.PRIM_*_INT63` versus `Rt.PRIM_*_LONG` is for.
 -- ---------------------------------------------------------------------------
 
-\record PrimRepr
-  -- How `prim (primInt, i)` is emitted.
-  | reprLit : Int -> JExpr
-  -- Which family realizes `prim_add_int` and friends.
-  | reprSuffix : String
+-- A `Uint63` literal. The payload is already normalized -- `PrimModel
+-- primInt63` is `Fin int63Mod` -- so this is a plain injection, and an
+-- out-of-range literal is not something a caller could hand us.
+\func int63Lit (i : Fin int63Mod) : JExpr =>
+  jCallStatic "Long.valueOf" (jLit (litLong (pos i)) :: nil)
 
--- THE FAITHFUL ONE, and the default. A λ□ primitive int IS a `Uint63`
--- (`Int63.ard` has the citations), and `Rt.PRIM_*_INT63` implements exactly
--- that: a `long` restricted to [0, 2^63) with a mask after each operation.
---
--- It costs one AND instruction per operation -- values stay in a `long`, and
--- nothing is boxed differently from `longRepr` -- so unlike the `BigInteger`
--- family this is faithfulness at no representational cost. That is what makes
--- it the default rather than a documented aspiration.
---
--- The literal is normalized, so the emitted constant is the value λ□ means.
-\func int63Repr : PrimRepr \cowith
-  | reprLit i => jCallStatic "Long.valueOf" (jLit (litLong (norm63 i)) :: nil)
-  | reprSuffix => "INT63"
+-- A 64-bit literal. The payload is the unsigned BIT PATTERN, and a JVM `long`
+-- reads the top half of that range as negative, so the signed reading is taken
+-- here -- the same reinterpretation `Formal/RtLong.ard`'s `wrap64` performs,
+-- and the reason `litLong` is handed an `Int` rather than a `Nat`.
+\func int64Lit (i : Fin int64Mod) : JExpr =>
+  jCallStatic "Long.valueOf" (jLit (litLong (signed64 i)) :: nil)
 
--- THE FAST DEVIATION, kept and named rather than deleted. Java's built-in
--- integers: no mask, so arithmetic wraps at 2^64 and signed, where λ□ wraps at
--- 2^63 and unsigned.
+-- Suffix selecting the runtime family for the λ□ PRIMITIVE-INT operations.
 --
--- It is WRONG, and was provably so while it was the default: `prim_sub_int 1 2`
--- is 2^63-1 in λ□ and -1 on a `long`, which refuted the correctness statement
--- outright. `Formal/Agreement.ard` keeps both answers
--- (`longWouldHaveSaid`/`int63Agrees`) so the fix reads as a difference between
--- two modelled runtimes rather than as an edited constant.
---
--- It stays selectable because it costs nothing to keep and because a deviation
--- that is named and modelled is worth more than one that was deleted. It is
--- also NOT free to choose: `Formal/RtLong.ard` models it, and the value
--- relation that goes with it is `agreesLong`, which reads one bit pattern two
--- ways. Measured on `matmul250`, picking it buys nothing -- 36.9 s against
--- 37.2 s for `int63Repr`, inside the noise -- because the mask is one AND.
-\func longRepr : PrimRepr \cowith
-  | reprLit i => jCallStatic "Long.valueOf" (jLit (litLong i) :: nil)
-  | reprSuffix => "LONG"
-
-\func primRepr : PrimRepr => int63Repr
-
--- A λ□ primitive-int literal.
---
--- ONE NODE KIND, ONE NUMBER KIND, so there is nothing here to tell apart.
--- Lean's `Nat` literals are `prim (primInt, n)` too, and that is not a leak:
--- lean-to-lambdabox emits them as i63 and panics rather than exceeding the
--- range, so normalizing is the right thing for every literal that can arrive.
--- (This comment used to say the opposite, and pointed at a limitation that
--- `Formal/LbAxioms.ard` now withdraws.)
---
--- It also fixes a failure mode the old `longRepr` had: a literal at or above
--- 2^63 used to be emitted verbatim as a `long` literal, which javac REJECTS.
-\func intLit (i : Int) : JExpr => reprLit {primRepr} i
-
--- Suffix selecting the runtime family for the λ□ PRIMITIVE-INT operations only.
-\func primOpSuffix : String => reprSuffix {primRepr}
+-- STILL A CONSTANT, and this is the half the tag cannot do. An operation is a
+-- `const` node carrying a `Kername`, compiled before any operand is in sight,
+-- so the kind of the values it will receive is not available here. Making the
+-- choice per-kind needs per-kind axiom NAMES (`prim_add_int63` against
+-- `prim_add_int64`) rewritten together with the tags -- a source-to-source
+-- pass, and the next step. Until then every program's operations are i63,
+-- which is what every program in the corpus means.
+\func primOpSuffix : String => "INT63"
 
 -- Suffix for the LEAN-DERIVED operations that CANNOT leave i63's range, which
 -- is why it can differ from `primRepr` without being wrong.

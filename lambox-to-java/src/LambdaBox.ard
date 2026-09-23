@@ -21,6 +21,7 @@
 --     ToJava.ard.
 
 \import Data.Bool
+\import Int63 (int63Mod, int64Mod)
 \import Data.Maybe
 \import Data.String
 -- All sequences are `Array` (Prelude) so ToJava can recurse inline via `xs i` and
@@ -58,41 +59,62 @@
   | defBody : term
   | principalArgIdx : Nat  -- Principal/structural argument for recursion
 
+-- THE KIND OF NUMBER IS PART OF THE TERM, not of the backend.
+--
+-- Upstream λ□ has one primitive integer: MetaRocq's `EPrimitive.v`
+-- `primIntModel (i : PrimInt63.int)` with `prim_model_of primInt :=
+-- PrimInt63.int`, the tag set coming from `common/theories/Primitive.v`
+-- (`primInt63 | primFloat | primString | primArray` -- no primNat, no primZ);
+-- the Rocq refman, "Primitive objects / Primitive integers"; and
+-- lean-to-lambdabox's `PrimModel .primInt := BitVec 63`. `primInt63` IS that
+-- tag, renamed so the width is part of the name rather than part of a comment.
+--
+-- Note this concerns ONLY `tPrim`: Rocq's default numbers (`nat`, `Z`) and
+-- Lean's Peano mode erase to ordinary CONSTRUCTORS, never to `prim`.
+--
+-- WHY THE KIND BELONGS HERE. A backend may reasonably prefer JVM `long`
+-- arithmetic, for speed. That choice cannot live in the backend: if the term
+-- means i63 and the backend computes int64 then the backend is simply WRONG,
+-- which this project proved -- and then papered over by parameterizing the
+-- VALUE RELATION by the chosen normalization. A correctness statement whose
+-- notion of "these two values correspond" takes a compiler flag cannot be read
+-- without knowing the build configuration. With the kind in the term, each
+-- backend is correct for the terms it is given, and choosing a representation
+-- becomes a source-to-source rewrite that can be stated and argued about
+-- instead of an invisible reinterpretation.
+--
+-- The precedent is in the frontend already: lean-to-lambdabox's `config.nat`
+-- chooses between Peano constructors and machine i63 for Lean's `Nat`, and it
+-- makes that choice by emitting DIFFERENT λ□ TERMS.
+--
+-- `primInt64` IS NOT YET COMPILED, deliberately. The operations are selected by
+-- kername at a `const` node, which never sees its operands, so a kind on the
+-- values cannot by itself pick `PRIM_ADD_LONG`; that needs per-kind axiom names
+-- and is a separate step (see `JavaAxioms.ard`). Declaring the kind first is
+-- what lets the semantics talk about it at all.
+--
+-- DEVIATION FROM UPSTREAM, accepted: a `primInt64` term has no peregrine
+-- counterpart, so `Serialize.ard`'s export cannot represent one. λ□ is a
+-- stepping stone here rather than an interchange format, and export is allowed
+-- to be partial.
 \data PrimTag
-  | primInt
+  | primInt63  -- MetaRocq/peregrine's `Uint63`: unsigned, cyclic mod 2^63
+  | primInt64  -- two's-complement 64-bit, i.e. a JVM `long`
 -- | primFloat
 -- | primList
 
--- KNOWN MISMATCH (deliberate, documented, not yet fixed).
--- Upstream, the payload of a `primInt` is a 63-bit machine integer, by
--- definition of λ□ and not as a backend limitation:
---   * MetaRocq, erasure/theories/EPrimitive.v:
---       `| primIntModel (i : PrimInt63.int) : prim_model primInt`
---     and `prim_model_of primInt := PrimInt63.int`; the tag set comes from
---     common/theories/Primitive.v (`primInt | primFloat | primString |
---     primArray` -- there is no primNat/primZ).
---       https://metarocq.github.io/html/MetaRocq.Erasure.EPrimitive.html#prim_val
---       https://github.com/MetaRocq/metarocq/blob/main/erasure/theories/EPrimitive.v
---   * Rocq refman, "Primitive objects / Primitive integers": the kernel's `int`
---     is a 63-bit machine integer (unboxed OCaml int, one bit for the GC tag),
---     with an unsigned view `Uint63` and a signed view `Sint63`; its arithmetic
---     is cyclic modulo 2^63.
---       https://rocq-prover.org/doc/master/refman/language/core/primitive.html
---   * lean-to-lambdabox, LeanToLambdaBox/Basic.lean: `PrimModel .primInt :=
---     BitVec 63` -- the Lean port agreeing with MetaRocq.
--- Note this concerns ONLY `tPrim primInt`: Rocq's default numbers (`nat`, `Z`,
--- `N`) are ordinary inductive types and erase to `construct` applications (cf.
--- ExamplePeano.ard), never to `prim`; nothing unbounded is silently truncated.
--- Since Arend has no fixed-width bit vectors, we use the unbounded Prelude
--- `Int` here, so THIS ENCODING IS WIDER THAN THE SOURCE: values >= 2^63 are
--- representable and no operation wraps.
--- FUTURE WORK: either model the payload as `Fin (2^63)` / a `mod 2^63`-normalized
--- Int (and pin down the signed/unsigned view -- MetaRocq's EWcbvEval and
--- ExtrOCamlInt63 follow the unsigned/cyclic `Uint63` semantics), or keep this
--- encoding and state the 2^62-ish range side condition under which all backends
--- agree.  See ToJava.ard (KNOWN MISMATCH) and notes/RESEARCH_AND_PLAN.md.
-\func PrimModel (_ : PrimTag) : \Set0  -- TODO : is this ok to be a \Set ?
-  | primInt => Int
+-- THE PAYLOAD IS BOUNDED BY CONSTRUCTION, which the old encoding was not. It
+-- used the unbounded Prelude `Int`, so values >= 2^63 were representable and
+-- nothing wrapped; this file called that "the FIRST of three layers of the
+-- known int63 mismatch" and left it as FUTURE WORK ("model the payload as
+-- `Fin (2^63)` / a `mod 2^63`-normalized Int").
+--
+-- DONE. The only way to build a payload is `Int63.wrap63`/`wrap64u`, which
+-- normalize, so an out-of-range primitive cannot be written down -- and the
+-- value relation compares exactly instead of normalizing as it goes.
+\func PrimModel (t : PrimTag) : \Set0
+  | primInt63 => Fin int63Mod
+  | primInt64 => Fin int64Mod
 
 \func PrimVal : \Type => \Sigma (t : PrimTag) (PrimModel t)
 

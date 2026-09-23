@@ -354,13 +354,35 @@ def projection_info(e):
     return Call('\\new ProjectionInfo', [inductive_id(ind), nat(npars), nat(idx)])
 
 
+INT63_MOD = 1 << 63
+
+
 def prim_val(e):
+    # The WIRE tag is peregrine's `primInt`; the Arend constructor is
+    # `primInt63`, which is the same kind under a name that states its width
+    # (LambdaBox.ard renamed it when a second kind, `primInt64`, was added).
+    # Nothing in peregrine's output can be a `primInt64`, so there is no case
+    # for it here -- that kind is reached only by a source-to-source rewrite.
     if not isinstance(e, list) or not e:
         raise ParseError("expected a primitive value, got %s" % show(e))
     if e[0] != 'primInt':
-        raise Unsupported("primitive %s: LambdaBox.ard's PrimTag has only primInt" % show(e[0]))
+        raise Unsupported("primitive %s: LambdaBox.ard's PrimTag has only primInt"
+                          % show(e[0]))
     payload, = tagged(e, 'primInt', 1)
-    return Tuple([Atom('primInt'), integer(payload)])
+    # `PrimModel primInt63` is `Fin int63Mod`, so the emitted literal must be in
+    # [0, 2^63) or the generated module does not typecheck. Rejecting here turns
+    # that into a clear importer error naming the value, rather than an Arend
+    # type error in a generated file nobody wrote. Loud rather than normalized
+    # on purpose: lean-to-lambdabox PANICS on an out-of-range Nat literal rather
+    # than wrapping it, and silently truncating input would be this compiler
+    # inventing a program its producer did not write.
+    if isinstance(payload, (list, Str)) or not payload.lstrip('-').isdigit():
+        raise ParseError("expected an integer primitive payload, got %s" % show(payload))
+    n = int(payload)
+    if not (0 <= n < INT63_MOD):
+        raise Unsupported("primInt payload %d is outside [0, 2^63): LambdaBox.ard's "
+                          "PrimModel primInt63 is Fin int63Mod" % n)
+    return Tuple([Atom('primInt63'), Atom(str(n))])
 
 
 UNSUPPORTED_TERMS = {

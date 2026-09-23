@@ -11,7 +11,7 @@
 \import Formal.RtLong
 \import JavaAst
 \import JavaAxioms
-\import Int63 (norm63)
+\import Int63 (signed64)
 \import LambdaBox
 \import NodePath
 \import Set
@@ -78,62 +78,47 @@
 -- partially-applied axiom is in the same class (see the header of
 -- `Formal/Agreement.ard`).
 --
--- IT IS PARAMETERIZED BY THE REPRESENTATION, because it has to be: what counts
--- as "the same integer" is exactly what the two representations disagree
--- about. `agreesWith` takes the normalization, and the two instances below pair
--- with the two `RtSpec`s -- `agrees`/`rtInt63` (shipped) and
--- `agreesLong`/`rtLong` (the deviation). `CorrectGeneric` quantifies over the
--- runtime's BEHAVIOUR; the representation is chosen once by
--- `JavaAxioms.primRepr`, and picking a different one means picking the matching
--- relation too.
+-- IT READS THE KIND OFF THE TERM, and needs no parameter at all.
+--
+-- This function used to be `agreesWith (norm : Int -> Int) ...`, with `agrees`
+-- and `agreesLong` instantiating it for the two backend representations. That
+-- was the symptom that the representation choice was in the wrong layer: a
+-- correctness statement whose notion of "these two values correspond" takes a
+-- COMPILER FLAG as an argument cannot be read without knowing the build
+-- configuration. With the kind in the term (`LambdaBox.PrimTag`), each clause
+-- knows which arithmetic it is talking about and there is one relation again.
+--
+-- AND THE COMPARISON IS EXACT. The payload is `Fin int63Mod`, so a λ□ value is
+-- already normalized and nothing is reconciled on the way: this is plain
+-- equality, not the "one bit pattern, two readings" fudge `wrap64` performed.
+-- An out-of-range λ□ literal is not representable, so there is no case left for
+-- a normalization to rescue.
 --
 -- Fuel, because the recursion goes through an array of fields.
-\func agreesWith (norm : Int -> Int) (n : Nat) (t : LBTerm) (v : Value) : Bool \elim n
+\func agrees (n : Nat) (t : LBTerm) (v : Value) : Bool \elim n
   | 0 => false
   | suc n => \case t, v \with {
     | box, vBox => true
-    -- λ□'s `prim` int is an unbounded `Int` in this AST; the Java side is a
-    -- `long`. `norm` is what reconciles them, and WHICH normalization is the
-    -- whole difference between the two representations: `norm63` is exact on
-    -- values both sides already hold, `wrap64` identifies things λ□ can tell
-    -- apart.
-    --
-    -- ONE `norm` IS RIGHT FOR EVERY `prim`, which is why `LBTerm` not recording
-    -- where a primitive came from costs nothing: there is one integer kind in
-    -- the λ□ we consume, and it is i63 (see the correction at the top of
-    -- `Formal/LbAxioms.ard`). This used to be stated as a limitation, on the
-    -- premise that Lean's `Nat` arrived unbounded. It does not.
-    | prim (primInt, i), vLong j => intEqB (norm i) j
+    -- A `Uint63` is held in a `long`'s non-negative half, so the Java value is
+    -- the payload unchanged.
+    | prim (primInt63, i), vLong j => intEqB (pos i) j
+    -- A 64-bit value is held as its BIT PATTERN on the λ□ side and read signed
+    -- by the JVM, so the reinterpretation happens here -- once, in the clause
+    -- for the kind that needs it, rather than as a parameter of the whole
+    -- relation. (Nothing compiles to this kind yet; see `JavaAxioms.ard`.)
+    | prim (primInt64, i), vLong j => intEqB (signed64 i) j
     -- A constructor: same tag, same fields, pointwise. The fields include the
     -- inductive parameters on both sides (constructor-block form on the λ□
     -- side, every `construct` argument passed to `new Rt.Data` on the Java
     -- side), so there is no offset to account for here.
-    | construct _ c args, vData tg fs => (c == tg) and agreesAllWith norm n args fs
+    | construct _ c args, vData tg fs => (c == tg) and agreesAll n args fs
     | _, _ => false
   }
 
-\func agreesAllWith (norm : Int -> Int) (n : Nat) (ts : Array LBTerm) (vs : Array Value)
-  : Bool \elim ts, vs
+\func agreesAll (n : Nat) (ts : Array LBTerm) (vs : Array Value) : Bool \elim ts, vs
   | nil, nil => true
-  | t :: ts, v :: vs => agreesWith norm n t v and agreesAllWith norm n ts vs
+  | t :: ts, v :: vs => agrees n t v and agreesAll n ts vs
   | _, _ => false
-
--- THE SHIPPED RELATION, for `primRepr := int63Repr`.
---
--- `norm63` here is NOT a two-readings fudge, and that is the difference the
--- faithful representation buys. Both sides already hold `Uint63` values -- λ□'s
--- oracle normalizes, and `Rt.PRIM_*_INT63` normalizes -- so on everything this
--- relation is applied to it is the identity, and the clause is plain equality.
--- It is applied at all only to catch an un-normalized λ□ literal.
-\func agrees (n : Nat) (t : LBTerm) (v : Value) : Bool => agreesWith norm63 n t v
-
--- THE DEVIATION'S RELATION, for `longRepr`/`rtLong`.
---
--- `wrap64` is the "one bit pattern, two interpretations" reading, and it is a
--- genuine weakening: it identifies λ□ values that the JVM cannot tell apart but
--- the source language can. Kept only so the `longRepr` pairing stays statable;
--- nothing shipped uses it.
-\func agreesLong (n : Nat) (t : LBTerm) (v : Value) : Bool => agreesWith wrap64 n t v
 
 -- The relation as a proposition: "some amount of fuel sees the correspondence".
 \func ValRel (t : LBTerm) (v : Value) : \Type => \Sigma (n : Nat) (agrees n t v = true)
