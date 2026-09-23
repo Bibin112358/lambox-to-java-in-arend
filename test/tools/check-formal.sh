@@ -38,6 +38,7 @@ compiler_modules=(
   Formal.LbAxioms
   Formal.RtInt63
   Formal.Correct
+  Formal.Int64RewriteSpec
   Formal.RtLong
   Formal.NodePathUnique
 )

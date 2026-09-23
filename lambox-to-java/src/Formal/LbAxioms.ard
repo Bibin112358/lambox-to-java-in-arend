@@ -6,7 +6,7 @@
 -- `wrap63` is SHARED with the backend (`Int63.ard`), not re-derived here: that
 -- the two sides normalize with the same function is the whole content of the
 -- int63 representation.
-\import Int63 (wrap63)
+\import Int63 (wrap63, wrap64u)
 \import LambdaBox
 \import Set
 \import StringUtil (intEqB)
@@ -146,6 +146,19 @@
   | _ => nothing
 }
 
+-- The same for the other kind. Two extractors rather than one that accepts
+-- either: an i64 operation handed i63 operands is a MALFORMED program, not a
+-- conversion opportunity, and it should be stuck rather than silently
+-- reinterpreted. That is the whole reason the kind is in the term.
+\func twoInts64 (args : Array LBTerm) : Maybe (\Sigma Int Int) => \case args \with {
+  | prim (primInt64, x) :: prim (primInt64, y) :: nil => just (x, y)
+  | _ => nothing
+}
+
+-- A 64-bit primitive, as a term. `wrap64u` normalizes into [0, 2^64), so as
+-- with `lbInt` the payload cannot be out of range.
+\func lbInt64 (i : Int) : LBTerm => prim (primInt64, wrap64u i)
+
 -- ---------------------------------------------------------------------------
 -- The table.
 --
@@ -181,7 +194,11 @@
   \case kernameEq kn (rootKn "prim_sub_int") \with { | true => just 2 | false =>
   \case kernameEq kn (rootKn "prim_mul_int") \with { | true => just 2 | false =>
   \case kernameEq kn (rootKn "prim_eqb_int") \with { | true => just 2 | false =>
-    nothing } } } } } } } } } } } }
+  \case kernameEq kn (rootKn "prim_add_int64") \with { | true => just 2 | false =>
+  \case kernameEq kn (rootKn "prim_sub_int64") \with { | true => just 2 | false =>
+  \case kernameEq kn (rootKn "prim_mul_int64") \with { | true => just 2 | false =>
+  \case kernameEq kn (rootKn "prim_eqb_int64") \with { | true => just 2 | false =>
+    nothing } } } } } } } } } } } } } } } }
 
 -- `x <= y`, without peeling. `Nat.-` on two `Nat`s is truncating subtraction
 -- landing in `Int`, so the sign of `y - x` decides it; after truncation the
@@ -246,6 +263,32 @@
     | true => just (lbBool (intEqB (pos a) (pos b))) | false =>
     nothing } } } }
 
+-- The i64 family: two's-complement 64-bit, i.e. exactly what a JVM `long`
+-- does. Operands and results are BIT PATTERNS in [0, 2^64); `wrap64u`
+-- normalizes, and `lbInt64` applies it so nothing here can produce an
+-- out-of-range payload.
+--
+-- These names are not in any imported program. They exist because the kind of
+-- a value cannot reach the operation that consumes it (a `const` is compiled
+-- before its operands), so choosing 64-bit arithmetic means choosing different
+-- OPERATIONS as well as different values -- which is what `Int64Rewrite.ard`
+-- does, and what makes the choice something a semantics can talk about.
+\func int64Run (op : String) (x y : Int) : Maybe LBTerm =>
+  \let | a => wrap64u x
+       | b => wrap64u y
+  \in
+  \case op == "prim_add_int64" \with {
+    | true => just (lbInt64 (pos (a Nat.+ b))) | false =>
+  \case op == "prim_mul_int64" \with {
+    | true => just (lbInt64 (pos (a Nat.* b))) | false =>
+  \case op == "prim_sub_int64" \with {
+    | true => just (lbInt64 (a Nat.- b)) | false =>
+  -- Bit patterns are already normalized, so this is plain equality -- the same
+  -- comparison `Rt.PRIM_EQB_LONG` performs on two `long`s.
+  \case op == "prim_eqb_int64" \with {
+    | true => just (lbBool (intEqB (pos a) (pos b))) | false =>
+    nothing } } } }
+
 -- Dispatch: a `Nat.*` name goes to `natRun` on the two arguments read as
 -- naturals, a `prim_*_int` name to `int63Run`. Both require their arguments to
 -- be primitive ints ALREADY EVALUATED, which `evalAxiomApp` guarantees: it tests
@@ -255,18 +298,26 @@
 -- handed a non-integer, which is the twin of `builtinRunLong`'s `rStuck` on
 -- non-`vLong` arguments.
 \func axiomRunLb (kn : Kername) (args : Array LBTerm) : Maybe LBTerm =>
-  \case twoInts args \with {
-    | nothing => nothing
-    -- BOTH FAMILIES NORMALIZE THEIR ARGUMENTS, because there is only one
-    -- integer kind: a λ□ `prim (primInt63, _)` is an i63 whichever frontend put
-    -- it there. The families differ in the OPERATIONS they provide and in their
-    -- conventions (Lean's truncating `sub`), not in the numbers they range over.
-    | just (x, y) => \case modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") \with {
-      | true => natRun kn.kerName (wrap63 x) (wrap63 y)
-      | false => \case modPathEq kn.kerModPath (mpFile nil) \with {
-        | true => int63Run kn.kerName x y
-        | false => nothing
+  \case modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") \with {
+    -- Lean's machine operations, on i63 values with Lean's conventions.
+    | true => \case twoInts args \with {
+      | just (x, y) => natRun kn.kerName (wrap63 x) (wrap63 y)
+      | nothing => nothing
+    }
+    | false => \case modPathEq kn.kerModPath (mpFile nil) \with {
+      -- The root module holds both primitive families, told apart by NAME --
+      -- and each accepts only its own kind of operand. An i64 operation handed
+      -- i63 values is stuck, not converted: the term would be malformed, and
+      -- silently reinterpreting it is exactly what having the kind in the term
+      -- is meant to prevent.
+      | true => \case twoInts args \with {
+        | just (x, y) => int63Run kn.kerName x y
+        | nothing => \case twoInts64 args \with {
+          | just (x, y) => int64Run kn.kerName x y
+          | nothing => nothing
+        }
       }
+      | false => nothing
     }
   }
 

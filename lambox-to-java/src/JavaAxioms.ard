@@ -27,8 +27,8 @@
 -- backend constant. The first half is now answered by the TAG -- a
 -- `primInt63` literal and a `primInt64` literal are different terms and emit
 -- differently, with nothing to configure. What survives below is the second
--- half, the operation family, which the tag cannot reach (see
--- `primOpSuffix`).
+-- half, the operation family, which the tag cannot reach -- carried instead by
+-- per-kind axiom names (see `primOpSuffix` and `Int64Rewrite.ard`).
 --
 -- Both kinds are `java.lang.Long` at runtime. That is not a conflation: a
 -- `Uint63` lives in [0, 2^63), exactly `long`'s non-negative half, so one JVM
@@ -49,15 +49,16 @@
 \func int64Lit (i : Fin int64Mod) : JExpr =>
   jCallStatic "Long.valueOf" (jLit (litLong (signed64 i)) :: nil)
 
--- Suffix selecting the runtime family for the λ□ PRIMITIVE-INT operations.
+-- Suffix for the i63 operations. NOT a choice any more -- it is simply the
+-- name of the family that implements `Uint63`, and the i64 operations have
+-- their own entries below rather than being reached by changing this.
 --
--- STILL A CONSTANT, and this is the half the tag cannot do. An operation is a
--- `const` node carrying a `Kername`, compiled before any operand is in sight,
--- so the kind of the values it will receive is not available here. Making the
--- choice per-kind needs per-kind axiom NAMES (`prim_add_int63` against
--- `prim_add_int64`) rewritten together with the tags -- a source-to-source
--- pass, and the next step. Until then every program's operations are i63,
--- which is what every program in the corpus means.
+-- That is what step 2 bought. The kind cannot reach an operation on its own (a
+-- `const` node is compiled before any operand is in sight), so per-kind axiom
+-- NAMES carry it, and `Int64Rewrite.ard` rewrites the tags and the names
+-- together. The representation choice is a program transformation with a
+-- statement (`Formal/Int64RewriteSpec.ard`) instead of a constant in this file
+-- with none.
 \func primOpSuffix : String => "INT63"
 
 -- Suffix for the LEAN-DERIVED operations that CANNOT leave i63's range, which
@@ -104,10 +105,26 @@
        -- An operation that neither takes nor returns a λ□ primitive int is the
        -- same in every representation, so it has ONE runtime constant.
        | fixed (nm : String) => jField rtRef nm
+  -- THE i63 OPERATIONS, under the names peregrine emits. These are what an
+  -- imported program says, and they land on the family that implements
+  -- `Uint63`.
   \in ("c___prim_add_int", primOp "ADD") ::
       ("c___prim_mul_int", primOp "MUL") ::
       ("c___prim_sub_int", primOp "SUB") ::
       ("c___prim_eqb_int", primOp "EQB") ::
+      -- THE i64 OPERATIONS, which nothing imports and only `Int64Rewrite.ard`
+      -- produces. Separate NAMES rather than a separate backend setting,
+      -- because that is the only way the kind can reach an operation: a `const`
+      -- node is compiled before any operand is in sight, so the tag on the
+      -- values cannot select a family here. The program has to say it.
+      --
+      -- They land on `PRIM_*_LONG`, i.e. Java's built-in arithmetic with no
+      -- mask -- which is now CORRECT rather than a deviation, because the terms
+      -- reaching them mean 64-bit two's complement.
+      ("c___prim_add_int64", leanOp "ADD") ::
+      ("c___prim_mul_int64", leanOp "MUL") ::
+      ("c___prim_sub_int64", leanOp "SUB") ::
+      ("c___prim_eqb_int64", leanOp "EQB") ::
       ("c__Nat__add", primOp "ADD") ::
       ("c__Nat__mul", primOp "MUL") ::
       -- NOT `leanOp "SUB"`: Lean's Nat subtraction truncates at zero, while

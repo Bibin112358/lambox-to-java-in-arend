@@ -10,7 +10,10 @@
 \import Formal.LambdaBoxEval
 \import Formal.LambdaBoxRun
 \import Formal.LambdaBoxSound
+\import Formal.Int64RewriteSpec
 \import Formal.LbAxioms
+\import Int63 (wrap63, wrap64u)
+\import Int64Rewrite
 \import Formal.Res
 \import Formal.RtInt63
 \import Formal.RtLong
@@ -391,6 +394,67 @@
 -- The obligations that ARE substantive remain `FuelMono` and `SubstLemma` in
 -- `Formal/Correct.ard`, neither of which this work touched.
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- CHOOSING 64-BIT ARITHMETIC: what the rewrite preserves, and where it stops.
+--
+-- `Int64Rewrite.rewriteProgram` is how a user asks for JVM `long` arithmetic.
+-- It rewrites the payload tags AND the axiom names together -- both, because a
+-- `const` is compiled before its operands, so the kind has to be said twice --
+-- and produces an ordinary λ□ program run by the ordinary semantics. That is
+-- what makes the choice comparable instead of invisible.
+-- ---------------------------------------------------------------------------
+
+-- IT PRESERVES, while the arithmetic stays in range. `prim_add_int 2 3` is 5
+-- under i63 and 5 under i64, and the rewritten program says so.
+\func rewriteKeepsSmall : rewritePreserves addAxiomProgram 200 = true => idp
+
+-- The rewritten program really is a DIFFERENT program -- the axiom is renamed
+-- and the payloads retagged -- and it still computes, on the i64 family.
+\func rewrittenRuns
+  : runProgram lbAxioms (rewriteProgram addAxiomProgram) 200
+  = rOk (prim (primInt64, wrap64u 5))
+  => idp
+
+-- ... and the compiled Java of the REWRITTEN program computes the same 5,
+-- through `Rt.PRIM_ADD_LONG` rather than `Rt.PRIM_ADD_INT63`. So the
+-- representation choice reaches the generated code, which is the point of
+-- putting it in the term.
+\func rewrittenCompiles
+  : runClass rtInt63 (compileClass progClassName (rewriteProgram addAxiomProgram))
+      bodyMethodName 200
+  = rOk (rvValue (vLong 5))
+  => idp
+
+-- AND IT DOES NOT PRESERVE, at the first operation that crosses 2^63. This is
+-- the counterexample the unconditional obligation needs: `(2^63-1) + 1` is 0
+-- under i63 (it wrapped) and 2^63 under i64 (it did not), and those are
+-- different numbers.
+\func overflowProgram : LBProgram =>
+  ((axiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
+   app (app (const axiomKn) (prim (primInt63, wrap63 (pos 9223372036854775807))))
+       (prim (primInt63, wrap63 1)))
+
+\func overflowInI63
+  : runProgram lbAxioms overflowProgram 200 = rOk (prim (primInt63, 0)) => idp
+
+\func overflowInI64
+  : runProgram lbAxioms (rewriteProgram overflowProgram) 200
+  = rOk (prim (primInt64, wrap64u (pos 9223372036854775808)))
+  => idp
+
+\func rewriteChangesOverflow : rewritePreserves overflowProgram 200 = false => idp
+
+-- So the unconditional obligation is false, and this is the proof.
+\lemma int64RewriteIsNotSound (s : Int64RewriteSound) : Empty =>
+  true/=false (inv (s overflowProgram 200) *> rewriteChangesOverflow)
+
+-- WHICH IS THE WHOLE VALUE OF THE EXERCISE. The same reinterpretation used to
+-- happen inside the backend, silently and with no side condition, and was
+-- simply wrong (`oracleDisagrees`). It is now a rewrite a user opts into, whose
+-- exact failure case is a checked fact -- and the side condition a true theorem
+-- would need ("no operation in this evaluation left [0, 2^63)") is named in
+-- `Formal/Int64RewriteSpec.ard`.
 
 -- ---------------------------------------------------------------------------
 -- COVERAGE. λ□ constructor -> is there an instance whose derivation reaches it?
