@@ -582,7 +582,7 @@ public final class Prog {
     return new Rt.Data(0, new Object[]{ c__Nat__add() });
   }
   public static Object c__Nat__add(){
-    return Rt.PRIM_ADD_LONG;
+    return Rt.PRIM_ADD_INT63;
   }
   public static Object c___instHAdd(){
     return new Rt.Fn(){ public Object apply(Object p){

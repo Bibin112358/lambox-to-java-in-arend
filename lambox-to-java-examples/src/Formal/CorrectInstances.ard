@@ -36,12 +36,13 @@
 --     NEGATIVE check that the relation rejects a wrong value (without which the
 --     positive one proves nothing).
 --
---   * A REFUTATION, and a retired one. `prim_sub_int` used to refute the
---     statement; `Rt.PRIM_*_INT63` fixed that, and `int63NowAgrees` is the
---     same witness discharging the conclusion instead. What refutes it TODAY
---     is Lean's `Nat` (`natOverflowRefutesCorrect`,
---     `oracleStillDisagreesOnNat`) -- a defect the old value relation absorbed
---     and the new one exposes.
+--   * TWO RETIRED REFUTATIONS, and they retired for different reasons.
+--     `prim_sub_int` refuted the statement until `Rt.PRIM_*_INT63` fixed the
+--     backend (`int63NowAgrees`). Lean's `Nat` then appeared to refute it --
+--     until the frontend turned out to erase `Nat` to i63, making
+--     `Formal/LbAxioms.ard` the wrong side (`natOverflowNowAgrees`). One was a
+--     real defect in the implementation; the other was a defect in the
+--     specification. Both are recorded where they stood.
 --
 -- The instance set is ported from branch `lambox-formal-semantics`
 -- (`CorrectnessInstances.ard`), which chose these programs to cover the λ□
@@ -311,104 +312,85 @@
   => (lbInt63, int63InJava, idp)
 
 -- ---------------------------------------------------------------------------
--- WHAT IS STILL WRONG: Lean's `Nat`, and it is no longer hidden.
+-- AND LEAN'S `Nat` AGREES TOO -- which RETRACTS the refutation that stood here.
 --
--- `Nat.add` at 2^63-1 and 1. Lean's `Nat` is arbitrary-precision, so λ□ says
--- 2^63; the backend routes `Nat.*` through `leanOpSuffix`, still `LONG`, so the
--- JVM says -2^63. That is limitation (L).
+-- This section used to prove `natOverflowRefutesCorrect` and
+-- `oracleStillDisagreesOnNat`: `Nat.add` at 2^63-1 and 1 gave 2^63 in λ□ and
+-- -2^63 on the JVM, so the backend looked wrong on Lean's `Nat` even after the
+-- int63 fix.
 --
--- WHAT CHANGED IS THAT IT IS NOW VISIBLE. Under the old value relation
--- `wrap64` identified those two values, so the theorem ACCEPTED the truncation
--- and `natOverflowSatisfiesTheorem` pinned a `true` that was really a weakness.
--- The shipped relation normalizes with `norm63` instead, which does not
--- identify them -- so the same program now refutes the statement rather than
--- satisfying it. The defect did not appear; the relation stopped absorbing it.
+-- BOTH WERE PROOFS ABOUT A BUG IN `Formal/LbAxioms.ard`, not in the backend.
+-- That module modelled `Nat.*` on unbounded naturals, reasoning that Lean's
+-- `Nat` is arbitrary-precision -- true of LEAN, false of the λ□ that
+-- lean-to-lambdabox emits, which erases a `Nat` literal to `prim ⟨.primInt, _⟩`
+-- and panics rather than exceeding 63 bits. There is one integer kind in what
+-- we compile, and it is i63. With `natRun` corrected to wrap `add` and `mul`,
+-- and `javaAxioms` routing those two to `PRIM_*_INT63`, both sides say 0.
+--
+-- So limitation (L) is withdrawn, and the honest statement is the positive one
+-- below. The lesson is the one the header already claims for the two oracles
+-- being independent: when they disagreed it was evidence, and this time the
+-- evidence convicted the specification rather than the implementation.
 -- ---------------------------------------------------------------------------
 
 \func natOverflowProgram : LBProgram =>
   ((natAddKn, constantDecl (\new ConstantBody nothing)) :: nil,
    app (app (const natAddKn) (prim (primInt, 9223372036854775807))) (prim (primInt, 1)))
 
-\func natOverflowValue : LBTerm => prim (primInt, 9223372036854775808)
-
-\func natOverflowInLambdaBox
-  : runProgram lbAxioms natOverflowProgram 200 = rOk natOverflowValue => idp
-
-\func natOverflowInJava
-  : runClass rtInt63 (compileClass progClassName natOverflowProgram) bodyMethodName 200
-  = rOk (rvValue (vLong (neg 9223372036854775808)))
-  => idp
+-- 2^63-1 plus 1 is 0, in BOTH semantics: i63 wraps at 2^63.
+\func natOverflowValue : LBTerm => prim (primInt, 0)
 
 \func lbNatOverflow : EvalProgram lbAxioms natOverflowProgram natOverflowValue
   => evalT-sound lbAxioms 200 idp
 
--- Not about fuel: 200 ticks suffice and the run returns a value. Only the
--- relation fails.
-\func natOverflowRunSucceeds
-  : \Sigma (jv : Value)
+\func natOverflowInJava
+  : runClass rtInt63 (compileClass progClassName natOverflowProgram) bodyMethodName 200
+  = rOk (rvValue (vLong 0))
+  => idp
+
+-- The three facts, as for the int63 witness above and for the same reason: a
+-- `CorrectAtProgram` discharge would read `\lam _ => ...` and drop the λ□ side.
+\func natOverflowNowAgrees
+  : \Sigma (EvalProgram lbAxioms natOverflowProgram natOverflowValue)
            (runClass rtInt63 (compileClass progClassName natOverflowProgram) bodyMethodName 200
-            = rOk (rvValue jv))
-  => (vLong (neg 9223372036854775808), natOverflowInJava)
+            = rOk (rvValue (vLong 0)))
+           (agrees 20 natOverflowValue (vLong 0) = true)
+  => (lbNatOverflow, natOverflowInJava, idp)
 
-\lemma natOverflowNotRelated (n : Nat)
-  : agrees n natOverflowValue (vLong (neg 9223372036854775808)) = false \elim n
-  | 0 => idp
-  | suc n => idp
-
-\func unRv (d : Value) (o : RunOut) : Value \elim o
-  | rvValue v => v
-  | rvThrown _ => d
-
-\func resVal (d : Value) (r : Res RunOut) : Value \elim r
-  | rOk o => unRv d o
-  | rStuck => d
-  | rOutOfFuel => d
-
--- THE BACKEND IS STILL INCORRECT, on the other family.
-\func natOverflowRefutesCorrect
-  (c : CorrectAtProgram 200 natOverflowProgram natOverflowValue) : Empty =>
-  \case c lbNatOverflow \with {
-    | (jv, run, (k, rel)) =>
-      \let | jvIsNeg : jv = vLong (neg 9223372036854775808)
-             => pmap (resVal jv) (inv run *> natOverflowInJava)
-           | related : agrees k natOverflowValue (vLong (neg 9223372036854775808)) = true
-             => transport (\lam w => agrees k natOverflowValue w = true) jvIsNeg rel
-      \in true/=false (inv related *> natOverflowNotRelated k)
-  }
-
--- And the root cause, proved directly rather than attributed through the
--- unproved `CorrectGeneric`: the runtime-agreement hypothesis fails at the
--- SHIPPED pair, on `Nat.add`.
---
--- `Nat.add` is a Lean family member, so `axiomRtName` sends it to
--- `PRIM_ADD_LONG` -- and the ARITY half still holds (`rtInt63` layers over
--- `rtLong`, so it knows that constant and its arity). As with the int63 defect
--- before it, the two runtimes agree on when to fire and differ on what they
--- compute.
-\func natAddHasRuntimeName : axiomRtName natAddKn = just "PRIM_ADD_LONG" => idp
+-- And `Nat.add` lands on the i63 family now, which is what makes that work.
+\func natAddHasRuntimeName : axiomRtName natAddKn = just "PRIM_ADD_INT63" => idp
 
 \func natAddArityAgrees
-  : axiomArity {lbAxioms} natAddKn = builtinArity {rtInt63} "PRIM_ADD_LONG" => idp
+  : axiomArity {lbAxioms} natAddKn = builtinArity {rtInt63} "PRIM_ADD_INT63" => idp
 
-\func oracleStillDisagreesOnNat (oa : OracleAgree lbAxioms rtInt63) : Empty =>
-  \case oa.2 natAddKn "PRIM_ADD_LONG"
-             (prim (primInt, 9223372036854775807) :: prim (primInt, 1) :: nil)
-             (vLong 9223372036854775807 :: vLong 1 :: nil)
-             natOverflowValue
-             idp
-             (\lam i => \case \elim i \with { | 0 => (1, idp) | 1 => (1, idp) })
-             idp
-  \with {
-    | (jv, run, (k, rel)) =>
-      \let related : agrees k natOverflowValue (vLong (neg 9223372036854775808)) = true
-        => transport (\lam w => agrees k natOverflowValue w = true) (inv (rOk-inj run)) rel
-      \in true/=false (inv related *> natOverflowNotRelated k)
-  }
+-- `Nat.sub` KEEPS ITS OWN CONSTANT, and this is the pin that says the fix did
+-- not overreach. Lean's subtraction truncates at zero where i63's wraps, so
+-- routing it with `add`/`mul` would be the very mistake `Rt.java`'s `NAT_SUB_*`
+-- comment records (`const_fold` returned 2048 instead of 4772).
+\func natSubKeepsItsOwnConstant : axiomRtName natSubKn = just "NAT_SUB_LONG" => idp
 
--- The fix is known and is one line (`leanOpSuffix := "INT"`, putting Lean's
--- `Nat` on the unbounded `BigInteger` family). It is not made here because it
--- is a performance decision about every Lean program in the corpus, not a
--- correctness question -- see limitation (L) in `Formal/Correct.ard`.
+\func natSubStillTruncates
+  : runProgram lbAxioms natSubProgram 200 = rOk (prim (primInt, 0)) => idp
+
+-- ---------------------------------------------------------------------------
+-- SO WHAT IS STILL OPEN? Not a defect, as far as anything here can tell.
+--
+-- No program in this module refutes the statement any more, which is a
+-- genuinely different state from an hour ago and worth saying plainly rather
+-- than leaving implied.
+--
+-- `OracleAgree lbAxioms rtInt63` is still not PROVABLE, but the reason is now
+-- incomplete MODELLING rather than a wrong answer: `javaAxioms` realizes
+-- `Nat.div`/`mod`/`ble`, the `Int.*` family and the `Array.*` family, and
+-- `Formal/RtLong.ard` does not model those constants -- so the arity half fails
+-- on a name the model simply does not know. `natDivDisagrees` in
+-- `Formal/Agreement.ard` pins one such case. Closing it is bookkeeping (extend
+-- `builtinArityLong`/`builtinRunLong`), not a correctness question, and it is
+-- the honest reading of why the hypothesis is not discharged.
+--
+-- The obligations that ARE substantive remain `FuelMono` and `SubstLemma` in
+-- `Formal/Correct.ard`, neither of which this work touched.
+-- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
 -- COVERAGE. λ□ constructor -> is there an instance whose derivation reaches it?

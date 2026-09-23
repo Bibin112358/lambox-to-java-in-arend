@@ -6,7 +6,7 @@
 -- `wrap63` is SHARED with the backend (`Int63.ard`), not re-derived here: that
 -- the two sides normalize with the same function is the whole content of the
 -- int63 representation.
-\import Int63 (wrap63)
+\import Int63 (norm63, wrap63)
 \import LambdaBox
 \import Set
 \import StringUtil (intEqB)
@@ -30,25 +30,47 @@
 -- the backend is checked against, and the one mismatch this project has
 -- documented from the start would become invisible.
 --
--- So each family is defined from ITS OWN source, and they do not agree with each
--- other:
+-- ---------------------------------------------------------------------------
+-- CORRECTION, and it retracts limitation (L).
 --
---   * `Nat.*` -- Lean's `Nat` is arbitrary-precision (GMP-backed at runtime, an
---     unbounded inductive in the logic), so these are UNBOUNDED. `Nat.sub`
---     truncates at zero, `Nat.div`/`Nat.mod` follow Lean's total conventions
---     (division by zero is zero). This is the family the corpus actually uses:
---     `lean-*` and `leanbench-*` reach machine-`Nat` primitives, and the
---     `c__Nat__*` keys of `javaAxioms` are theirs.
+-- This module used to define the `Nat.*` family on UNBOUNDED naturals, on the
+-- grounds that "Lean's `Nat` is arbitrary-precision". That is true of LEAN and
+-- false of the λ□ that lean-to-lambdabox emits, which is what we compile. Its
+-- erasure (`LeanToLambdaBox/Erasure.lean`, `visitLiteral`) turns a `Nat`
+-- literal into `prim ⟨.primInt, n⟩` in `.machine` mode -- bounded by
+-- `BitVec.intMax 63`, and it PANICS rather than exceeding it -- with
+-- `PrimModel .primInt := BitVec 63` (`Basic.lean`). Its own summary says it:
+-- "Turn Nat literals into lambdabox primitive i63 (panic on overflow) ... the
+-- usual functions on `Nat` are treated as axioms".
+--
+-- So there is no unbounded integer anywhere in the λ□ we receive. THERE IS ONE
+-- INTEGER KIND, i63, and both families range over it. What made the old reading
+-- look defensible is that it is a true statement about the source language one
+-- step further back.
+--
+-- The consequences of the correction:
+--   * `natRun` wraps `add` and `mul` at 2^63 (they are the only operations that
+--     can leave the range), so it now agrees with `Rt.PRIM_*_INT63`.
+--   * `JavaAxioms.ard` routes `Nat.add`/`Nat.mul` to that family accordingly.
+--   * limitation (L) in `Formal/Correct.ard` is WITHDRAWN, and with it the
+--     `Nat`-overflow refutation that rested on it. That refutation was a proof
+--     that this module disagreed with the backend, which was true -- and this
+--     module was the side that was wrong.
+--
+-- WHAT DOES NOT CHANGE is `Nat.sub`. Lean's subtraction truncates at zero,
+-- which is Lean's convention and not i63's, so it keeps its own runtime
+-- constant; `Rt.java` records that sharing the wrapping one produced a real
+-- wrong answer (`const_fold` returned 2048 instead of 4772). "One integer kind"
+-- is a statement about the VALUES, not about the operations.
 --
 --   * `prim_*_int` -- λ□'s primitive int is MetaRocq's `EPrimitive.v`
---     `primIntModel (i : PrimInt63.int)`, i.e. `Uint63`: an UNSIGNED 63-bit
---     integer with cyclic arithmetic (mod 2^63), matching lean-to-lambdabox's
+--     `primIntModel (i : PrimInt63.int)`, i.e. `Uint63`: a 63-bit integer with
+--     cyclic arithmetic (mod 2^63), matching lean-to-lambdabox's
 --     `PrimModel .primInt := BitVec 63` and the Rocq refman's `Uint63`. Hence
---     `wrap63`, which the BACKEND now shares: with `primRepr := int63Repr` the
+--     `wrap63`, which the BACKEND shares: with `primRepr := int63Repr` the
 --     generated code runs `Rt.PRIM_*_INT63`, normalized by that same function.
 --     So for this family the int63/int64 gap is CLOSED rather than merely
---     documented -- it survives only under `longRepr`/`rtLong`, where it is
---     refuted rather than hidden.
+--     documented -- it survives only under `longRepr`/`rtLong`.
 --
 -- WHAT IS SHARED AND WHAT IS NOT, and the difference is the whole design:
 --   * `wrap63` comes from `Int63.ard` and is shared with the BACKEND, which
@@ -76,9 +98,8 @@
 --     `Nat`, so these are expressible, but each needs its own convention
 --     (`ediv`/`emod` are Euclidean). 8 occurrences in the corpus, all in
 --     `leanbench-deriv`.
---   * `Nat.pow` -- unbounded exponentiation is not a gap in meaning but a
---     hazard in practice (`Nat.pow 2 64` is a literal this evaluator would
---     build), so it is left out until a program needs it. 2 occurrences.
+--   * `Nat.pow` -- expressible now that the family is i63 (the result wraps
+--     like `mul`), but left out until a program needs it. 2 occurrences.
 -- Each is a name `javaAxioms` DOES realize, so each is a place the backend
 -- compiles something this module cannot explain. The counts are the census in
 -- `Formal/Agreement.ard`'s header, which also says which way each gap cuts --
@@ -109,17 +130,6 @@
 
 -- A primitive int, as both semantics' arguments and results are spelled.
 \func lbInt (i : Int) : LBTerm => prim (primInt, i)
-
--- The natural an `Int` denotes, if it denotes one.
---
--- Three clauses rather than `pos`-and-a-catch-all: matching `pos` OBLIGES
--- matching `neg`, because `neg 0` evaluates to `pos 0` (Prelude's constructor
--- condition), and Arend rejects a catch-all that would hide the overlap. The
--- same three clauses `intToStr` has, for the same reason.
-\func intAsNat (i : Int) : Maybe Nat \elim i
-  | pos n => just n
-  | neg 0 => just 0
-  | neg (suc _) => nothing
 
 -- The two arguments every axiom here takes, decoded. `nothing` covers both "not
 -- two arguments" and "not primitive ints", which are the same kind of failure:
@@ -174,17 +184,28 @@
   | neg (suc _) => false
 }
 
--- Lean's `Nat` operations, on unbounded naturals.
+-- Lean's `Nat` operations, ON i63 VALUES -- see the header's correction of (L).
 --
--- `Nat.div`/`Nat.mod` by zero are zero in Lean (`Nat.div_zero`, `Nat.mod_zero`
--- are its own lemmas), and Arend's `Nat.div`/`Nat.mod` agree -- `Nat.divMod` is
--- a Prelude builtin with the same convention -- so there is no guard here.
+-- `add` and `mul` WRAP at 2^63, because the values they compute on are i63 and
+-- the reference realization of these axioms is CertiRocq's `prim_int63_*`.
+-- They are the only two that can leave the range: `sub` truncates downwards,
+-- `div`/`mod` shrink, and the comparisons return a `Bool`.
+--
+-- `sub` TRUNCATES AT ZERO, and that is Lean's convention rather than i63's.
+-- This is the one place the two families genuinely differ, which is why
+-- `javaAxioms` sends it to `NAT_SUB_*` and not to a wrapping `PRIM_SUB_*`;
+-- `Rt.java` records that sharing the wrapping one produced a real wrong answer
+-- (`const_fold` returned 2048 instead of 4772). Arend's `Nat.-` truncates into
+-- `Int`, so the negative case is clamped here, and no wrap is needed: both
+-- arguments are in [0, 2^63) and so is the result.
+--
+-- `div`/`mod` by zero are zero in Lean (`Nat.div_zero`, `Nat.mod_zero` are its
+-- own lemmas) and Arend's `Nat.div`/`Nat.mod` agree -- `Nat.divMod` is a
+-- Prelude builtin with the same convention -- so there is no guard here. Their
+-- results cannot leave the range either.
 \func natRun (op : String) (x y : Nat) : Maybe LBTerm =>
-  \case op == "add" \with { | true => just (lbInt (pos (x Nat.+ y))) | false =>
-  \case op == "mul" \with { | true => just (lbInt (pos (x Nat.* y))) | false =>
-  -- TRUNCATING, which is why `javaAxioms` sends it to `NAT_SUB_LONG` and not to
-  -- the wrapping `PRIM_SUB_LONG`. Arend's `Nat.-` truncates into `Int`, so the
-  -- negative case is clamped here.
+  \case op == "add" \with { | true => just (lbInt (norm63 (pos (x Nat.+ y)))) | false =>
+  \case op == "mul" \with { | true => just (lbInt (norm63 (pos (x Nat.* y)))) | false =>
   \case op == "sub" \with { | true => just (lbInt (\case x Nat.- y \with {
       | pos k => pos k
       | neg (suc _) => 0
@@ -229,17 +250,12 @@
 \func axiomRunLb (kn : Kername) (args : Array LBTerm) : Maybe LBTerm =>
   \case twoInts args \with {
     | nothing => nothing
+    -- BOTH FAMILIES NORMALIZE THEIR ARGUMENTS, because there is only one
+    -- integer kind: a λ□ `prim (primInt, _)` is an i63 whichever frontend put
+    -- it there. The families differ in the OPERATIONS they provide and in their
+    -- conventions (Lean's truncating `sub`), not in the numbers they range over.
     | just (x, y) => \case modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") \with {
-      -- Lean's `Nat`, at FULL PRECISION: there is no `wrap63` in this branch,
-      -- and that absence is the specification. A negative argument is ill-typed
-      -- input to a `Nat` operation, so it is `nothing` rather than being
-      -- silently reinterpreted.
-      | true => \case intAsNat x, intAsNat y \with {
-        | just a, just b => natRun kn.kerName a b
-        | _, _ => nothing
-      }
-      -- The int63 family, which normalizes its arguments instead of rejecting
-      -- them: every `Int` denotes a `Uint63`.
+      | true => natRun kn.kerName (wrap63 x) (wrap63 y)
       | false => \case modPathEq kn.kerModPath (mpFile nil) \with {
         | true => int63Run kn.kerName x y
         | false => nothing

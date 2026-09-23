@@ -21,13 +21,17 @@
 -- sharing is the claim: the backend computes what the source language says,
 -- rather than something that happens to agree on small values.
 --
--- So the pair (`rtLong`, `rtInt63`) is a before/after -- but only for the four
--- operations it covers. `Formal/Correct.ard`'s runtime-agreement hypothesis
--- does NOT hold at `rtInt63`: `oracleStillDisagreesOnNat` refutes it, because
--- the Lean `Nat` family is still on `long`. What is true, and all that is
--- claimed, is that the witness which refuted it for the int63 family
--- (`prim_sub_int 1 2`) now agrees -- see `int63NowAgrees` in
--- `Formal/CorrectInstances.ard`.
+-- So the pair (`rtLong`, `rtInt63`) is a before/after, and what it fixed is not
+-- only the `prim_*_int` family: Lean's `Nat.add`/`Nat.mul` are i63 operations
+-- too (see the correction at the top of `Formal/LbAxioms.ard`) and
+-- `JavaAxioms.ard` routes them here as well. `int63NowAgrees` and
+-- `natOverflowNowAgrees` in `Formal/CorrectInstances.ard` are the two witnesses
+-- that used to fail.
+--
+-- `Formal/Correct.ard`'s runtime-agreement hypothesis is still not PROVABLE at
+-- this pair, but no longer because of a wrong answer -- only because the model
+-- below covers fewer runtime constants than `javaAxioms` emits. That is
+-- bookkeeping, and it is the honest reason.
 --
 -- ---------------------------------------------------------------------------
 -- WHY THIS COSTS NOTHING, which is what made it the default
@@ -39,13 +43,13 @@
 -- that into mod 2^63: one AND per operation. `Rt.java`'s family does exactly
 -- that, and this file models exactly that family.
 --
--- WHAT IS NOT FIXED HERE. The Lean machine families (`NAT_SUB_*`, `Nat.div`,
--- the `INT_*` and `ARRAY_*` groups) are NOT changed by this: `JavaAxioms.ard`
--- routes them through `leanOpSuffix`, which is still `LONG`. Lean's `Nat` is
--- arbitrary-precision, so int63 would be no more faithful for it than int64 is.
--- That is limitation (L), deliberately untouched. This instance still MODELS
--- them -- it has to, since the generator still emits them -- by layering over
--- `rtLong`; what it changes is only the four λ□ primitive-int operations.
+-- WHAT STAYS ON `_LONG`, and why that is not a deviation. `Nat.sub` (truncating
+-- at zero, Lean's convention rather than i63's), `Nat.div`/`mod`/`ble`/`blt`
+-- and the comparisons cannot leave [0, 2^63) on arguments already in it, so the
+-- `_LONG` constants compute the answers the i63 ones would -- `long` and i63
+-- arithmetic differ ONLY on overflow. They are modelled here by layering over
+-- `rtLong` rather than duplicated. The `INT_*` and `ARRAY_*` groups are
+-- unmodelled by either instance, which is a named gap.
 -- =============================================================================
 
 -- The four operations `Rt.PRIM_*_INT63` provides. Binary, like every other

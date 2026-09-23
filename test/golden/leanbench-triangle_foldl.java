@@ -63,7 +63,7 @@ public final class Prog {
   }
   // inductive c___OfNat: erased; values use Data(tag, fields)
   public static Object c__Nat__add(){
-    return Rt.PRIM_ADD_LONG;
+    return Rt.PRIM_ADD_INT63;
   }
   public static Object c__List__foldl(){
     class C {

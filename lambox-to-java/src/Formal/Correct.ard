@@ -98,10 +98,11 @@
     -- values both sides already hold, `wrap64` identifies things λ□ can tell
     -- apart.
     --
-    -- UNDER EITHER ONE IT IS TOO FORGIVING FOR `Nat` -- see LIMITATION (L) at
-    -- the bottom. `LBTerm` does not record whether a `prim` came from a
-    -- `Uint63` or from Lean's arbitrary-precision `Nat`, so no choice of `norm`
-    -- can be right for both, and the weakness cannot be fixed here.
+    -- ONE `norm` IS RIGHT FOR EVERY `prim`, which is why `LBTerm` not recording
+    -- where a primitive came from costs nothing: there is one integer kind in
+    -- the λ□ we consume, and it is i63 (see the correction at the top of
+    -- `Formal/LbAxioms.ard`). This used to be stated as a limitation, on the
+    -- premise that Lean's `Nat` arrived unbounded. It does not.
     | prim (primInt, i), vLong j => intEqB (norm i) j
     -- A constructor: same tag, same fields, pointwise. The fields include the
     -- inductive parameters on both sides (constructor-block form on the λ□
@@ -130,8 +131,8 @@
 --
 -- `wrap64` is the "one bit pattern, two interpretations" reading, and it is a
 -- genuine weakening: it identifies λ□ values that the JVM cannot tell apart but
--- the source language can. Kept so the old pairing stays statable -- and so
--- limitation (L) stays visible, since the `Nat` family is still on `long`.
+-- the source language can. Kept only so the `longRepr` pairing stays statable;
+-- nothing shipped uses it.
 \func agreesLong (n : Nat) (t : LBTerm) (v : Value) : Bool => agreesWith wrap64 n t v
 
 -- The relation as a proposition: "some amount of fuel sees the correspondence".
@@ -298,28 +299,35 @@
    -> evalExpr rt cls n env (compileExpr (a' :: cenv) pth' b).2 = rOk r
 
 -- ---------------------------------------------------------------------------
--- LIMITATION (L), which is not an obligation but a weakness OF THE STATEMENT,
--- and so belongs next to it. HALF OF IT HAS BEEN FIXED.
+-- LIMITATION (L), WITHDRAWN. Recorded rather than deleted, because it drove a
+-- design decision and two theorems while it stood.
 --
--- WHAT WAS FIXED: λ□'s primitive int. `Rt.PRIM_*_INT63` implements `Uint63`,
--- `JavaAxioms.primRepr` selects it, and `agrees` normalizes with the SAME
--- `Int63.wrap63` the source semantics uses -- so for the `prim_*_int` family
--- the relation is exact equality on values both sides already hold, and there
--- is nothing left to be generous about. `Formal/CorrectInstances.ard` pins the
--- witness that used to fail.
+-- IT SAID: the statement is too weak about Lean's `Nat`, because `agrees`
+-- reconciles a λ□ `prim` with a Java `long` through a normalization, and Lean's
+-- `Nat` is arbitrary-precision -- so a backend that truncated it to 64 bits
+-- would satisfy the theorem. `natOverflowRefutesCorrect` and
+-- `oracleStillDisagreesOnNat` were the two theorems that followed once
+-- `norm63` stopped absorbing the difference.
 --
--- WHAT REMAINS: Lean's `Nat`. Its operations are still routed to the `long`
--- family (`JavaAxioms.leanOpSuffix`), where they truncate at 2^64, and
--- `agrees`'s `norm63` cannot help -- `Nat.add` at 2^63-1 and 1 is 2^63 in λ□
--- and a different value on the JVM. Under the OLD relation `wrap64` identified
--- the two and the theorem accepted the truncation outright; under `norm63` it
--- does not, so the disagreement is at least VISIBLE now rather than absorbed.
+-- WHY IT WAS WRONG: "Lean's `Nat` is arbitrary-precision" is a fact about LEAN,
+-- not about the λ□ this compiler consumes. lean-to-lambdabox erases a `Nat`
+-- literal to `prim ⟨.primInt, _⟩` in `.machine` mode, bounded by
+-- `BitVec.intMax 63`, and PANICS rather than exceeding it; its `PrimModel
+-- .primInt` is `BitVec 63`. So every integer in our input is an i63, the
+-- `Nat.*` axioms denote i63 operations, and `Formal/LbAxioms.ard` -- which had
+-- modelled them on unbounded naturals -- was the side that was wrong. The two
+-- theorems were proofs that the SPECIFICATION disagreed with the
+-- implementation.
 --
--- It still cannot be repaired here: `LBTerm`'s `prim (primInt, _)` does not
--- record whether it came from a `Nat` or a `Uint63`, so no single `norm` is
--- right for both families. The two real repairs are a tagged primitive in
--- `LambdaBox.ard`, or routing `Nat.*` to the unbounded `Rt.PRIM_*_INT`
--- (`BigInteger`) family -- the second is a one-line change to `leanOpSuffix`
--- and a performance decision about every Lean program, which is why it is not
--- made here.
+-- WHAT REPLACED IT: `natRun` wraps `add` and `mul` at 2^63, `JavaAxioms.ard`
+-- routes those two to `PRIM_*_INT63`, and `natOverflowNowAgrees`
+-- (`Formal/CorrectInstances.ard`) is the former counterexample discharged.
+-- `Nat.sub` keeps its own truncating constant, which is a difference of
+-- CONVENTION and not of number kind.
+--
+-- NO KNOWN COUNTEREXAMPLE REMAINS. `OracleAgree` is still not provable at the
+-- shipped pair, but for a bookkeeping reason rather than a wrong answer:
+-- `Formal/RtLong.ard` models fewer runtime constants than `javaAxioms` emits,
+-- so the arity half fails on names the model does not know. The substantive
+-- obligations are still `FuelMono` and `SubstLemma` above.
 -- ---------------------------------------------------------------------------

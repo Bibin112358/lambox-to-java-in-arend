@@ -78,35 +78,41 @@
 
 -- A λ□ primitive-int literal.
 --
--- WHERE THE SPLIT LEAKS, and it leaks exactly here. Lean's `Nat` literals erase
--- to `prim (primInt, n)` too -- there is one primitive node kind, not two -- so
--- this function cannot tell a `Uint63` literal from an arbitrary-precision
--- `Nat` one and normalizes both. Harmless for every literal below 2^63, which
--- is every literal any corpus program contains, and it is an improvement on
--- what came before: an un-normalized `Nat` literal at or above 2^63 used to be
--- emitted verbatim as a `long` literal, which javac REJECTS. Fixing it properly
--- means distinguishing the two in `LambdaBox.ard` -- limitation (L) in
--- `Formal/Correct.ard`.
+-- ONE NODE KIND, ONE NUMBER KIND, so there is nothing here to tell apart.
+-- Lean's `Nat` literals are `prim (primInt, n)` too, and that is not a leak:
+-- lean-to-lambdabox emits them as i63 and panics rather than exceeding the
+-- range, so normalizing is the right thing for every literal that can arrive.
+-- (This comment used to say the opposite, and pointed at a limitation that
+-- `Formal/LbAxioms.ard` now withdraws.)
+--
+-- It also fixes a failure mode the old `longRepr` had: a literal at or above
+-- 2^63 used to be emitted verbatim as a `long` literal, which javac REJECTS.
 \func intLit (i : Int) : JExpr => reprLit {primRepr} i
 
 -- Suffix selecting the runtime family for the λ□ PRIMITIVE-INT operations only.
 \func primOpSuffix : String => reprSuffix {primRepr}
 
--- Suffix for the LEAN-DERIVED families (`Nat.*`, `Int.*`, `Array.size`), which
--- is a different question and is answered `LONG` independently of `primRepr`.
+-- Suffix for the LEAN-DERIVED operations that CANNOT leave i63's range, which
+-- is why it can differ from `primRepr` without being wrong.
 --
--- They are not λ□ primitive-int operations: Lean's `Nat` is arbitrary-precision,
--- so the representation that would be faithful for it is `_INT`
--- (`BigInteger`), not `_INT63`. Running them on `long` truncates at 2^64 and is
--- a REAL defect -- limitation (L) -- left standing here deliberately, because
--- fixing it is a performance decision about every Lean program rather than a
--- correctness bug in the int63 work.
+-- Lean's `Nat` IS an i63 in the λ□ we receive -- lean-to-lambdabox erases a
+-- `Nat` literal to `prim ⟨.primInt, _⟩` and panics rather than exceeding 63
+-- bits (see the correction at the top of `Formal/LbAxioms.ard`, which withdraws
+-- the limitation this comment used to assert). So the question for each `Nat`
+-- operation is not "which representation" but "can the result leave [0, 2^63)":
 --
--- What matters is that the two are no longer CONFLATED. Until this split,
--- `c___prim_add_int` and `c__Nat__add` shared one runtime constant despite
--- meaning different things; `Rt.java`'s `NAT_SUB_*` comment records what that
--- costs, having already produced a wrong answer once (`const_fold` returned
--- 2048 instead of 4772 when `Nat.sub` shared `PRIM_SUB_*`).
+--   * `add` and `mul` CAN, so they go through `primOp` and land on
+--     `PRIM_*_INT63` with the rest of the i63 arithmetic.
+--   * `sub` truncates downwards, `div`/`mod` shrink, and the comparisons return
+--     a `Bool`. None can overflow, so on arguments already in range the `_LONG`
+--     constants compute the same answers the i63 ones would -- and they are
+--     kept, rather than duplicated into the INT63 family, because `long` and
+--     i63 arithmetic differ ONLY on overflow.
+--
+-- `sub` in particular must NOT be routed with the others: Lean's subtraction
+-- truncates at zero, which is Lean's convention and not i63's, so it keeps
+-- `NAT_SUB_*`. `Rt.java` records that sharing the wrapping `PRIM_SUB_*`
+-- produced a real wrong answer (`const_fold` returned 2048 instead of 4772).
 \func leanOpSuffix : String => "LONG"
 
 -- `Rt`, as the receiver of a static member. `runtimeClassName` comes from
@@ -134,8 +140,8 @@
       ("c___prim_mul_int", primOp "MUL") ::
       ("c___prim_sub_int", primOp "SUB") ::
       ("c___prim_eqb_int", primOp "EQB") ::
-      ("c__Nat__add", leanOp "ADD") ::
-      ("c__Nat__mul", leanOp "MUL") ::
+      ("c__Nat__add", primOp "ADD") ::
+      ("c__Nat__mul", primOp "MUL") ::
       -- NOT `leanOp "SUB"`: Lean's Nat subtraction truncates at zero, while
       -- `prim_sub_int` is Peregrine's wrapping int63 subtraction.
       ("c__Nat__sub", jField rtRef ("NAT_SUB_" ++ leanOpSuffix)) ::

@@ -38,8 +38,9 @@
 -- TWO ORACLES, ONE CHECK. Each side takes its runtime as a parameter, and the
 -- two parameters are DIFFERENT FUNCTIONS written from different sources:
 --
---   λ□     `lbAxioms` (Formal/LbAxioms.ard)  -- Lean's unbounded `Nat`, and
---                                               λ□'s `Uint63` primitive ints
+--   λ□     `lbAxioms` (Formal/LbAxioms.ard)  -- λ□'s i63, which is what both
+--                                               `prim_*_int` and Lean's `Nat.*`
+--                                               range over
 --   Java   `rtInt63`  (Formal/RtInt63.ard)   -- `Rt.java` as `primRepr`
 --                                               configures it: `PRIM_*_INT63`
 --                                               for λ□ primitive ints, the
@@ -61,9 +62,10 @@
 --   * an axiom NEITHER oracle covers -- `Array.*` needs a store λ□'s value
 --     domain has no room for, `Decidable`-returning comparisons need an
 --     inductive declaration the oracle would have to invent. Pinned below.
---   * an axiom only ONE oracle covers, in either direction: `Nat.div` computes
---     in λ□ and is a named gap in `rtLong`; that asymmetry is now visible as a
---     disagreement instead of being invisible on both sides. Also pinned.
+--   * an axiom only ONE side MODELS: `Nat.div` computes in λ□ and is a named
+--     gap in `Formal/RtLong.ard`, so `bothAgree` is `false` for it. That is the
+--     model being incomplete, not the backend being wrong -- `javaAxioms` does
+--     realize it. Pinned, and labelled as such.
 --   * a value that is a FUNCTION, including a partially-applied axiom -- see
 --     `agrees` below.
 -- =============================================================================
@@ -71,14 +73,14 @@
 -- The value relation is `Formal/Correct.ard`'s `agrees`, imported rather than
 -- defined here: it is part of the CORRECTNESS STATEMENT, and having a second
 -- copy next to the checks that exercise it would let the two drift. Its
--- restrictions -- first-order values only, so a closure or a partially-applied
--- axiom is `false`; and the `Nat` truncation it is too forgiving about -- are
--- documented there, with limitation (L).
+-- restriction -- first-order values only, so a closure or a partially-applied
+-- axiom is `false` -- is documented there, along with the withdrawal of
+-- limitation (L).
 
 -- Run a program through both semantics and compare. `false` covers every way
 -- this can fail to be an agreement, including either side not finishing.
 --
--- The two oracles are fixed here, once: `lbAxioms` against `rtLong`.
+-- The two oracles are fixed here, once: `lbAxioms` against `rtInt63`.
 \func bothAgree (p : LBProgram) (fuel : Nat) : Bool =>
   \case runProgram lbAxioms p fuel,
         runClass rtInt63 (compileClass progClassName p) bodyMethodName fuel \with {
@@ -229,7 +231,7 @@
 
 \func partialRunsInJava
   : runClass rtInt63 (compileClass progClassName partialProgram) bodyMethodName 200
-  = rOk (rvValue (vBuiltin "PRIM_ADD_LONG" (vLong 20 :: nil))) => idp
+  = rOk (rvValue (vBuiltin "PRIM_ADD_INT63" (vLong 20 :: nil))) => idp
 
 \func partialIsNotCompared : bothAgree partialProgram 200 = false => idp
 
