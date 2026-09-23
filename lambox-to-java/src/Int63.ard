@@ -1,0 +1,52 @@
+\import Arith.Nat
+\import Arith.Int (iabs)
+
+-- λ□'s primitive integer: `Uint63`, and the normal form that defines it.
+--
+-- WHAT IT IS. `LambdaBox.ard`'s `prim (primInt, i)` carries an unbounded Arend
+-- `Int`, but the language it models does not: a λ□ primitive int is a 63-bit
+-- UNSIGNED machine integer with cyclic arithmetic, i.e. a residue mod 2^63.
+--   * MetaRocq erasure/theories/EPrimitive.v -- `primIntModel (i :
+--     PrimInt63.int)`, and `PrimInt63.int` is Rocq's `Uint63`.
+--   * lean-to-lambdabox -- `PrimModel .primInt := BitVec 63`.
+--   * Rocq refman, "Primitive objects / Primitive integers" -- 63-bit machine
+--     integer, unsigned view `Uint63`, signed view `Sint63`.
+--
+-- WHY IT LIVES HERE, outside both `Formal/` and `JavaAxioms.ard`. Three places
+-- need it and they are on opposite sides of the translation:
+--   * `JavaAxioms.ard` -- to emit a normalized literal (the compiler);
+--   * `Formal/LbAxioms.ard` -- λ□'s own oracle for `prim_*_int` (the source
+--     semantics);
+--   * `Formal/RtInt63.ard` -- the model of the `Rt.PRIM_*_INT63` family (the
+--     target semantics).
+-- Sharing one definition is not convenience here, it IS the claim: the point of
+-- the int63 representation is that the backend computes what the source
+-- language says, and three copies of "mod 2^63" that happened to agree would
+-- state that much more weakly. Contrast `Formal/RtLong.ard`'s `wrap64`, which
+-- is deliberately NOT shared -- it is the JVM's rule (JLS 4.2.1/4.2.2), a
+-- different specification that merely has the same shape.
+
+-- Named for its ROLE. `Formal/RtLong.ard` uses `pow2_63` for the point at
+-- which a JVM `long` turns negative -- the same number, a different meaning --
+-- and a module importing both would otherwise get a clash warning.
+\func int63Mod : Nat => 9223372036854775808
+
+-- `x` reduced into [0, 2^63): the `Uint63` normal form, as a `Nat`.
+--
+-- UNSIGNED -- there is no reinterpretation of the upper half of the range as
+-- negative, because `Uint63` has no sign. That single difference from `wrap64`
+-- is the int63/int64 mismatch.
+--
+-- The `neg` clause is `2^63 - (n mod 2^63)`, guarded on zero because `2^63 - 0`
+-- is `2^63`, not `0`; `neg 0` is DEFINITIONALLY `pos 0` (Prelude's constructor
+-- condition on `Int`), and the two clauses agree there.
+\func wrap63 (x : Int) : Nat \elim x
+  | pos n => n Nat.mod int63Mod
+  | neg n => \case n Nat.mod int63Mod \with {
+    | 0 => 0
+    | suc k => iabs (int63Mod Nat.- suc k)
+  }
+
+-- The same, back as an `Int`, which is the form both a literal and a λ□ value
+-- want. Always non-negative.
+\func norm63 (x : Int) : Int => pos (wrap63 x)

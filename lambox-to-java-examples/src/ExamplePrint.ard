@@ -19,10 +19,12 @@
 -- Only the example entry points are imported by name, since the modules
 -- otherwise share definition names (`decls`, `mainTerm`, ...).
 --
--- `*Java` prints the generated Java. There is one int representation, Java's
--- built-in 64-bit integers, and no generator options at all -- the
+-- `*Java` prints the generated Java. There are no generator options: the
 -- `*JavaBigInteger` variants that used to sit beside these are gone with the
--- `JavaTarget` record (see ONE TARGET, NO OPTIONS in ToJava.ard).
+-- `JavaTarget` record that threaded a target through `compileClass`. The int
+-- representation is chosen once, by `JavaAxioms.primRepr` -- currently
+-- `int63Repr`, λ□'s own `Uint63` -- which is a named constant in that file and
+-- not a knob a caller can turn.
 -- =============================================================================
 
 \func exampleJava => putStrLn (compileProgram "Prog" testProgram)

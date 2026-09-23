@@ -7,9 +7,11 @@
 \import Formal.LambdaBoxEval
 \import Formal.LbAxioms
 \import Formal.Res
+\import Formal.RtInt63
 \import Formal.RtLong
 \import JavaAst
 \import JavaAxioms
+\import Int63 (norm63)
 \import LambdaBox
 \import NodePath
 \import Set
@@ -49,9 +51,11 @@
 --     λ□ has no rule for an axiom, so every case where Rt's arithmetic could
 --     matter is VACUOUS in the theorem". That vacuousness is gone: λ□ now
 --     evaluates axioms, so the theorem depends on the two runtimes agreeing.
---     That is `OracleAgree` below -- and it is FALSE at the pair this project
---     ships, proved in `Formal/CorrectInstances.ard` (`oracleDisagrees`). The
---     arity half holds; it is the computed VALUE the two disagree on.
+--     That is `OracleAgree` below. It is FALSE at `rtLong` -- proved in
+--     `Formal/CorrectInstances.ard` (`oracleDisagrees`), with the arity half
+--     holding and the computed VALUE disagreeing -- which is what motivated
+--     the int63 representation. The pair this project now ships is `rtInt63`,
+--     where the witness that refuted it agrees.
 -- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
@@ -74,39 +78,61 @@
 -- partially-applied axiom is in the same class (see the header of
 -- `Formal/Agreement.ard`).
 --
--- IT IS FIXED TO THE `Long` REPRESENTATION. `wrap64` is `rtLong`'s, so although
--- `CorrectGeneric` below quantifies over the runtime's BEHAVIOUR it does not
--- quantify over the representation of a primitive int; `JavaAxioms.intLit`
--- picks that, once, for the whole backend. A `BigInteger` target would need its
--- own relation.
+-- IT IS PARAMETERIZED BY THE REPRESENTATION, because it has to be: what counts
+-- as "the same integer" is exactly what the two representations disagree
+-- about. `agreesWith` takes the normalization, and the two instances below pair
+-- with the two `RtSpec`s -- `agrees`/`rtInt63` (shipped) and
+-- `agreesLong`/`rtLong` (the deviation). `CorrectGeneric` quantifies over the
+-- runtime's BEHAVIOUR; the representation is chosen once by
+-- `JavaAxioms.primRepr`, and picking a different one means picking the matching
+-- relation too.
 --
 -- Fuel, because the recursion goes through an array of fields.
-\func agrees (n : Nat) (t : LBTerm) (v : Value) : Bool \elim n
+\func agreesWith (norm : Int -> Int) (n : Nat) (t : LBTerm) (v : Value) : Bool \elim n
   | 0 => false
   | suc n => \case t, v \with {
     | box, vBox => true
-    -- λ□'s `prim` int is unbounded; the Java side is a `long`. They agree only
-    -- while the value is in range, which `wrap64` makes explicit rather than
-    -- assumed -- this is the int63 mismatch, at the one place it is observable.
+    -- λ□'s `prim` int is an unbounded `Int` in this AST; the Java side is a
+    -- `long`. `norm` is what reconciles them, and WHICH normalization is the
+    -- whole difference between the two representations: `norm63` is exact on
+    -- values both sides already hold, `wrap64` identifies things λ□ can tell
+    -- apart.
     --
-    -- AND IT IS TOO FORGIVING FOR `Nat`. See LIMITATION (L) at the bottom: for
-    -- a value that came from Lean's arbitrary-precision `Nat`, `wrap64` here
-    -- accepts the backend's 64-bit truncation as an agreement. `LBTerm` does
-    -- not record which of the two a `prim` came from, so the relation has
-    -- nothing to split on and the weakness cannot be fixed locally.
-    | prim (primInt, i), vLong j => intEqB (wrap64 i) j
+    -- UNDER EITHER ONE IT IS TOO FORGIVING FOR `Nat` -- see LIMITATION (L) at
+    -- the bottom. `LBTerm` does not record whether a `prim` came from a
+    -- `Uint63` or from Lean's arbitrary-precision `Nat`, so no choice of `norm`
+    -- can be right for both, and the weakness cannot be fixed here.
+    | prim (primInt, i), vLong j => intEqB (norm i) j
     -- A constructor: same tag, same fields, pointwise. The fields include the
     -- inductive parameters on both sides (constructor-block form on the λ□
     -- side, every `construct` argument passed to `new Rt.Data` on the Java
     -- side), so there is no offset to account for here.
-    | construct _ c args, vData tg fs => (c == tg) and agreesAll n args fs
+    | construct _ c args, vData tg fs => (c == tg) and agreesAllWith norm n args fs
     | _, _ => false
   }
 
-\func agreesAll (n : Nat) (ts : Array LBTerm) (vs : Array Value) : Bool \elim ts, vs
+\func agreesAllWith (norm : Int -> Int) (n : Nat) (ts : Array LBTerm) (vs : Array Value)
+  : Bool \elim ts, vs
   | nil, nil => true
-  | t :: ts, v :: vs => agrees n t v and agreesAll n ts vs
+  | t :: ts, v :: vs => agreesWith norm n t v and agreesAllWith norm n ts vs
   | _, _ => false
+
+-- THE SHIPPED RELATION, for `primRepr := int63Repr`.
+--
+-- `norm63` here is NOT a two-readings fudge, and that is the difference the
+-- faithful representation buys. Both sides already hold `Uint63` values -- λ□'s
+-- oracle normalizes, and `Rt.PRIM_*_INT63` normalizes -- so on everything this
+-- relation is applied to it is the identity, and the clause is plain equality.
+-- It is applied at all only to catch an un-normalized λ□ literal.
+\func agrees (n : Nat) (t : LBTerm) (v : Value) : Bool => agreesWith norm63 n t v
+
+-- THE DEVIATION'S RELATION, for `longRepr`/`rtLong`.
+--
+-- `wrap64` is the "one bit pattern, two interpretations" reading, and it is a
+-- genuine weakening: it identifies λ□ values that the JVM cannot tell apart but
+-- the source language can. Kept so the old pairing stays statable -- and so
+-- limitation (L) stays visible, since the `Nat` family is still on `long`.
+\func agreesLong (n : Nat) (t : LBTerm) (v : Value) : Bool => agreesWith wrap64 n t v
 
 -- The relation as a proposition: "some amount of fuel sees the correspondence".
 \func ValRel (t : LBTerm) (v : Value) : \Type => \Sigma (n : Nat) (agrees n t v = true)
@@ -193,7 +219,7 @@
 \func Correct : \Type =>
   \Pi {p : LBProgram} {v : LBTerm} -> EvalProgram lbAxioms p v ->
     \Sigma (jv : Value)
-           (JEval rtLong (compileClass progClassName p) bodyMethodName jv)
+           (JEval rtInt63 (compileClass progClassName p) bodyMethodName jv)
            (ValRel v jv)
 
 -- `Correct` AT ONE PROGRAM, with the clock named rather than existential.
@@ -219,7 +245,7 @@
 \func CorrectAtProgram (n : Nat) (p : LBProgram) (v : LBTerm) : \Type =>
   EvalProgram lbAxioms p v ->
     \Sigma (jv : Value)
-           (runClass rtLong (compileClass progClassName p) bodyMethodName n = rOk (rvValue jv))
+           (runClass rtInt63 (compileClass progClassName p) bodyMethodName n = rOk (rvValue jv))
            (ValRel v jv)
 
 -- ---------------------------------------------------------------------------
@@ -273,20 +299,27 @@
 
 -- ---------------------------------------------------------------------------
 -- LIMITATION (L), which is not an obligation but a weakness OF THE STATEMENT,
--- and so belongs next to it.
+-- and so belongs next to it. HALF OF IT HAS BEEN FIXED.
 --
--- `agrees` relates a λ□ `prim (primInt, i)` to a Java `vLong j` when
--- `wrap64 i = j`. For a value that really is a `Uint63` literal that is the
--- right reading -- one bit pattern, two interpretations. For a value that came
--- from Lean's arbitrary-precision `Nat` it is too generous: `Nat.add` at
--- 2^63-1 and 1 gives 2^63 in λ□ (unbounded, as Lean's `Nat` is) and -2^63 on
--- the JVM, and `wrap64` identifies them. So a backend that silently truncates
--- Lean's `Nat` to 64 bits SATISFIES this theorem.
+-- WHAT WAS FIXED: λ□'s primitive int. `Rt.PRIM_*_INT63` implements `Uint63`,
+-- `JavaAxioms.primRepr` selects it, and `agrees` normalizes with the SAME
+-- `Int63.wrap63` the source semantics uses -- so for the `prim_*_int` family
+-- the relation is exact equality on values both sides already hold, and there
+-- is nothing left to be generous about. `Formal/CorrectInstances.ard` pins the
+-- witness that used to fail.
 --
--- It cannot be repaired inside the relation: `LBTerm`'s `prim (primInt, _)` does
--- not record whether it came from a `Nat` or a `Uint63`, so there is nothing to
--- split on. Repairing it means either a tagged primitive in the AST or a typed
--- correspondence indexed by the source type -- both changes to `LambdaBox.ard`,
--- not to this file. `Formal/CorrectInstances.ard` pins the instance so the
--- weakness is on record as a checked fact rather than a caveat.
+-- WHAT REMAINS: Lean's `Nat`. Its operations are still routed to the `long`
+-- family (`JavaAxioms.leanOpSuffix`), where they truncate at 2^64, and
+-- `agrees`'s `norm63` cannot help -- `Nat.add` at 2^63-1 and 1 is 2^63 in λ□
+-- and a different value on the JVM. Under the OLD relation `wrap64` identified
+-- the two and the theorem accepted the truncation outright; under `norm63` it
+-- does not, so the disagreement is at least VISIBLE now rather than absorbed.
+--
+-- It still cannot be repaired here: `LBTerm`'s `prim (primInt, _)` does not
+-- record whether it came from a `Nat` or a `Uint63`, so no single `norm` is
+-- right for both families. The two real repairs are a tagged primitive in
+-- `LambdaBox.ard`, or routing `Nat.*` to the unbounded `Rt.PRIM_*_INT`
+-- (`BigInteger`) family -- the second is a one-line change to `leanOpSuffix`
+-- and a performance decision about every Lean program, which is why it is not
+-- made here.
 -- ---------------------------------------------------------------------------

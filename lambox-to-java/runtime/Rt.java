@@ -190,8 +190,16 @@ public final class Rt {
   // C runtime (CertiRocq prim_int63_add/mul/sub/eqb) or the OCaml one (unboxed
   // OCaml `int`, cf. ExtrOCamlInt63); they agree as long as values stay well
   // below 2^62, which holds for the current examples.
-  // FUTURE WORK: a `PRIM_*_INT63` family normalizing mod 2^63 per `Uint63`,
-  // selected by a third `JavaTarget` value (`targetInt63`).
+  // DONE, and it is now the DEFAULT: the `PRIM_*_INT63` family below
+  // normalizes mod 2^63 per `Uint63` and is selected by `JavaAxioms.ard`'s
+  // `primRepr`. The mismatch above therefore stands only for the two older
+  // families, which remain because `_LONG` is the fast deviation a program can
+  // still be compiled against and `_INT` is what the unbounded families use.
+  //
+  // It does NOT fix the other half. Lean's `Nat` is arbitrary-precision, and
+  // its operations (`NAT_*`, and the `Nat.*` entries of the axiom table) stay
+  // on `long`, where they still truncate at 2^64. That is a separate defect,
+  // tracked as limitation (L) in `Formal/Correct.ard`.
   private static java.math.BigInteger num(Object x) { return (java.math.BigInteger) x; }
 
   private static long lng(Object x) { return ((Long) x).longValue(); }
@@ -247,6 +255,52 @@ public final class Rt {
     public Object apply(final Object x) {
       return new Fn() { public Object apply(Object y) { return lng(x) == lng(y) ? TRUE : FALSE; } };
     }
+  };
+
+  // --- PRIM_*_INT63: λ□'s primitive int, as the language actually defines it -
+  //
+  // `Uint63` — unsigned, 63-bit, cyclic mod 2^63. This is the family the
+  // FUTURE WORK note above asked for, and it is the only one of the three that
+  // agrees with λ□'s own evaluation (MetaRocq `primIntModel (i :
+  // PrimInt63.int)`; lean-to-lambdabox `PrimModel .primInt := BitVec 63`; the
+  // Rocq refman's `Uint63`). The other two are deviations: `_INT` never wraps,
+  // `_LONG` wraps at 2^64 and signed.
+  //
+  // AND IT IS ESSENTIALLY FREE, which is the reason there is no longer a
+  // correctness/speed trade here. A value is held in a `long` restricted to
+  // [0, 2^63), which is exactly the non-negative half of `long`'s range, so
+  // nothing is boxed differently from `_LONG` and no BigInteger is involved.
+  // Java's `+`, `-` and `*` on `long` are two's-complement, i.e. mod 2^64
+  // (JLS 4.2.2), so masking the result with 2^63-1 gives mod 2^63: one AND
+  // instruction per operation. Checked against BigInteger `mod 2^63` on two
+  // million random operand pairs for +, -, * and /, plus the two boundary
+  // cases `(2^63-1) + 1 = 0` and `1 - 2 = 2^63-1`.
+  //
+  // Division and remainder need no mask: both operands are already in
+  // [0, 2^63), so they are non-negative `long`s and Java's `/` and `%` are the
+  // unsigned operations on them.
+  //
+  // Arguments are re-normalized on the way in rather than assumed normalized.
+  // That costs nothing and makes each constant correct in isolation, which is
+  // what lets the Arend model (`Formal/RtInt63.ard`) state the same thing.
+  public static final long MASK63 = Long.MAX_VALUE; // 2^63 - 1
+
+  private static long u63(Object x) { return ((Long) x).longValue() & MASK63; }
+
+  public static final Fn PRIM_ADD_INT63 = new Bin() {
+    Object run(Object x, Object y) { return Long.valueOf((u63(x) + u63(y)) & MASK63); }
+  };
+
+  public static final Fn PRIM_MUL_INT63 = new Bin() {
+    Object run(Object x, Object y) { return Long.valueOf((u63(x) * u63(y)) & MASK63); }
+  };
+
+  public static final Fn PRIM_SUB_INT63 = new Bin() {
+    Object run(Object x, Object y) { return Long.valueOf((u63(x) - u63(y)) & MASK63); }
+  };
+
+  public static final Fn PRIM_EQB_INT63 = new Bin() {
+    Object run(Object x, Object y) { return u63(x) == u63(y) ? TRUE : FALSE; }
   };
 
   // --- Lean machine-Nat operations -------------------------------------------

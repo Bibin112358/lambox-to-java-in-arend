@@ -1,11 +1,12 @@
 \import Arith.Nat
--- Only `iabs`: importing `Arith.Int` wholesale would give a second `+` next to
--- the `Nat.+` this module computes with.
-\import Arith.Int (iabs)
 \import Data.Bool
 \import Data.Maybe
 \import Data.String
 \import Formal.LambdaBoxEval
+-- `wrap63` is SHARED with the backend (`Int63.ard`), not re-derived here: that
+-- the two sides normalize with the same function is the whole content of the
+-- int63 representation.
+\import Int63 (wrap63)
 \import LambdaBox
 \import Set
 \import StringUtil (intEqB)
@@ -43,16 +44,24 @@
 --     `primIntModel (i : PrimInt63.int)`, i.e. `Uint63`: an UNSIGNED 63-bit
 --     integer with cyclic arithmetic (mod 2^63), matching lean-to-lambdabox's
 --     `PrimModel .primInt := BitVec 63` and the Rocq refman's `Uint63`. Hence
---     `wrap63` below, and hence the int63/int64 gap `JavaAxioms.ard`'s header
---     calls a KNOWN MISMATCH is now a gap between two written-down semantics
---     rather than between one semantics and a comment.
+--     `wrap63`, which the BACKEND now shares: with `primRepr := int63Repr` the
+--     generated code runs `Rt.PRIM_*_INT63`, normalized by that same function.
+--     So for this family the int63/int64 gap is CLOSED rather than merely
+--     documented -- it survives only under `longRepr`/`rtLong`, where it is
+--     refuted rather than hidden.
 --
--- `wrap63` is deliberately NOT shared with `Formal/RtLong.ard`'s `wrap64`, even
--- though the two are the same shape. They are different specifications with
--- different citations -- JLS 4.2.1/4.2.2 there, MetaRocq/Uint63 here -- and one
--- generalized helper would hide exactly the difference these checks exist to
--- expose. What IS shared is `intEqB`, which carries no specification (see its
--- comment in `StringUtil.ard`).
+-- WHAT IS SHARED AND WHAT IS NOT, and the difference is the whole design:
+--   * `wrap63` comes from `Int63.ard` and is shared with the BACKEND, which
+--     normalizes its literals and its `Rt.PRIM_*_INT63` family with the very
+--     same function (`Formal/RtInt63.ard` models it). Three copies that
+--     happened to agree would state the correspondence far more weakly than
+--     one definition used by both sides.
+--   * `wrap64` (`Formal/RtLong.ard`) is NOT shared with it, though the two have
+--     the same shape. That one is the JVM's rule (JLS 4.2.1/4.2.2), a different
+--     specification which λ□ never asked for, and collapsing them would hide
+--     exactly the difference `oracleDisagrees` exists to expose.
+--   * `intEqB` is shared with everything, carrying no specification at all (see
+--     its comment in `StringUtil.ard`).
 --
 -- ---------------------------------------------------------------------------
 -- NAMED GAPS, all deliberate and all `nothing`, hence `rStuck`
@@ -76,30 +85,6 @@
 -- several of these are gaps in `Formal/RtLong.ard` too, and three names
 -- (`Nat.div`, `Nat.mod`, `Nat.ble`) are covered HERE and not there.
 -- =============================================================================
-
--- The `Uint63` modulus. Named for its ROLE rather than as `pow2_63`, which
--- `Formal/RtLong.ard` already uses for the boundary at which a JVM `long`
--- turns negative: the same number, but the two files mean different things by
--- it, and one shared name across an import would be a clash warning and a
--- worse comment.
-\func int63Mod : Nat => 9223372036854775808
-
--- `x` reduced into [0, 2^63), the `Uint63` normal form.
---
--- UNSIGNED, unlike `wrap64`: there is no reinterpretation of the top half of
--- the range as negative, because `PrimInt63.int` has no sign. That single
--- difference is the int63/int64 mismatch, and `Formal/Agreement.ard` pins the
--- value where it becomes observable.
---
--- The `neg` clause is `2^63 - (n mod 2^63)`, guarded on zero because
--- `2^63 - 0` is `2^63`, not `0`; `neg 0` is DEFINITIONALLY `pos 0` (Prelude's
--- constructor condition on `Int`), and the two clauses agree there.
-\func wrap63 (x : Int) : Nat \elim x
-  | pos n => n Nat.mod int63Mod
-  | neg n => \case n Nat.mod int63Mod \with {
-    | 0 => 0
-    | suc k => iabs (int63Mod Nat.- suc k)
-  }
 
 -- ---------------------------------------------------------------------------
 -- The values this oracle produces and consumes.

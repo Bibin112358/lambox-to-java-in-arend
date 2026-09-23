@@ -1,6 +1,7 @@
 \import Data.Maybe
 \import Data.String
 \import LambdaBox
+\import Formal.RtInt63
 \import Formal.RtLong
 \import ExamplePeano
 \import JavaAst
@@ -91,22 +92,40 @@
 
 \func addT (a b : LBTerm) : LBTerm => app (app (const primAddKn) a) b
 
--- 2 + 3 = 5. Reaches `Rt.PRIM_ADD_LONG` as a field, applies it twice (the arity
--- contract: one argument leaves a `vBuiltin` holding it, the second saturates),
--- and boxes the result through `Long.valueOf`.
+-- 2 + 3 = 5. Reaches `Rt.PRIM_ADD_INT63` as a field, applies it twice (the
+-- arity contract: one argument leaves a `vBuiltin` holding it, the second
+-- saturates), and boxes the result through `Long.valueOf`.
+--
+-- `rtInt63` because `JavaAxioms.primRepr` is `int63Repr`: the generator emits
+-- the `_INT63` family for a λ□ primitive-int operation, so that is the runtime
+-- the compiled class has to be run against. Under `rtLong` this class is stuck,
+-- which is the model reporting a missing constant rather than guessing.
 \func addClass : JClass => compileClass "Prog" (axiomDecls, addT (litT 2) (litT 3))
 
-\func addEvaluates : runClass rtLong addClass bodyMethodName 100 = rOk (rvValue (vLong 5))
+\func addEvaluates : runClass rtInt63 addClass bodyMethodName 100 = rOk (rvValue (vLong 5))
   => idp
 
--- The same, at the edge of the range: (2^63-1) + 1 wraps to -2^63 rather than
--- growing, which is JLS 4.2.2 and the reason `RtLong.wrap64` exists. Arend's
--- `Int` would happily report 9223372036854775808 here, and the JVM does not.
+-- The same at the edge of the range, and THE POINT OF THE INT63 REPRESENTATION:
+-- (2^63-1) + 1 is 0, because a λ□ primitive int is a `Uint63` and 2^63 is where
+-- it wraps.
+--
+-- This line used to read `neg 9223372036854775808` -- the JVM's answer under
+-- `PRIM_ADD_LONG`, which wraps at 2^64 and signed. Both are "wraparound", and
+-- they are not the same wraparound; λ□'s semantics says 0
+-- (`Formal/LbAxioms.ard`'s `int63Run`), and now so does the backend.
 \func wrapClass : JClass =>
   compileClass "Prog" (axiomDecls, addT (litT 9223372036854775807) (litT 1))
 
 \func wrapEvaluates
-  : runClass rtLong wrapClass bodyMethodName 100 = rOk (rvValue (vLong (neg 9223372036854775808)))
+  : runClass rtInt63 wrapClass bodyMethodName 100 = rOk (rvValue (vLong 0))
+  => idp
+
+-- And the old answer is still derivable, from the model of the family that
+-- produced it -- so the change is visible as a disagreement between two
+-- runtimes rather than as an edit to a number.
+\func longWouldHaveSaid
+  : builtinRunLong "PRIM_ADD_LONG" (vLong 9223372036854775807 :: vLong 1 :: nil)
+  = rOk (vLong (neg 9223372036854775808))
   => idp
 
 -- `proj`: field 0 of a one-field constructor, with no inductive parameters.

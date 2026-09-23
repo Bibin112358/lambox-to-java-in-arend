@@ -11,7 +11,8 @@
 \import Formal.LambdaBoxSound
 \import Formal.LbAxioms
 \import Formal.Res
-\import Formal.RtLong
+\import Formal.RtInt63
+\import Formal.RtLong (builtinRunLong, wrap64)
 \import JavaAst
 \import LambdaBox
 \import Paths
@@ -39,14 +40,17 @@
 --
 --   λ□     `lbAxioms` (Formal/LbAxioms.ard)  -- Lean's unbounded `Nat`, and
 --                                               λ□'s `Uint63` primitive ints
---   Java   `rtLong`   (Formal/RtLong.ard)    -- `Rt.java` on JVM `long`
+--   Java   `rtInt63`  (Formal/RtInt63.ard)   -- `Rt.java` as `primRepr`
+--                                               configures it: `PRIM_*_INT63`
+--                                               for λ□ primitive ints, the
+--                                               `_LONG` family for Lean's
 --
 -- That is what makes `bothAgree` worth running. If one oracle were defined in
--- terms of the other, or if λ□'s arithmetic were defined to wrap at 2^64
--- because the JVM does, every check below would pass and none would mean
--- anything. Because they are independent, agreement is evidence -- and
--- disagreement is a finding, which is why `int63Disagrees` below is pinned as
--- carefully as the agreements are.
+-- terms of the other, every check below would pass and none would mean
+-- anything. They are independent, and where they AGREE it is because the
+-- backend was made to compute what the source language says -- `int63Agrees`
+-- below is the case that used to fail and now does not. Where they still
+-- disagree it is a finding, pinned as carefully as the agreements.
 --
 -- WHAT IT STILL CANNOT COVER:
 --   * a program whose `construct`/`case`/`proj` has no inductive DECLARATION is
@@ -77,7 +81,7 @@
 -- The two oracles are fixed here, once: `lbAxioms` against `rtLong`.
 \func bothAgree (p : LBProgram) (fuel : Nat) : Bool =>
   \case runProgram lbAxioms p fuel,
-        runClass rtLong (compileClass progClassName p) bodyMethodName fuel \with {
+        runClass rtInt63 (compileClass progClassName p) bodyMethodName fuel \with {
     | rOk t, rOk (rvValue v) => agrees fuel t v
     | _, _ => false
   }
@@ -130,8 +134,9 @@
 
 \func zeroCaseAgrees : bothAgree zeroCaseProgram 500 = true => idp
 
--- A primitive integer: the one place the int63 mismatch is observable, and
--- `agrees` compares through `wrap64` because of it.
+-- A primitive integer. Nothing to normalize at 42, so this checks only that a
+-- literal survives `intLit` and comes back as the same number; the values where
+-- normalization matters are at the bottom of this module.
 \func litProgram : LBProgram => (nil, prim (primInt, 42))
 
 \func litAgrees : bothAgree litProgram 100 = true => idp
@@ -142,8 +147,8 @@
 -- gap itself.
 -- ---------------------------------------------------------------------------
 
--- A λ□ primitive: `prim_add_int 2 3`. Both sides now compute 5 -- λ□ through
--- `int63Run`, Java through `Rt.PRIM_ADD_LONG` -- and `agrees` matches them.
+-- A λ□ primitive: `prim_add_int 2 3`. Both sides compute 5 -- λ□ through
+-- `int63Run`, Java through `Rt.PRIM_ADD_INT63` -- and `agrees` matches them.
 \func axiomKn : Kername => \new Kername (mpFile nil) "prim_add_int"
 
 \func addAxiomProgram : LBProgram =>
@@ -158,7 +163,7 @@
   : runProgram lbAxioms addAxiomProgram 200 = rOk (prim (primInt, 5)) => idp
 
 \func axiomRunsInJava
-  : runClass rtLong (compileClass progClassName addAxiomProgram) bodyMethodName 200
+  : runClass rtInt63 (compileClass progClassName addAxiomProgram) bodyMethodName 200
   = rOk (rvValue (vLong 5))
   => idp
 
@@ -223,7 +228,7 @@
   = rOk (app (const natAddKn) (prim (primInt, 20))) => idp
 
 \func partialRunsInJava
-  : runClass rtLong (compileClass progClassName partialProgram) bodyMethodName 200
+  : runClass rtInt63 (compileClass progClassName partialProgram) bodyMethodName 200
   = rOk (rvValue (vBuiltin "PRIM_ADD_LONG" (vLong 20 :: nil))) => idp
 
 \func partialIsNotCompared : bothAgree partialProgram 200 = false => idp
@@ -290,8 +295,9 @@
 \func boolFalseAgrees : bothAgree boolProgram 500 = true => idp
 
 -- The other corpus axiom, `Nat.sub`, which truncates at zero in Lean and is why
--- `javaAxioms` sends it to `NAT_SUB_LONG` rather than the wrapping `PRIM_SUB`.
--- 3 - 5 is 0, not -2.
+-- `javaAxioms` sends it to `NAT_SUB_LONG` rather than to a wrapping `PRIM_SUB`.
+-- 3 - 5 is 0, not -2. Note the suffix: this is a LEAN family, routed by
+-- `leanOpSuffix`, so the int63 change does not touch it.
 \func natSubKn : Kername => \new Kername (mpDot (mpFile nil) "Nat") "sub"
 
 \func natSubProgram : LBProgram =>
@@ -304,16 +310,19 @@
 \func natSubAgrees : bothAgree natSubProgram 200 = true => idp
 
 -- ---------------------------------------------------------------------------
--- THE INT63/INT64 MISMATCH, as a disagreement between two written-down
--- semantics rather than as a comment.
+-- THE INT63/INT64 MISMATCH -- FIXED, and this is the witness that used to show
+-- it was not.
 --
--- `JavaAxioms.ard` has called this a KNOWN MISMATCH from the start: λ□'s
--- primitive int is `Uint63` (unsigned, cyclic mod 2^63) and the backend
--- represents it as a JVM `long` (signed, cyclic mod 2^64). Until both sides had
--- a semantics there was nothing to check it against.
+-- `JavaAxioms.ard` called this a KNOWN MISMATCH from the start: λ□'s primitive
+-- int is `Uint63` (unsigned, cyclic mod 2^63) while the backend represented it
+-- as a JVM `long` (signed, cyclic mod 2^64). `prim_sub_int 1 2` is where the
+-- two part company -- λ□ says 2^63-1, a `long` says -1 -- and with both sides
+-- given a semantics it stopped being a caveat and became a refutation.
 --
--- `prim_sub_int 1 2`: λ□ says 2^63 - 1 (unsigned wraparound), the JVM says -1.
--- Neither is wrong about its own model; the backend is wrong to identify them.
+-- With `primRepr := int63Repr` the backend emits `Rt.PRIM_SUB_INT63`, which
+-- masks to 63 bits, and the same program AGREES. Two lines below carry the
+-- whole change: `int63Agrees` was `int63Disagrees`, and `int63InJava` said
+-- `neg 1`.
 -- ---------------------------------------------------------------------------
 
 \func subAxiomKn : Kername => \new Kername (mpFile nil) "prim_sub_int"
@@ -322,17 +331,28 @@
   ((subAxiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
    app (app (const subAxiomKn) (prim (primInt, 1))) (prim (primInt, 2)))
 
-\func int63Disagrees : bothAgree int63Program 200 = false => idp
+\func int63Agrees : bothAgree int63Program 200 = true => idp
 
--- The two values, so the disagreement is documented and not merely detected.
+-- The two values, which are now the SAME value.
 \func int63InLambdaBox
   : runProgram lbAxioms int63Program 200 = rOk (prim (primInt, 9223372036854775807))
   => idp
 
 \func int63InJava
-  : runClass rtLong (compileClass progClassName int63Program) bodyMethodName 200
-  = rOk (rvValue (vLong (neg 1)))
+  : runClass rtInt63 (compileClass progClassName int63Program) bodyMethodName 200
+  = rOk (rvValue (vLong 9223372036854775807))
   => idp
+
+-- AND THE OLD RUNTIME STILL SAYS WHAT IT SAID, from the model of the family it
+-- used. Kept so the fix is a visible difference between two runtimes rather
+-- than an edited constant -- and so that `Formal/CorrectInstances.ard` can
+-- refute the agreement hypothesis at `rtLong` with something concrete.
+\func longWouldHaveSaid
+  : builtinRunLong "PRIM_SUB_LONG" (vLong 1 :: vLong 2 :: nil) = rOk (vLong (neg 1))
+  => idp
+
+\func theTwoAnswersDiffer
+  : intEqB (pos 9223372036854775807) (neg 1) = false => idp
 
 -- ---------------------------------------------------------------------------
 -- The remaining gaps, pinned in both directions so that neither is mistaken for
@@ -376,19 +396,29 @@
 
 \func agreesRejectsTag : agrees 20 zero' (vData 1 nil) = false => idp
 
--- The `prim` clause, at the value where `wrap64` is not the identity: λ□ says
--- 2^63 (its ints are unbounded), the JVM says -2^63, and they DO correspond --
--- one bit pattern, two readings. `litAgrees` above cannot show this, since
--- `wrap64 42` is 42; drop the `wrap64` from `agrees` and this line fails.
+-- THE `prim` CLAUSE AT 2^63, AND WHAT THE TWO RELATIONS DO WITH IT. This is
+-- the sharpest statement of what the representation change bought.
 --
--- It is checked directly rather than through `bothAgree` because reaching that
--- value needs arithmetic, i.e. an axiom, i.e. a λ□ side that is stuck -- the
--- gap this module's header is about.
--- ... and the two `Int`s really are different, so the wrap is load-bearing
--- rather than decorative.
+-- λ□'s value is 2^63; the JVM `long` holding it is -2^63. The two `Int`s really
+-- are different:
 \func int63TwoReadingsDiffer
   : intEqB (pos 9223372036854775808) (neg 9223372036854775808) = false => idp
 
-\func agreesWrapsInt63
-  : agrees 20 (prim (primInt, 9223372036854775808)) (vLong (neg 9223372036854775808)) = true
+-- `agreesLong` ACCEPTS them, because `wrap64` reads one bit pattern two ways.
+-- That is the relation the `longRepr` pairing needs, and it is exactly as
+-- generous as that representation requires.
+\func agreesLongWrapsInt63
+  : agreesLong 20 (prim (primInt, 9223372036854775808)) (vLong (neg 9223372036854775808)) = true
   => idp
+
+-- THE SHIPPED RELATION REJECTS THEM, and is right to: under `Uint63` the value
+-- 2^63 IS 0, so a Java `long` holding -2^63 is not it. Generosity was never a
+-- property of the correspondence, only of the representation that needed it --
+-- and with `int63Repr` no value in range is ever read two ways.
+\func agreesRejectsTheTwoReadings
+  : agrees 20 (prim (primInt, 9223372036854775808)) (vLong (neg 9223372036854775808)) = false
+  => idp
+
+-- What λ□ actually means by 2^63, and what the backend now produces for it.
+\func int63NormalizesToZero
+  : agrees 20 (prim (primInt, 9223372036854775808)) (vLong 0) = true => idp

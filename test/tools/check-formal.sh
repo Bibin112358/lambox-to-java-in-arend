@@ -36,6 +36,7 @@ compiler_modules=(
   Formal.LambdaBoxRun
   Formal.LambdaBoxSound
   Formal.LbAxioms
+  Formal.RtInt63
   Formal.Correct
   Formal.RtLong
   Formal.NodePathUnique
