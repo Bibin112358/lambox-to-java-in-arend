@@ -293,10 +293,22 @@
 \func lbInt63 : EvalProgram lbAxioms int63Program int63Value
   => evalT-sound lbAxioms 200 idp
 
--- What used to be refuted: the compiled program returns a value related to
--- what λ□ says. This is `CorrectAtProgram`'s conclusion, discharged.
-\func int63NowAgrees : CorrectAtProgram 200 int63Program int63Value =>
-  \lam _ => (vLong 9223372036854775807, int63InJava, (20, idp))
+-- What used to be refuted, as the THREE FACTS rather than as
+-- `CorrectAtProgram`'s conclusion.
+--
+-- Stated this way on purpose. Discharging `CorrectAtProgram` would read
+-- `\lam _ => ...`, DISCARDING the `EvalProgram` hypothesis -- which makes the
+-- λ□ side enter only through my having written `int63Value` by hand, and would
+-- be inhabited for any value the Java run happened to produce. The `\Sigma`
+-- names all three participants instead: what λ□ derives, what the compiled
+-- program returns, and that the two correspond. (This is the shape the first
+-- attempt's `correctAtPeano` used, for the same reason.)
+\func int63NowAgrees
+  : \Sigma (EvalProgram lbAxioms int63Program int63Value)
+           (runClass rtInt63 (compileClass progClassName int63Program) bodyMethodName 200
+            = rOk (rvValue (vLong 9223372036854775807)))
+           (agrees 20 int63Value (vLong 9223372036854775807) = true)
+  => (lbInt63, int63InJava, idp)
 
 -- ---------------------------------------------------------------------------
 -- WHAT IS STILL WRONG: Lean's `Nat`, and it is no longer hidden.

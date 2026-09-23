@@ -21,10 +21,13 @@
 -- sharing is the claim: the backend computes what the source language says,
 -- rather than something that happens to agree on small values.
 --
--- So the pair (`rtLong`, `rtInt63`) is a before/after. The runtime-agreement
--- hypothesis of `Formal/Correct.ard` is REFUTED at `rtLong`
--- (`oracleDisagrees`) and HOLDS at `rtInt63` for the witness that refuted it
--- (`Formal/CorrectInstances.ard`).
+-- So the pair (`rtLong`, `rtInt63`) is a before/after -- but only for the four
+-- operations it covers. `Formal/Correct.ard`'s runtime-agreement hypothesis
+-- does NOT hold at `rtInt63`: `oracleStillDisagreesOnNat` refutes it, because
+-- the Lean `Nat` family is still on `long`. What is true, and all that is
+-- claimed, is that the witness which refuted it for the int63 family
+-- (`prim_sub_int 1 2`) now agrees -- see `int63NowAgrees` in
+-- `Formal/CorrectInstances.ard`.
 --
 -- ---------------------------------------------------------------------------
 -- WHY THIS COSTS NOTHING, which is what made it the default
