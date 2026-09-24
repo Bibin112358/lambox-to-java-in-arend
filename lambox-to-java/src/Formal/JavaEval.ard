@@ -94,10 +94,12 @@
 \func castOk (t : JType) (v : Value) : Bool \elim t
   -- Every value of the fragment is an `Object`.
   | tObject => true
-  -- `Rt.Fn`: a closure, or a runtime constant that is one.
+  -- `Rt.Fn`: a closure, a runtime constant that is one, or `Rt.BOX` -- which
+  -- is an `Fn` returning itself, because λ□ applies erased values (`evalBox`).
   | tFn => \case v \with {
     | vClos _ _ _ => true
     | vBuiltin _ _ => true
+    | vBox => true
     | _ => false
   }
   | tData => \case v \with {
@@ -278,8 +280,10 @@
 -- its parameter; a runtime constant accumulates arguments until it is saturated
 -- and then computes (the arity discipline `Rt.curry` got wrong).
 --
+-- `Rt.BOX` applied to anything is `Rt.BOX` (λ□'s `evalBox`; see `Rt.java`).
+--
 -- The `Rt.Fn` cast at the call site has already been checked, so a value that is
--- neither is unreachable.
+-- none of these is unreachable.
 \func applyVal (rt : RtSpec) (cls : JClass) (n : Nat) (f a : Value)
   : Res ExprOut \elim n
   | 0 => rOutOfFuel
@@ -301,6 +305,7 @@
         }
       }
     }
+    | vBox => rOk (eVal vBox)
     | _ => rStuck
   }
 

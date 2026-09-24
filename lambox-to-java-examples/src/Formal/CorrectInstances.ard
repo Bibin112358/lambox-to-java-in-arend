@@ -106,6 +106,29 @@
 \func jBeta : relatedTo betaProgram 20 box = true => idp
 
 -- ---------------------------------------------------------------------------
+-- 3b. `eval_box` -- applying an erased value. Compiles to
+-- `((Rt.Fn)Rt.BOX).apply(Rt.BOX)`.
+--
+-- THIS INSTANCE WAS FALSE until `Rt.BOX` became a self-returning `Fn`: it was
+-- a bare `Object`, the `Rt.Fn` cast threw ClassCastException, and `JavaEval`'s
+-- `castOk tFn vBox` said the same (a throw is a failure, see `relatedTo`). λ□
+-- has had the rule all along, and Lean/Rocq erasure produces it whenever a
+-- type former or proof is applied.
+-- ---------------------------------------------------------------------------
+
+\func boxAppProgram : LBProgram => (nil, app box box)
+
+\func lbBoxApp (spec : LBSpec) : EvalProgram spec boxAppProgram box =>
+  evalBox idp (evalAtomBox idp) (evalAtomBox idp)
+
+\func jBoxApp : relatedTo boxAppProgram 20 box = true => idp
+
+-- And through a closure: `(\lam f => f box) box` is still `box`.
+\func boxAppViaProgram : LBProgram => (nil, app (lambda anon (app (bvar 0) box)) box)
+
+\func jBoxAppVia : relatedTo boxAppViaProgram 20 box = true => idp
+
+-- ---------------------------------------------------------------------------
 -- 4. `prim` -- a primitive integer, i.e. `Long.valueOf(7L)` and `agrees`'s
 -- `vLong`/`prim` case, neither of which the Peano program touches (Peano
 -- numerals are constructors, not primitives).

@@ -62,9 +62,17 @@ public final class Rt {
     }
   }
 
-  // A compiled closure can't show anything structural, so it gets a fixed
-  // placeholder instead of a raw hashcode.
-  public static final Object BOX = new Object();
+  // An erased proof or type. It is an `Fn` RETURNING ITSELF, not a bare
+  // `Object`: λ□ applies erased values (`eval_box`: if `f` evaluates to `box`
+  // then `app f a` evaluates to `box`), and the generated code spells every
+  // application `((Rt.Fn)f).apply(a)`. A bare `Object` made that application a
+  // ClassCastException -- a program λ□ evaluates, failing in Java. The OCaml
+  // backend's box is the same self-returning function. It prints as `BOX`
+  // rather than as a hash code, so output is deterministic.
+  public static final Fn BOX = new Fn() {
+    public Object apply(Object x) { return BOX; }
+    @Override public String toString() { return "BOX"; }
+  };
 
   // --- Entry point -----------------------------------------------------------
   //
