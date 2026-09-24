@@ -1,0 +1,70 @@
+\import Formal.BackendCorrect
+\import Formal.CSubst (LCf)
+\import Formal.ClassLookup
+\import Formal.CompileValue
+\import Formal.Correct (ValRel, progClassName)
+\import Formal.EvalEnv
+\import Formal.EvalEnvSound (GlobClosed)
+\import Formal.JavaEval
+\import Formal.JavaValue
+\import Formal.LambdaBoxEval
+\import Formal.LbAxioms (lbAxioms)
+\import Formal.OracleFOShipped (oracleFOShipped, oracleArgsFOShipped)
+\import Formal.OracleShipped (oracleShipped)
+\import Formal.RtInt63 (rtInt63)
+\import LambdaBox
+\import ToJava
+
+-- =============================================================================
+-- THE SHIPPED BACKEND IS CORRECT ON CLOSED PROGRAMS.
+--
+-- `Formal/BackendCorrect.ard` proves the backend correct for any runtime model
+-- and any λ□ oracle satisfying `SimHyps`. This file discharges every one of
+-- those hypotheses for what is actually shipped -- the compiler's own classes,
+-- the runtime model `rtInt63` and the λ□ oracle `lbAxioms`:
+--
+--   * the class facts, for every compiled program: `Formal/ClassLookup.ard`
+--     (`classOK`, `bodyLookup`);
+--   * the runtime facts (`Long.valueOf`, the `Rt.<nm>` constants) and the axiom
+--     table's shape: `rtOKShipped`, `axImplShape` (same file);
+--   * the two oracles agree: `Formal/OracleShipped.ard` (`oracleShipped`);
+--   * the λ□ oracle computes on, and returns, first-order values only:
+--     `Formal/OracleFOShipped.ard`.
+--
+-- What is left are the two hypotheses about the PROGRAM, both necessary
+-- (`Formal/CorrectRefuted.ard`): its body is closed (`LCf 0`) and its constant
+-- bodies are closed (`GlobClosed`). `CorrectClosedFO` is `Formal/Correct.ard`'s
+-- `Correct` with exactly those two added and the result first-order; it is
+-- PROVED (`correctClosedFO`). `Correct` itself is refuted there, and not by the
+-- backend.
+--
+-- TRUSTED, and outside every statement here: the printer (`JavaPrint.ard`),
+-- the JVM against `Formal/JavaEval.ard`, and `runtime/Rt.java` against
+-- `rtInt63` -- the last two spot-checked by `test/tools/diff-semantics.sh`.
+-- =============================================================================
+
+\func shippedHyps (p : LBProgram) : SimHyps lbAxioms rtInt63 (compileClass progClassName p) p.1 \cowith
+  | hConst => \lam kn cb body lk cbb => (classOK progClassName p).1 kn cb body lk cbb
+  | hAxiom => \lam kn cb impl lk cbn ai => (classOK progClassName p).2 kn cb impl lk cbn ai
+  | hValueOf => (classOK progClassName p).3
+  | hRtValueOf => \lam x => rtOKShipped.1 x
+  | hRtField => \lam nm k h => rtOKShipped.2 nm k h
+  | hImpl => \lam kn impl h => axImplShape kn impl h
+  | hAgree => oracleShipped
+  | hFO => oracleFOShipped
+  | hArgsFO => \lam kn xs r h => oracleArgsFOShipped kn xs r h
+
+\func backendShipped {p : LBProgram} {v : LBTerm} (gc : GlobClosed p.1) (ct : LCf 0 p.2) (d : EvalProgram lbAxioms p v)
+  : \Sigma (w : EV) (v = quote w) (jv : Value)
+           (JEval rtInt63 (compileClass progClassName p) bodyMethodName jv)
+           (CV rtInt63 (compileClass progClassName p) w jv) =>
+  backendCorrect {lbAxioms} {rtInt63} {p} {v} (shippedHyps p) (bodyLookup progClassName p) gc ct d
+
+\func CorrectClosedFO : \Type =>
+  \Pi {p : LBProgram} {v : LBTerm} -> GlobClosed p.1 -> LCf 0 p.2 -> EvalProgram lbAxioms p v -> FOVal v ->
+    \Sigma (jv : Value)
+           (JEval rtInt63 (compileClass progClassName p) bodyMethodName jv)
+           (ValRel v jv)
+
+\func correctClosedFO : CorrectClosedFO =>
+  \lam {p} {v} gc ct d fo => backendCorrectFO {lbAxioms} {rtInt63} {p} {v} (shippedHyps p) (bodyLookup progClassName p) gc ct d fo

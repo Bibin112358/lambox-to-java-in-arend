@@ -276,9 +276,19 @@
 --        closed global environment, and an oracle with first-order results;
 --        the environment semantics is `Formal/EvalEnv.ard`, the substitution
 --        algebra `Formal/CSubst.ard`.
---   (A2) λ□ by environments => Java. OPEN; both sides keep environments.
--- The oracle hypothesis `OracleAgree` is PROVED at the shipped pair
--- (`Formal/OracleShipped.ard`).
+--   (A2) λ□ by environments => Java. DONE for every construct:
+--        `Formal/EnvToJava.ard`'s `simE`/`simA`, against the value relation
+--        `CV`/`EnvRel` of `Formal/CompileValue.ard` (closures related by
+--        construction, as MetaRocq's `compile_value`), with Java names kept
+--        apart by their tree positions (`Formal/PathFresh.ard`).
+-- COMPOSED: `Formal/BackendCorrect.ard`'s `backendCorrect` -- a closed
+-- program with closed constant bodies that λ□ evaluates to `v` compiles to a
+-- class whose `body()` RETURNS a value `CV`-related to `v`'s environment form
+-- -- and `backendCorrectFO`, `ValRel v jv` for a first-order `v`. These are the
+-- repaired `CorrectGeneric`. Their hypotheses are `SimHyps` (class, runtime
+-- and oracle facts) and where `body()` is; for the shipped backend they are
+-- discharged in `Formal/ClassLookup.ard`, `Formal/OracleFOShipped.ard` and
+-- `Formal/OracleShipped.ard` (`OracleAgree` at the shipped pair).
 -- ---------------------------------------------------------------------------
 
 -- (1) FUEL MONOTONICITY. A successful run must survive a bigger clock.
