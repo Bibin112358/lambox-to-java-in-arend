@@ -1,0 +1,303 @@
+\import Algebra.Meta
+\import Arith.Nat
+\import Data.Array (++, mkArray, Big, map, ++ \as ++A)
+\import Data.Bool
+\import Data.Maybe
+\import Data.String (String, stringExt, StringDecSet)
+\import Formal.CorrectErased (bindOk)
+\import Formal.CorrectLam (upE, eqSelf, eqOther, lookupSelf, lookupOther)
+\import Formal.FuelMono
+\import Formal.OracleArith (eqRefl, natToStr-inj)
+\import Formal.JavaEval
+\import Formal.JavaValue
+\import Function.Meta ($)
+\import Formal.LambdaBoxEval (revArr, revAppendArr)
+\import Formal.Res
+\import JavaAst
+\import Logic
+\import Logic.Meta
+\import Meta
+\import NodePath
+\import Order.PartialOrder
+\import Paths
+\import Paths.Meta
+\import Set
+\import StringUtil
+\import ToJava
+
+\func bindInv {A B : \Type} {m : Res A} {f : A -> Res B} {r : B} (h : bindRes m f = rOk r)
+  : \Sigma (a : A) (m = rOk a) (f a = rOk r) \elim m
+  | rOk a => (a, idp, h)
+  | rStuck => contradiction
+  | rOutOfFuel => contradiction
+
+\func unOk {A : \Type} (d : A) (r : Res A) : A \elim r
+  | rOk a => a
+  | _ => d
+
+\func rOk-inj {A : \Type} {a b : A} (p : rOk a = rOk b) : a = b => pmap (unOk a) p
+
+\func unJust {A : \Type} (d : A) (m : Maybe A) : A \elim m
+  | just a => a
+  | nothing => d
+
+\func just-inj {A : \Type} {a b : A} (p : just a = just b) : a = b => pmap (unJust a) p
+
+\func tailOr {A : \Type} (d : Array A) (l : Array A) : Array A \elim l
+  | nil => d
+  | _ :: t => t
+
+\func unhead {A : \Type} {x y : A} {xs ys : Array A} (p : x :: xs = y :: ys) : xs = ys => pmap (tailOr xs) p
+
+\func unNormal (d : Env) (o : StmtOut) : Env \elim o
+  | oNormal e => e
+  | _ => d
+
+\func sucPlus (n m : Nat) : suc n Nat.+ m = suc (n Nat.+ m) \elim m
+  | 0 => idp
+  | suc m => pmap suc (sucPlus n m)
+
+\func zeroPlus (n : Nat) : 0 Nat.+ n = n \elim n
+  | 0 => idp
+  | suc n => pmap suc (zeroPlus n)
+
+\func arrAssoc {A : \Type} (X Y Z : Array A) : (X ++ Y) ++ Z = X ++ (Y ++ Z) \elim X
+  | nil => idp
+  | x :: X => pmap (x ::) (arrAssoc X Y Z)
+
+\func eqOther' {A : DecSet} {x y : A} (ne : x /= y) : (x == y) = false => eqOther ne
+
+-- =============================================================================
+-- Running generated code: the Java-side plumbing of the backend proof.
+--
+-- Facts about `Formal/JavaEval.ard` and about the SHAPE of `ToJava.ard`'s
+-- output that do not mention λ□ at all: statement sequences compose, a
+-- `return` ends one, argument lists evaluate pointwise, a `case`'s ternary
+-- chain selects the arm of the scrutinee's tag, and the environment `pushFields`
+-- / `pushFixMethods` build is what the λ□ side's `iotaRed` / `fixSubst` order
+-- says. `Formal/EnvToJava.ard` is the client.
+--
+-- FUEL. Every lemma returns SOME clock rather than a specific one where that is
+-- easier; `upE`/`upS`/`upA` move a successful run to any larger clock.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- Fuel.
+-- ---------------------------------------------------------------------------
+
+\func upS {rt : RtSpec} {cls : JClass} {env : Env} {ss : Array JStmt} {r : StmtOut} {n m : Nat} (le : n <= m)
+          (h : execStmts rt cls n env ss = rOk r) : execStmts rt cls m env ss = rOk r =>
+  transport (\lam x => execStmts rt cls x env ss = rOk r) (<=_exists le) (execStmtsMonoPlus rt cls n (m -' n) env ss r h)
+
+\func upA {rt : RtSpec} {cls : JClass} {env : Env} {es : Array JExpr} {r : ArgsOut} {n m : Nat} (le : n <= m)
+          (h : evalArgs rt cls n env es = rOk r) : evalArgs rt cls m env es = rOk r =>
+  transport (\lam x => evalArgs rt cls x env es = rOk r) (<=_exists le) (evalArgsMonoPlus rt cls n (m -' n) env es r h)
+
+\func upAp {rt : RtSpec} {cls : JClass} {f a : Value} {r : ExprOut} {n m : Nat} (le : n <= m)
+           (h : applyVal rt cls n f a = rOk r) : applyVal rt cls m f a = rOk r =>
+  transport (\lam x => applyVal rt cls x f a = rOk r) (<=_exists le) (applyValMonoPlus rt cls n (m -' n) f a r h)
+
+\func evalArgsMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (env : Env) (es : Array JExpr)
+  : Mono (evalArgs rt cls n env es) (evalArgs rt cls (n Nat.+ k) env es) \elim k
+  | 0 => monoRefl
+  | suc k => monoTrans (evalArgsMonoPlus rt cls n k env es) (evalArgsMono rt cls (n Nat.+ k) env es)
+
+\func applyValMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (f a : Value)
+  : Mono (applyVal rt cls n f a) (applyVal rt cls (n Nat.+ k) f a) \elim k
+  | 0 => monoRefl
+  | suc k => monoTrans (applyValMonoPlus rt cls n k f a) (applyValMono rt cls (n Nat.+ k) f a)
+
+\func execStmtMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (env : Env) (s : JStmt)
+  : Mono (execStmt rt cls n env s) (execStmt rt cls (n Nat.+ k) env s) \elim k
+  | 0 => monoRefl
+  | suc k => monoTrans (execStmtMonoPlus rt cls n k env s) (execStmtMono rt cls (n Nat.+ k) env s)
+
+-- ---------------------------------------------------------------------------
+-- Statements.
+-- ---------------------------------------------------------------------------
+
+\func execNil (rt : RtSpec) (cls : JClass) (env : Env) : execStmts rt cls 1 env nil = rOk (oNormal env) => idp
+
+\func execApp {rt : RtSpec} {cls : JClass} {n m : Nat} {env e1 : Env} {xs ys : Array JStmt} {r : StmtOut}
+              (hx : execStmts rt cls n env xs = rOk (oNormal e1)) (hy : execStmts rt cls m e1 ys = rOk r)
+  : execStmts rt cls (n Nat.+ m) env (appendStmts xs ys) = rOk r \elim n, xs
+  | 0, _ => contradiction
+  | suc n, nil =>
+    \let | pe : env = e1 => pmap (unNormal env) (rOk-inj hx)
+    \in rewrite pe (upS (linarith : m <= suc n Nat.+ m) hy)
+  | suc n, x :: xs =>
+    \case execStmt rt cls n env x \as s, idp : execStmt rt cls n env x = s \with {
+      | rOk (oNormal env'), q =>
+        \let | h2 : execStmts rt cls n env' xs = rOk (oNormal e1) => rewrite q at hx $ hx
+             | g : execStmts rt cls (suc (n Nat.+ m)) env (appendStmts (x :: xs) ys) = rOk r =>
+               bindOk (execStmtMonoPlus rt cls n m env x (oNormal env') q) (execApp h2 hy)
+        \in transport (\lam N => execStmts rt cls N env (appendStmts (x :: xs) ys) = rOk r) (inv (sucPlus n m)) g
+      | rOk (oReturn v), q => rewrite q at hx $ contradiction
+      | rOk (oExcS ev), q => rewrite q at hx $ contradiction
+      | rStuck, q => rewrite q at hx $ contradiction
+      | rOutOfFuel, q => rewrite q at hx $ contradiction
+    }
+
+\func execRet1 {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} {e : JExpr} {v : Value}
+               (h : evalExpr rt cls n env e = rOk (eVal v))
+  : execStmts rt cls (suc (suc n)) env (jReturn e :: nil) = rOk (oReturn v) =>
+  rewrite h idp
+
+\func execRetApp {rt : RtSpec} {cls : JClass} {n m : Nat} {env e1 : Env} {ss : Array JStmt} {e : JExpr} {v : Value}
+                 (hs : execStmts rt cls n env ss = rOk (oNormal e1)) (he : evalExpr rt cls m e1 e = rOk (eVal v))
+  : \Sigma (N : Nat) (execStmts rt cls N env (appendStmts ss (jReturn e :: nil)) = rOk (oReturn v)) =>
+  (n Nat.+ suc (suc m), execApp {rt} {cls} {n} {suc (suc m)} hs (execRet1 he))
+
+\func execLocal1 {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} (t : JType) (x : JIdent) {e : JExpr} {v : Value}
+                 (h : evalExpr rt cls n env e = rOk (eVal v))
+  : execStmts rt cls (suc (suc n)) env (jLocal t x e :: nil) = rOk (oNormal ((x, v) :: env)) =>
+  rewrite h idp
+
+-- A sequence of statement blocks, block `i` taking the environment block
+-- `i-1` left.
+\data ChainExec (rt : RtSpec) (cls : JClass) (bs : Array (Array JStmt)) (E E' : Env) \elim bs
+  | nil => chNil (E = E')
+  | b :: bs => chCons (E1 : Env) (n : Nat) (execStmts rt cls n E b = rOk (oNormal E1)) (ChainExec rt cls bs E1 E')
+
+\func execChain {rt : RtSpec} {cls : JClass} (bs : Array (Array JStmt)) {E E' : Env} (h : ChainExec rt cls bs E E')
+  : \Sigma (n : Nat) (execStmts rt cls n E (concatStmtBlocks bs) = rOk (oNormal E')) \elim bs, h
+  | nil, chNil p => (1, rewrite p idp)
+  | b :: bs, chCons E1 n hb hbs =>
+    \let (m, hm) => execChain bs hbs
+    \in (n Nat.+ m, execApp hb hm)
+
+-- ---------------------------------------------------------------------------
+-- Expressions.
+-- ---------------------------------------------------------------------------
+
+-- An argument list whose members each evaluate.
+\func evalArgsAll {rt : RtSpec} {cls : JClass} {env : Env} (es : Array JExpr) (vs : Array Value es.len)
+                  (h : \Pi (i : Fin es.len) -> \Sigma (n : Nat) (evalExpr rt cls n env (es i) = rOk (eVal (vs i))))
+  : \Sigma (n : Nat) (evalArgs rt cls n env es = rOk (aVals vs)) \elim es, vs
+  | nil, vs => (1, idp)
+  | e :: es, v :: vs =>
+    \let
+      | (n1, h1) => h 0
+      | (n2, h2) => evalArgsAll es vs (\lam i => h (suc i))
+      | n => n1 Nat.+ n2 Nat.+ 1
+    \in (suc n,
+        \let
+          | h1' => upE (linarith : n1 <= n) h1
+          | h2' => upA (linarith : n2 <= n) h2
+        \in rewrite (h1', h2') idp)
+
+\lemma tag-refl {n : Nat} : (n == n) = true => eqRefl n
+
+\lemma tag-diff {n m k : Nat} (p : n = suc (m Nat.+ k)) : (n == m) = false =>
+  eqOther (\lam (e : n = m) => \let q : m = suc (m Nat.+ k) => inv e *> p \in linarith)
+
+\func condChainEval {rt : RtSpec} {cls : JClass} {env : Env} {dv : JIdent} {c : Nat} {fs : Array Value}
+                    (hd : lookupVar env dv = just (vData c fs)) (p : Path)
+                    (arms : Array JExpr) (tag : Nat) (j : Fin arms.len) (e : c = tag Nat.+ j) {v : Value}
+                    (ha : \Sigma (n : Nat) (evalExpr rt cls n env (arms j) = rOk (eVal v)))
+  : \Sigma (n : Nat) (evalExpr rt cls n env (condChain (jVar dv) tag arms p) = rOk (eVal v)) \elim arms, j
+  | a :: arms, 0 =>
+    \let (n, h) => ha
+         | n' => suc (suc (suc n))
+    \in (n', rewrite (hd, e, tag-refl) (upE (linarith : n <= suc (suc n)) h))
+  | a :: arms, suc j =>
+    \let | e' : c = suc tag Nat.+ j => e *> inv (sucPlus tag j)
+         | (n, h) => condChainEval hd p arms (suc tag) j e' ha
+         | n' => suc (suc (suc n))
+    \in (n', rewrite (hd, tag-diff e) (upE (linarith : n <= suc (suc n)) h))
+
+-- ---------------------------------------------------------------------------
+-- Arrays and the compile-time environment.
+-- ---------------------------------------------------------------------------
+
+\func nthArrFin {A : \Type} {n : Nat} {xs : Array A} {x : A} (h : nthArr n xs = just x)
+  : \Sigma (j : Fin xs.len) (j = {Nat} n) (xs j = x) \elim n, xs
+  | 0, x' :: xs => (0, idp, just-inj h)
+  | suc n, x' :: xs =>
+    \let (j', p, q) => nthArrFin h
+    \in (suc j', pmap suc p, q)
+  | 0, nil => contradiction
+  | suc _, nil => contradiction
+
+\func nthArrAt {A : \Type} (xs : Array A) (j : Fin xs.len) : nthArr j xs = just (xs j) \elim xs, j
+  | x :: xs, 0 => idp
+  | x :: xs, suc j => nthArrAt xs j
+
+\func nthVarAt {n : Nat} {cenv : Array JExpr} {e : JExpr} (h : nthArr n cenv = just e) (n0 : Nat) (p : Path)
+  : nthVar n cenv n0 p = e \elim n, cenv
+  | 0, x :: xs => just-inj h
+  | suc n, x :: xs => nthVarAt h n0 p
+  | 0, nil => contradiction
+  | suc _, nil => contradiction
+
+\func revAppendArr_app {A : \Type} (xs ys zs : Array A) : revAppendArr xs ys ++ zs = revAppendArr xs (ys ++ zs) \elim xs
+  | nil => idp
+  | x :: xs => revAppendArr_app xs (x :: ys) zs
+
+\func revArrApp {A : \Type} (xs ys : Array A) : revArr xs ++ ys = revAppendArr xs ys =>
+  revAppendArr_app xs nil ys
+
+-- The fix siblings as `pushFixMethods` pushes them: head = the LAST one.
+\func fixRefs (recv : JExpr) (p : Path) (n : Nat) : Array JExpr \elim n
+  | 0 => nil
+  | suc n => fixMethodRef recv p n :: fixRefs recv p n
+
+\func pushFixMethods_app {recv : JExpr} {p : Path} {j k : Nat} {env1 env2 : Array JExpr}
+  : pushFixMethods recv p j k (env1 ++ env2) = pushFixMethods recv p j k env1 ++ env2 \elim k
+  | 0 => idp
+  | suc k => pushFixMethods_app {recv} {p} {suc j} {k} {fixMethodRef recv p j :: env1} {env2}
+
+\func fixRefsJ (recv : JExpr) (p : Path) (j n : Nat) : Array JExpr \elim n
+  | 0 => nil
+  | suc n => fixMethodRef recv p (j Nat.+ n) :: fixRefsJ recv p j n
+
+\func fixRefsJ_suc {recv : JExpr} {p : Path} (j n : Nat) : fixRefsJ recv p j (suc n) = fixRefsJ recv p (suc j) n ++ (fixMethodRef recv p j :: nil) \elim n
+  | 0 => idp
+  | suc n =>
+    pmap {JExpr} {Array JExpr} (__ :: fixRefsJ recv p j (suc n)) (pmap (fixMethodRef recv p) (inv (sucPlus j n)))
+    *> pmap {Array JExpr} {Array JExpr} (fixMethodRef recv p (suc j Nat.+ n) :: __) (fixRefsJ_suc j n)
+
+\func pushFixRefs_nil {recv : JExpr} {p : Path} (j n : Nat)
+  : pushFixMethods recv p j n nil = fixRefsJ recv p j n \elim n
+  | 0 => idp
+  | suc n => pushFixMethods_app {recv} {p} {suc j} {n} {nil} {fixMethodRef recv p j :: nil}
+             *> pmap (__ ++ (fixMethodRef recv p j :: nil)) (pushFixRefs_nil {recv} {p} (suc j) n)
+             *> inv (fixRefsJ_suc j n)
+
+\func fixRefsJ0 {recv : JExpr} {p : Path} (n : Nat) : fixRefsJ recv p 0 n = fixRefs recv p n \elim n
+  | 0 => idp
+  | suc n =>
+    pmap {JExpr} {Array JExpr} (__ :: fixRefsJ recv p 0 n) (pmap (fixMethodRef recv p) (zeroPlus n))
+    *> pmap {Array JExpr} {Array JExpr} (fixMethodRef recv p n :: __) (fixRefsJ0 n)
+
+\func pushFixRefs (recv : JExpr) (p : Path) (n : Nat) (env : Array JExpr)
+  : pushFixMethods recv p 0 n env = fixRefs recv p n ++ env =>
+  pushFixMethods_app {recv} {p} {0} {n} {nil} {env} *> pmap (__ ++ env) (pushFixRefs_nil {recv} {p} 0 n *> fixRefsJ0 n)
+
+\lemma fixMethodName-inj {i j : Nat} (e : fixMethodName i = fixMethodName j) : i = j =>
+  natToStr-inj (stringExt {natToStr i} {natToStr j} (unhead (pmap (\lam (s : String) => s.bytes) e)))
+
+\func lookupStepHit {A : \Type} {K : DecSet} (x : A) {a b : K} (e : a = b) (rest : Maybe A)
+  : lookupStep x (a == b) rest = just x =>
+  rewrite e (pmap (\lam c => lookupStep x c rest) (eqSelf b))
+
+\func lookupStepMiss {A : \Type} {K : DecSet} (x : A) {a b : K} (ne : a /= b) (rest : Maybe A)
+  : lookupStep x (a == b) rest = rest =>
+  pmap (\lam c => lookupStep x c rest) (eqOther ne)
+
+\func lookupBy_fix {k : Nat} (o : Nat) (f : Fin k -> \Sigma JIdent JIdent (Array JStmt)) (j : Fin k)
+  (h : \Pi (i : Fin k) -> (f i).1 = fixMethodName (i Nat.+ o))
+  : lookupBy (\lam (m : \Sigma JIdent JIdent (Array JStmt)) => m.1) (fixMethodName (j Nat.+ o)) (mkArray f) = just (f j) \elim k, j
+  | suc k, 0 => lookupStepHit (f 0) (h 0) _
+  | suc k, suc j =>
+    \let rec => lookupBy_fix (suc o) (\lam i => f (suc i)) j (\lam i => h (suc i) *> pmap fixMethodName (sucPlus i o))
+    \in lookupStepMiss (f 0) (\lam e => \let q : 0 Nat.+ o = suc j Nat.+ o => fixMethodName-inj (inv (h 0) *> e) \in linarith) _
+    *> transport (\lam N => lookupBy (\lam (m : \Sigma JIdent JIdent (Array JStmt)) => m.1) (fixMethodName N)
+                                      (mkArray (\lam (i : Fin k) => f (suc i))) = just (f (suc j)))
+                 (inv (sucPlus j o)) rec
+
+\func lookupFixMethod {k : Nat} (F : Fin k -> \Sigma JIdent (Array JStmt)) (j : Fin k)
+  : lookupClassMethod (mkArray {\Sigma JIdent JIdent (Array JStmt)} {k} (\lam i => (fixMethodName i, (F i).1, (F i).2)))
+                      (fixMethodName j) = just (F j) =>
+  \let f (i : Fin k) : \Sigma JIdent JIdent (Array JStmt) => (fixMethodName i, (F i).1, (F i).2)
+  \in pmap (Maybe.map (\lam (m : \Sigma JIdent JIdent (Array JStmt)) => (m.2, m.3))) (lookupBy_fix 0 f j (\lam i => idp))
