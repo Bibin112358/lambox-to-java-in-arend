@@ -1,0 +1,38 @@
+\import Data.String
+\import Formal.Correct (SubstLemma)
+\import Formal.JavaEval
+\import Formal.JavaValue
+\import Formal.Res
+\import Formal.RtInt63
+\import JavaAst
+\import LambdaBox
+\import Logic
+\import Logic.Meta
+
+-- =============================================================================
+-- OBLIGATION (2) OF `Formal/Correct.ard`, AS STATED, IS FALSE.
+--
+-- `SubstLemma` says: if the compiled SUBSTITUTED term evaluates to `r`, then
+-- the compiled body, under an environment whose index 0 is `a'`, evaluates to
+-- `r` too. But nothing relates `a'` to `av` -- `a'` is an arbitrary Java
+-- expression -- so the lemma says that every Java expression behaves like the
+-- compiled `av`.
+--
+-- The counterexample is the smallest term there is: `b = bvar 0`, `av = box`,
+-- `a' = "x"`. The left side is the compiled `box`, i.e. `Rt.BOX`; the right
+-- side is `nthVar 0 ("x" :: nil)`, i.e. the string `"x"`. At fuel 1 the first
+-- evaluates to `vBox` and the second to `vStr "x"`.
+--
+-- WHAT A TRUE LEMMA NEEDS is not just a hypothesis on `a'`. Even with `a'`
+-- required to evaluate to the same value as the compiled `av`, the conclusion
+-- "same `r`" still fails as soon as `b` builds a closure: the two sides then
+-- return `vClos` values whose BODIES differ (one embeds the compiled `av`, the
+-- other reads a variable), so they are equal only in behaviour. The lemma has
+-- to be stated modulo a logical relation on results -- which is the mutual
+-- dependency `Correct.ard` describes, and why it was deferred.
+-- =============================================================================
+
+\func substLemmaFalse (h : SubstLemma) : Empty =>
+  \let p => h {nil} {nil} {nil} {box} {bvar 0} {jLit (litStr "x")}
+              {rtInt63} {\new JClass "P" nil} {1} {nil} {eVal vBox} idp
+  \in contradiction

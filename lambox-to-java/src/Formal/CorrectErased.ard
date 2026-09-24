@@ -1,0 +1,153 @@
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Formal.Correct (ValRel, agrees, progClassName)
+\import Formal.FuelMono
+\import Formal.JavaEval
+\import Formal.JavaValue
+\import Formal.LambdaBoxEval
+\import Formal.Res
+\import JavaAst
+\import LambdaBox
+\import Logic
+\import Logic.Meta
+\import NodePath
+\import Paths
+\import Paths.Meta
+\import ToJava
+
+-- =============================================================================
+-- `CorrectGeneric` PROVED ON A FRAGMENT: the ERASED terms.
+--
+-- An erased term is `box`, or an application of erased terms -- what erasure
+-- leaves where a proof or a type former was applied. The theorem is the one
+-- `Formal/Correct.ard` states, for EVERY oracle pair (no `OracleAgree`
+-- needed: the oracle provably cannot fire), restricted to such a program:
+--
+--   if λ□ evaluates the body to `v`, then the generated class's `body()`
+--   RETURNS -- no exception -- a Java value related to `v`.
+--
+-- THIS THEOREM WAS FALSE until this session's `Rt.BOX` fix. `box box` is an
+-- erased term that λ□ evaluates to `box` (`evalBox`), and it compiled to
+-- `((Rt.Fn)Rt.BOX).apply(Rt.BOX)` with `Rt.BOX` a bare `Object`: a
+-- ClassCastException in the JVM and `rvThrown excCCE` in `Formal/JavaEval.ard`.
+-- The proof below goes through exactly because `castOk tFn vBox` is `true` and
+-- `applyVal _ vBox _` is `vBox` now.
+--
+-- It is the first proof of the statement by INDUCTION rather than by
+-- computation on one program, and it is the first client of `Formal/FuelMono`:
+-- the clocks of `f` and `a` are raised to a common one.
+-- =============================================================================
+
+\data Erased (t : LBTerm) \elim t
+  | box => erBox
+  | app f a => erApp (Erased f) (Erased a)
+
+-- ---------------------------------------------------------------------------
+-- Small plumbing.
+-- ---------------------------------------------------------------------------
+
+\func bindOk {A B : \Type} {m : Res A} {k : A -> Res B} {a : A} {r : Res B}
+             (p : m = rOk a) (q : k a = r) : bindRes m k = r =>
+  rewrite p q
+
+\func app2nil {xs ys : Array JStmt} (p : xs = nil) (q : ys = nil) : appendStmts xs ys = nil =>
+  rewrite (p, q) idp
+
+\func plusZeroL (n : Nat) : 0 Nat.+ n = n \elim n
+  | 0 => idp
+  | suc n => pmap suc (plusZeroL n)
+
+\func plusSucL (n m : Nat) : suc n Nat.+ m = suc (n Nat.+ m) \elim m
+  | 0 => idp
+  | suc m => pmap suc (plusSucL n m)
+
+\func plusComm (n m : Nat) : n Nat.+ m = m Nat.+ n \elim m
+  | 0 => inv (plusZeroL n)
+  | suc m => pmap suc (plusComm n m) *> inv (plusSucL m n)
+
+-- A statement list that is `return e;` after statements that are provably none.
+\func execRet {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} {ss : Array JStmt} {e : JExpr} {v : Value}
+              (p : ss = nil) (h : evalExpr rt cls n env e = rOk (eVal v))
+  : execStmts rt cls (suc (suc n)) env (appendStmts ss (jReturn e :: nil)) = rOk (oReturn v) =>
+  rewrite p (bindOk (bindOk h idp) idp)
+
+-- ---------------------------------------------------------------------------
+-- The λ□ side: an erased term can only evaluate to `box`.
+--
+-- Every `app` rule but `evalBox` is excluded by the value of the function part,
+-- which the induction hypothesis says is `box`: beta and fix need a `lambda`/
+-- `fix`, the oracle needs a `const` at the head of the spine (`axiomSpine` of a
+-- `box`-headed spine is `nothing`), and congruence needs `appCongOk`, which is
+-- `false` at `box` -- the `isBox` exclusion upstream's `eval_app_cong` has.
+-- ---------------------------------------------------------------------------
+
+\func erasedEval {spec : LBSpec} {env : GlobalDeclarations} {t v : LBTerm}
+                 (d : Eval spec env t v) (e : Erased t) : v = box \elim t, d, e
+  | box, evalAtomBox p, erBox => p
+  | app f a, evalBox p _ _, erApp _ _ => p
+  | app f a, evalBeta df _ _, erApp ef _ =>
+    \let q => erasedEval df ef \in contradiction
+  | app f a, evalFix df _ _ _, erApp ef _ =>
+    \let q => erasedEval df ef \in contradiction
+  | app f a, evalAxiomApp {fv} {av} kn args df _ sat _, erApp ef _ =>
+    \let s : axiomSat spec (app box av) = just (kn, args) =>
+           transport (\lam x => axiomSat spec (app x av) = just (kn, args)) (erasedEval df ef) sat
+    \in contradiction
+  | app f a, evalAppCong {f'} df ok _ _ _, erApp ef _ =>
+    \let s : appCongOk box = true => transport (\lam x => appCongOk x = true) (erasedEval df ef) ok
+    \in contradiction
+
+-- ---------------------------------------------------------------------------
+-- The Java side: an erased term compiles to NO statements and an expression
+-- that evaluates to `Rt.BOX`, in any environment, under any runtime.
+-- ---------------------------------------------------------------------------
+
+\func erasedJava (rt : RtSpec) (cls : JClass) (jenv : Env) {cenv : Array JExpr} {path : Path} {t : LBTerm}
+                 (e : Erased t)
+  : \Sigma ((compileExpr cenv path t).1 = nil)
+           (\Sigma (n : Nat) (evalExpr rt cls n jenv (compileExpr cenv path t).2 = rOk (eVal vBox))) \elim t, e
+  | box, erBox => (idp, (1, idp))
+  | app f a, erApp ef ea =>
+    \let | jf => erasedJava rt cls jenv {cenv} {sFun :: path} ef
+         | ja => erasedJava rt cls jenv {cenv} {sArg :: path} ea
+         | nf => jf.2.1
+         | na => ja.2.1
+         -- `nf + suc na` IS `suc (nf + na)`.
+         | pf : evalExpr rt cls (suc (nf Nat.+ na)) jenv (compileExpr cenv (sFun :: path) f).2 = rOk (eVal vBox) =>
+           evalExprMonoPlus rt cls nf (suc na) jenv _ (eVal vBox) jf.2.2
+         | pa : evalExpr rt cls (suc (nf Nat.+ na)) jenv (compileExpr cenv (sArg :: path) a).2 = rOk (eVal vBox) =>
+           transport (\lam m => evalExpr rt cls (suc m) jenv (compileExpr cenv (sArg :: path) a).2 = rOk (eVal vBox))
+                     (plusComm na nf)
+                     (evalExprMonoPlus rt cls na (suc nf) jenv _ (eVal vBox) ja.2.2)
+    \in (app2nil jf.1 ja.1, (suc (suc (nf Nat.+ na)), bindOk pf (bindOk pa idp)))
+
+-- ---------------------------------------------------------------------------
+-- The theorem.
+-- ---------------------------------------------------------------------------
+
+\func valBox {v : LBTerm} (p : v = box) : ValRel v vBox =>
+  transport (\lam x => ValRel x vBox) (inv p) (1, idp)
+
+-- One term, any compilation context: the λ□ value and the Java value agree,
+-- and the Java side returns rather than throws.
+\func erasedExprCorrect {spec : LBSpec} {env : GlobalDeclarations} {t v : LBTerm}
+                        (d : Eval spec env t v) (e : Erased t)
+                        (rt : RtSpec) (cls : JClass) (jenv : Env) {cenv : Array JExpr} {path : Path}
+  : \Sigma (jv : Value)
+           (\Sigma (n : Nat) (evalExpr rt cls n jenv (compileExpr cenv path t).2 = rOk (eVal jv)))
+           (ValRel v jv) =>
+  (vBox, (erasedJava rt cls jenv {cenv} {path} e).2, valBox (erasedEval d e))
+
+-- `CorrectGeneric`'s conclusion, for every oracle pair, at every program whose
+-- body is erased. The declarations are empty because the entry method is then
+-- the class's only member; with declarations, `lookupMethod` has to be shown to
+-- skip them (it does -- a mangled name starts with `c` -- but that is a lemma
+-- about string equality not proved here).
+\func erasedProgramCorrect (spec : LBSpec) (rt : RtSpec) {t v : LBTerm}
+                           (d : EvalProgram spec (nil, t) v) (e : Erased t)
+  : \Sigma (jv : Value)
+           (JEval rt (compileClass progClassName (nil, t)) bodyMethodName jv)
+           (ValRel v jv) =>
+  \let j => erasedJava rt (compileClass progClassName (nil, t)) nil {nil} {nil} e
+  \in (vBox, (suc (suc (suc j.2.1)), bindOk (bindOk (execRet j.1 j.2.2) idp) idp), valBox (erasedEval d e))

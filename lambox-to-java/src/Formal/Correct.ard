@@ -235,8 +235,14 @@
            (ValRel v jv)
 
 -- ---------------------------------------------------------------------------
--- THE REMAINING OBLIGATIONS. Neither is proved; both are stated so that the
--- obstacle is visible rather than discovered later.
+-- THE REMAINING OBLIGATIONS, and where each now stands:
+--
+--   (1) `FuelMono` is PROVED: `Formal/FuelMono.ard` (`fuelMono`, plus the
+--       any-amount and whole-program forms `evalExprMonoPlus`,
+--       `runClassMonoPlus`, `jevalAtLeast`).
+--   (2) `SubstLemma` is FALSE AS STATED: `Formal/SubstRefuted.ard`
+--       (`substLemmaFalse`). Nothing relates `a'` to `av`; see that file for
+--       why even the obvious repair is not enough, and what is.
 -- ---------------------------------------------------------------------------
 
 -- (1) FUEL MONOTONICITY. A successful run must survive a bigger clock.
@@ -247,11 +253,10 @@
 -- has to combine the clocks of sub-derivations. It is also what would lift the
 -- refutation from `CorrectAt` to `Correct`.
 --
--- Mechanical, large, no design risk: one case per constructor of `JExpr` and
--- `JStmt`, proved simultaneously for the whole mutual cycle
--- (`evalExpr`/`evalArgs`/`execStmt`/`execStmts`/`applyVal`/`invokeMethod`/
--- `callStatic`/`newObject`). The first attempt estimated it at the size of
--- `Formal/JavaEval.ard`, and nothing since has changed that.
+-- Mechanical and without design risk, as predicted: one lemma per function of
+-- the mutual cycle (`newObject` does not recurse and needs none). It came out
+-- at under 250 lines rather than the size of `Formal/JavaEval.ard`, because
+-- every clause is `bindMono` of the induction hypotheses.
 \func FuelMono : \Type =>
   \Pi {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} {e : JExpr} {r : ExprOut}
    -> evalExpr rt cls n env e = rOk r
@@ -277,6 +282,10 @@
 -- lemma needs the logical relation, and the logical relation needs the lemma.
 -- That is why the first attempt put this at weeks rather than days, and why it
 -- is last.
+--
+-- AND AS WRITTEN IT IS FALSE (`Formal/SubstRefuted.ard`): `a'` is unconstrained,
+-- so `b = bvar 0`, `av = box`, `a' = "x"` has the left side return `Rt.BOX`
+-- and the right the string. Kept as the record of what was claimed.
 \func SubstLemma : \Type =>
   \Pi {cenv : Array JExpr} {pth pth' : Path} {av b : LBTerm} {a' : JExpr}
       {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} {r : ExprOut}
@@ -313,6 +322,7 @@
 -- NO KNOWN COUNTEREXAMPLE REMAINS. `OracleAgree` is still not provable at the
 -- shipped pair, but for a bookkeeping reason rather than a wrong answer:
 -- `Formal/RtLong.ard` models fewer runtime constants than `javaAxioms` emits,
--- so the arity half fails on names the model does not know. The substantive
--- obligations are still `FuelMono` and `SubstLemma` above.
+-- so the arity half fails on names the model does not know. Of the two
+-- substantive obligations above, `FuelMono` is proved and `SubstLemma` refuted
+-- as stated; what remains is its repair (a logical relation on results).
 -- ---------------------------------------------------------------------------
