@@ -243,6 +243,20 @@
 --   (2) `SubstLemma` is FALSE AS STATED: `Formal/SubstRefuted.ard`
 --       (`substLemmaFalse`). Nothing relates `a'` to `av`; see that file for
 --       why even the obvious repair is not enough, and what is.
+--   (2') ITS REPAIR IS DONE, as a lemma on TERMS rather than on generated
+--       Java: `Formal/CSubstLam.ard`'s `substCommute`, used through a
+--       closure-relating value relation (`VR`/`EnvRel`, Formal/CorrectLam.ard).
+--
+-- AND `CorrectGeneric` ITSELF IS FALSE (`Formal/CorrectRefuted.ard`), at the
+-- trivial oracle pair, for two reasons that are not about the backend: a
+-- program whose result is a function has no `ValRel`-related Java value
+-- (`higherOrderRefutes`), and an OPEN program's substitution captures, which no
+-- scope-respecting compiler can match (`captureRefutes`). The repaired form
+-- restricts to CLOSED programs and relates closures; it is PROVED on the
+-- λ-fragment (`box`/`bvar`/`lambda`/`app`), for every oracle pair, in
+-- `Formal/CorrectLam.ard` (`lamProgramCorrect`, and `lamProgramCorrectFO`
+-- for a first-order result). Remaining: `letIn`, `construct`/`case`/`proj`,
+-- `fix`, `const`, `prim`, and the oracle.
 -- ---------------------------------------------------------------------------
 
 -- (1) FUEL MONOTONICITY. A successful run must survive a bigger clock.
@@ -324,5 +338,5 @@
 -- `Formal/RtLong.ard` models fewer runtime constants than `javaAxioms` emits,
 -- so the arity half fails on names the model does not know. Of the two
 -- substantive obligations above, `FuelMono` is proved and `SubstLemma` refuted
--- as stated; what remains is its repair (a logical relation on results).
+-- as stated and repaired on terms; see (2') for what the repair proves.
 -- ---------------------------------------------------------------------------

@@ -1,0 +1,410 @@
+\import Algebra.Meta
+\import Arith.Nat
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Formal.CSubstLam
+\import Formal.Correct (ValRel, progClassName)
+\import Formal.CorrectErased (app2nil, bindOk, execRet)
+\import Formal.FuelMono
+\import Formal.JavaEval
+\import Formal.JavaValue
+\import Formal.LambdaBoxEval
+\import Formal.NodePathUnique (renderName-inj)
+\import Formal.Res
+\import JavaAst
+\import LambdaBox
+\import Logic
+\import Logic.Meta
+\import Meta
+\import NodePath
+\import Order.PartialOrder
+\import Order.StrictOrder
+\import Paths
+\import Paths.Meta
+\import Set
+\import StringUtil
+\import ToJava
+
+-- =============================================================================
+-- THE BACKEND IS CORRECT ON THE CLOSED λ-FRAGMENT, for every oracle pair.
+--
+-- The fragment is `box`, `bvar`, `lambda`, `app` -- the untyped λ-calculus
+-- plus erased values, i.e. every λ□ rule that is about FUNCTIONS: beta,
+-- `evalBox`, and the atoms. The theorem (`lamProgramCorrect`):
+--
+--   a CLOSED program in the fragment that λ□ evaluates to `v` compiles to a
+--   class whose `body()` RETURNS -- never throws -- a Java value `jv` with
+--   `VR v jv`; and when `v` is first-order (`box`), `ValRel v jv` as
+--   `Formal/Correct.ard` states it.
+--
+-- Closedness is necessary (`Formal/CorrectRefuted.ard`, capture), and so is a
+-- value relation that relates closures (same file, higher-order result).
+--
+-- THE SUBSTITUTION PROBLEM, and how it is solved here. λ□ evaluates by
+-- substitution; the generated Java by environment. `Formal/Correct.ard`'s
+-- `SubstLemma` tried to bridge them on GENERATED JAVA and is false
+-- (`Formal/SubstRefuted.ard`). The bridge used here is the standard one for
+-- compiling substitution to closures (Leroy's "syntactic" closure relation):
+--
+--   * the invariant is on the λ□ side: the term being evaluated is `substK 0
+--     sg b` -- a SOURCE term `b` with closed values `sg` substituted for its
+--     free indices -- while the Java side runs `compileExpr cenv path b` in
+--     an environment `jenv`, and `EnvRel` says index `i` is `jVar x_i` in
+--     `cenv`, `x_i` is bound in `jenv` to a value related to `sg_i`;
+--   * a λ□ closure `lambda na (substK 1 sg b0)` is related to the Java
+--     closure compiled from `b0`, capturing a `jenv` related to `sg` (`VR`);
+--   * beta then needs `csubst av 0 (substK 1 sg b0) = substK 0 (av :: sg) b0`,
+--     which is a lemma about TERMS, and true (`Formal/CSubstLam.ard`).
+--
+-- NAMES. Java looks variables up by name, so extending the environment with a
+-- closure's parameter must not shadow a variable of `cenv`. The parameter is
+-- `renderName nParam path` and every variable of `cenv` was minted at a
+-- STRICTLY SHORTER path (an enclosing lambda), so the two differ by
+-- `renderName-inj` (Formal/NodePathUnique.ard). `EnvRel`'s `d` is that bound.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- Java-side plumbing.
+-- ---------------------------------------------------------------------------
+
+\func eqSelf {A : DecSet} (x : A) : (x == x) = true =>
+  unfold (==) (cases (decideEq x x) \with {
+    | yes _ => idp
+    | no q => absurd (q idp)
+  })
+
+\func eqOther {A : DecSet} {x y : A} (ne : x /= y) : (x == y) = false =>
+  unfold (==) (cases (decideEq x y) \with {
+    | yes p => absurd (ne p)
+    | no _ => idp
+  })
+
+\func lookupSelf (x : JIdent) (v : Value) (env : Env) : lookupVar ((x, v) :: env) x = just v =>
+  pmap (\lam c => Maybe.map (\lam (e : \Sigma JIdent Value) => e.2)
+                            (lookupStep (x, v) c (lookupBy (\lam (e : \Sigma JIdent Value) => e.1) x env))) (eqSelf x)
+
+\func lookupOther {x y : JIdent} (v : Value) (env : Env) (ne : x /= y) : lookupVar ((x, v) :: env) y = lookupVar env y =>
+  pmap (\lam c => Maybe.map (\lam (e : \Sigma JIdent Value) => e.2)
+                            (lookupStep (x, v) c (lookupBy (\lam (e : \Sigma JIdent Value) => e.1) y env))) (eqOther ne)
+
+\func evalVar (rt : RtSpec) (cls : JClass) (n : Nat) {env : Env} {x : JIdent} {v : Value} (h : lookupVar env x = just v)
+  : evalExpr rt cls (suc n) env (jVar x) = rOk (eVal v) =>
+  rewrite h idp
+
+-- A successful run at a clock succeeds the same at any bigger one.
+\func upE {rt : RtSpec} {cls : JClass} {env : Env} {e : JExpr} {r : ExprOut} {n m : Nat} (le : n <= m)
+          (h : evalExpr rt cls n env e = rOk r) : evalExpr rt cls m env e = rOk r =>
+  transport (\lam x => evalExpr rt cls x env e = rOk r) (<=_exists le) (evalExprMonoPlus rt cls n (m -' n) env e r h)
+
+-- Two parameters minted at paths of different lengths are different names.
+\func nameNe {p q : Path} (lt : q.len < p.len) : renderName nParam p /= renderName nParam q =>
+  \lam e => \let h : p.len = q.len => pmap (\lam (r : Path) => r.len) (renderName-inj {nParam} {nParam} e).2 \in linarith
+
+-- ---------------------------------------------------------------------------
+-- The fragment compiles to NO statements: every node is an expression.
+-- ---------------------------------------------------------------------------
+
+\func noStmts {k : Nat} (cenv : Array JExpr) (path : Path) (b : LBTerm) (lc : LC k b)
+  : (compileExpr cenv path b).1 = nil \elim b
+  | box => idp
+  | bvar n => idp
+  | lambda _ _ => idp
+  | app f a => app2nil (noStmts cenv (sFun :: path) f lc.1) (noStmts cenv (sArg :: path) a lc.2)
+  | fvar _ => \case lc
+  | letIn _ _ _ => \case lc
+  | const _ => \case lc
+  | construct _ _ _ => \case lc
+  | case _ _ _ _ => \case lc
+  | proj _ _ => \case lc
+  | fix _ _ => \case lc
+  | prim _ => \case lc
+
+-- ---------------------------------------------------------------------------
+-- THE VALUE RELATION, and the environment relation it is mutual with.
+-- ---------------------------------------------------------------------------
+
+-- What `compileExpr` makes the body of the closure for `lambda _ b0` at
+-- `path` under `cenv` (the `lambda` clause of `ToJava.compileExpr`, verbatim).
+\func lamBody (cenv : Array JExpr) (path : Path) (b0 : LBTerm) : Array JStmt =>
+  appendStmts (compileExpr (jVar (renderName nParam path) :: cenv) (sLamBody :: path) b0).1
+              (jReturn (compileExpr (jVar (renderName nParam path) :: cenv) (sLamBody :: path) b0).2 :: nil)
+
+\data VR (t : LBTerm) (jv : Value)
+  | vrBox (t = box) (jv = vBox)
+  -- A λ□ closure whose environment `sg` has been substituted, and the Java
+  -- closure compiled from the same body, capturing a related environment.
+  | vrLam {na : BinderName} {b0 : LBTerm} {sg : Array LBTerm} {cenv : Array JExpr} {jenv : Env} {path : Path}
+          (t = lambda na (substK 1 sg b0))
+          (jv = vClos (renderName nParam path) (lamBody cenv path b0) jenv)
+          (EnvRel sg cenv jenv path.len)
+          (LC (suc sg.len) b0)
+
+-- Index `i` is the variable `renderName nParam q_i` (with `q_i` shorter than
+-- `d`), bound in `jenv` to a value related to `sg_i`.
+\data EnvRel (sg : Array LBTerm) (cenv : Array JExpr) (jenv : Env) (d : Nat) \elim sg, cenv
+  | nil, nil => erNil
+  | s :: sg, x :: cenv => erCons (q : Path) (x = jVar (renderName nParam q)) (q.len < d)
+                                 (jv : Value) (lookupVar jenv (renderName nParam q) = just jv)
+                                 (VR s jv) (EnvRel sg cenv jenv d)
+
+\func vrClosed {t : LBTerm} {jv : Value} (r : VR t jv) : LC 0 t \elim r
+  | vrBox e _ => transport (LC 0) (inv e) ()
+  | vrLam {na} {b0} {sg} e _ er lc => transport (LC 0) (inv e) (skScope1 sg (erClosed er) b0 lc)
+
+\func erClosed {sg : Array LBTerm} {cenv : Array JExpr} {jenv : Env} {d : Nat} (er : EnvRel sg cenv jenv d) : AllC sg
+  \elim sg, cenv, er
+  | nil, nil, erNil => ()
+  | s :: sg, x :: cenv, erCons q _ _ jv _ r er => (vrClosed r, erClosed er)
+
+\func erUp {sg : Array LBTerm} {cenv : Array JExpr} {jenv : Env} {d : Nat} (er : EnvRel sg cenv jenv d)
+  : EnvRel sg cenv jenv (suc d) \elim sg, cenv, er
+  | nil, nil, erNil => erNil
+  | s :: sg, x :: cenv, erCons q ex lt jv lk r er => erCons q ex linarith jv lk r (erUp er)
+
+-- Binding a parameter minted at a path no shorter than `d` shadows nothing.
+\func erExt {sg : Array LBTerm} {cenv : Array JExpr} {jenv : Env} {d : Nat} (er : EnvRel sg cenv jenv d)
+            (p : Path) (le : d <= p.len) (v : Value)
+  : EnvRel sg cenv (bindVar jenv (renderName nParam p) v) d \elim sg, cenv, er
+  | nil, nil, erNil => erNil
+  | s :: sg, x :: cenv, erCons q ex lt jv lk r er =>
+    erCons q ex lt jv (lookupOther v jenv (nameNe linarith) *> lk) r (erExt er p le v)
+
+-- ---------------------------------------------------------------------------
+-- Inversions of `VR`: a related λ□ value is `box` or a `lambda`.
+-- ---------------------------------------------------------------------------
+
+\func tShape (t : LBTerm) : Bool \elim t
+  | box => true
+  | lambda _ _ => true
+  | app _ _ => true
+  | _ => false
+
+\func ftAbsurd (e : false = true) : Empty => contradiction
+
+\func vrShape {t : LBTerm} {jv : Value} (r : VR t jv) : tShape t = true \elim r
+  | vrBox e _ => transport (\lam x => tShape x = true) (inv e) idp
+  | vrLam e _ _ _ => transport (\lam x => tShape x = true) (inv e) idp
+
+\func vrNotApp {f a : LBTerm} {jv : Value} (r : VR (app f a) jv) : Empty \elim r
+  | vrBox e _ => contradiction
+  | vrLam e _ _ _ => contradiction
+
+\func vrBoxInv {jv : Value} (r : VR box jv) : jv = vBox \elim r
+  | vrBox _ e => e
+  | vrLam e _ _ _ => contradiction
+
+\func lamBodyOf (t : LBTerm) : LBTerm \elim t
+  | lambda _ b => b
+  | _ => box
+
+\func lamInv {na : BinderName} {b' : LBTerm} {jf : Value} (r : VR (lambda na b') jf)
+  : \Sigma (b0 : LBTerm) (sg : Array LBTerm) (cenv : Array JExpr) (jenv : Env) (path : Path)
+           (b' = substK 1 sg b0)
+           (jf = vClos (renderName nParam path) (lamBody cenv path b0) jenv)
+           (EnvRel sg cenv jenv path.len)
+           (LC (suc sg.len) b0) \elim r
+  | vrBox e _ => absurd contradiction
+  | vrLam {_} {b0} {sg} {cenv} {jenv} {pth} e ej er lc => (b0, sg, cenv, jenv, pth, pmap lamBodyOf e, ej, er, lc)
+
+-- The oracle cannot fire on, and congruence does not apply to, an
+-- application whose head is a related value.
+\func vrNoAxiom {spec : LBSpec} {fv av : LBTerm} {jv : Value} {x : \Sigma Kername (Array LBTerm)}
+                (r : VR fv jv) (sat : axiomSat spec (app fv av) = just x) : Empty \elim r
+  | vrBox e _ => \let s : axiomSat spec (app box av) = just x => transport (\lam y => axiomSat spec (app y av) = just x) e sat
+                 \in contradiction
+  | vrLam {na} {b0} {sg} e _ _ _ =>
+    \let s : axiomSat spec (app (lambda na (substK 1 sg b0)) av) = just x =>
+           transport (\lam y => axiomSat spec (app y av) = just x) e sat
+    \in contradiction
+
+\func vrNoCong {fv : LBTerm} {jv : Value} (r : VR fv jv) (ok : appCongOk fv = true) : Empty \elim r
+  | vrBox e _ => ftAbsurd (transport (\lam y => appCongOk y = true) e ok)
+  | vrLam e _ _ _ => ftAbsurd (transport (\lam y => appCongOk y = true) e ok)
+
+-- ---------------------------------------------------------------------------
+-- Variables: index `i` of the substituted term is `sg_i`, and the compiled
+-- lookup finds the related Java value.
+-- ---------------------------------------------------------------------------
+
+\func nc0NotGt {i : Nat} (e : natCompare 0 i = cGt) : Empty \elim i
+  | 0 => contradiction
+  | suc i => contradiction
+
+\func varCase (rt : RtSpec) (cls : JClass) {sg : Array LBTerm} {cenv : Array JExpr} {jenv : Env} {d : Nat}
+              (er : EnvRel sg cenv jenv d) (i : Nat) (lc : natCompare sg.len i = cGt) (n0 : Nat) (path : Path)
+  : \Sigma (jv : Value)
+           (evalExpr rt cls 1 jenv (nthVar i cenv n0 path) = rOk (eVal jv))
+           (VR (substK 0 sg (bvar i)) jv) \elim sg, cenv, er, i
+  | nil, nil, erNil, i => absurd (nc0NotGt lc)
+  | s :: sg, x :: cenv, erCons q ex lt jv lk r er, 0 =>
+    (jv, transport (\lam e => evalExpr rt cls 1 jenv e = rOk (eVal jv)) (inv ex) (evalVar rt cls 0 lk),
+     transport (VR __ jv) (inv (skClosed 0 sg (vrClosed r))) r)
+  | s :: sg, x :: cenv, erCons q ex lt jv lk r er, suc i => varCase rt cls er i lc n0 path
+
+-- ---------------------------------------------------------------------------
+-- The simulation.
+-- ---------------------------------------------------------------------------
+
+\func SimOut (rt : RtSpec) (cls : JClass) (cenv : Array JExpr) (jenv : Env) (path : Path) (b v : LBTerm) : \Type =>
+  \Sigma (jv : Value) (n : Nat) (evalExpr rt cls n jenv (compileExpr cenv path b).2 = rOk (eVal jv)) (VR v jv)
+
+\func isApp (t : LBTerm) : Bool \elim t
+  | app _ _ => true
+  | _ => false
+
+-- `box` and `lambda` are values: `v` is the term itself, whatever `b` it came from.
+\func atomCase (rt : RtSpec) (cls : JClass) {t v : LBTerm} (p : v = t) (notApp : isApp t = false)
+               {sg : Array LBTerm} {cenv : Array JExpr} {jenv : Env} {path : Path}
+               (b : LBTerm) (et : t = substK 0 sg b) (lc : LC sg.len b) (er : EnvRel sg cenv jenv path.len)
+  : SimOut rt cls cenv jenv path b v \elim b
+  | box => (vBox, 1, idp, vrBox (p *> et *> skBox 0 sg) idp)
+  | bvar i => \let r => varCase rt cls er i lc i path
+              \in (r.1, 1, r.2, transport (VR __ r.1) (inv (p *> et)) r.3)
+  | lambda na b0 =>
+    (vClos (renderName nParam path) (lamBody cenv path b0) jenv, 1, idp, vrLam (p *> et *> skLam 0 sg na b0) idp er lc)
+  | app f a => absurd (ftAbsurd (inv (transport (\lam x => isApp x = false) (et *> skApp 0 sg f a) notApp)))
+  | fvar _ => \case lc
+  | letIn _ _ _ => \case lc
+  | const _ => \case lc
+  | construct _ _ _ => \case lc
+  | case _ _ _ _ => \case lc
+  | proj _ _ => \case lc
+  | fix _ _ => \case lc
+  | prim _ => \case lc
+
+-- A term of the fragment with values substituted is a `box`, `lambda` or `app`.
+\func shapeOK (rt : RtSpec) (cls : JClass) {t : LBTerm} {sg : Array LBTerm} {cenv : Array JExpr} {jenv : Env} {d : Nat}
+              (b : LBTerm) (et : t = substK 0 sg b) (lc : LC sg.len b) (er : EnvRel sg cenv jenv d)
+  : tShape t = true \elim b
+  | box => transport (\lam x => tShape x = true) (inv (et *> skBox 0 sg)) idp
+  | bvar i => vrShape (transport (VR __ _) (inv et) (varCase rt cls er i lc i nil).3)
+  | lambda na b0 => transport (\lam x => tShape x = true) (inv (et *> skLam 0 sg na b0)) idp
+  | app f a => transport (\lam x => tShape x = true) (inv (et *> skApp 0 sg f a)) idp
+  | fvar _ => \case lc
+  | letIn _ _ _ => \case lc
+  | const _ => \case lc
+  | construct _ _ _ => \case lc
+  | case _ _ _ _ => \case lc
+  | proj _ _ => \case lc
+  | fix _ _ => \case lc
+  | prim _ => \case lc
+
+\func appFun (t : LBTerm) : LBTerm \elim t
+  | app f _ => f
+  | _ => box
+
+\func appArg (t : LBTerm) : LBTerm \elim t
+  | app _ a => a
+  | _ => box
+
+-- An application of the substituted term came from an application in `b`.
+\func appPrep (rt : RtSpec) (cls : JClass) {f' a' : LBTerm} {sg : Array LBTerm} {cenv : Array JExpr} {jenv : Env} {d : Nat}
+              (b : LBTerm) (et : app f' a' = substK 0 sg b) (lc : LC sg.len b) (er : EnvRel sg cenv jenv d)
+  : \Sigma (f a : LBTerm) (b = app f a) (f' = substK 0 sg f) (a' = substK 0 sg a) (LC sg.len f) (LC sg.len a) \elim b
+  | app f a => \let e => et *> skApp 0 sg f a \in (f, a, idp, pmap appFun e, pmap appArg e, lc.1, lc.2)
+  | bvar i => absurd (vrNotApp (transport (VR __ _) (inv et) (varCase rt cls er i lc i nil).3))
+  | box => \let q : app f' a' = box => et *> skBox 0 sg \in absurd contradiction
+  | lambda na b0 => \let q : app f' a' = lambda na (substK 1 sg b0) => et *> skLam 0 sg na b0 \in absurd contradiction
+  | fvar _ => \case lc
+  | letIn _ _ _ => \case lc
+  | const _ => \case lc
+  | construct _ _ _ => \case lc
+  | case _ _ _ _ => \case lc
+  | proj _ _ => \case lc
+  | fix _ _ => \case lc
+  | prim _ => \case lc
+
+-- `evalBox` on the Java side: `Rt.BOX` applied is `Rt.BOX`.
+\func boxJava (rt : RtSpec) (cls : JClass) {cenv : Array JExpr} {jenv : Env} {path : Path} {f a av v : LBTerm}
+              (p : v = box)
+              (ihf : SimOut rt cls cenv jenv (sFun :: path) f box)
+              (iha : SimOut rt cls cenv jenv (sArg :: path) a av)
+  : SimOut rt cls cenv jenv path (app f a) v =>
+  \let | M => suc (ihf.2 Nat.+ iha.2)
+       | pf : evalExpr rt cls M jenv (compileExpr cenv (sFun :: path) f).2 = rOk (eVal vBox) =>
+         transport (\lam x => evalExpr rt cls M jenv (compileExpr cenv (sFun :: path) f).2 = rOk (eVal x))
+                   (vrBoxInv ihf.4) (upE linarith ihf.3)
+       | pa : evalExpr rt cls M jenv (compileExpr cenv (sArg :: path) a).2 = rOk (eVal iha.1) =>
+         upE linarith iha.3
+  \in (vBox, suc M, bindOk pf (bindOk pa idp), vrBox p idp)
+
+\func sim {spec : LBSpec} {genv : GlobalDeclarations} {t v : LBTerm} (d : Eval spec genv t v)
+          (rt : RtSpec) (cls : JClass) {sg : Array LBTerm} {cenv : Array JExpr} {jenv : Env} {path : Path}
+          (b : LBTerm) (et : t = substK 0 sg b) (lc : LC sg.len b) (er : EnvRel sg cenv jenv path.len)
+  : SimOut rt cls cenv jenv path b v \elim t, d
+  | box, evalAtomBox p => atomCase rt cls p idp b et lc er
+  | lambda _ _, evalAtomLambda p => atomCase rt cls p idp b et lc er
+  | fix _ _, evalAtomFix _ => absurd (ftAbsurd (shapeOK rt cls b et lc er))
+  | prim _, evalPrim _ => absurd (ftAbsurd (shapeOK rt cls b et lc er))
+  | const _, _ => absurd (ftAbsurd (shapeOK rt cls b et lc er))
+  | letIn _ _ _, _ => absurd (ftAbsurd (shapeOK rt cls b et lc er))
+  | construct _ _ _, _ => absurd (ftAbsurd (shapeOK rt cls b et lc er))
+  | case _ _ _ _, _ => absurd (ftAbsurd (shapeOK rt cls b et lc er))
+  | proj _ _, _ => absurd (ftAbsurd (shapeOK rt cls b et lc er))
+  | bvar _, ()
+  | fvar _, ()
+  | app f' a', evalBox p df da =>
+    \let | s => appPrep rt cls b et lc er
+         | ihf => sim df rt cls {sg} {cenv} {jenv} {sFun :: path} s.1 s.4 s.6 (erUp er)
+         | iha => sim da rt cls {sg} {cenv} {jenv} {sArg :: path} s.2 s.5 s.7 (erUp er)
+    \in transport (\lam b' => SimOut rt cls cenv jenv path b' v) (inv s.3) (boxJava rt cls p ihf iha)
+  | app f' a', evalBeta {_} {b'} {av} df da d3 =>
+    \let | s => appPrep rt cls b et lc er
+         | ihf => sim df rt cls {sg} {cenv} {jenv} {sFun :: path} s.1 s.4 s.6 (erUp er)
+         | iha => sim da rt cls {sg} {cenv} {jenv} {sArg :: path} s.2 s.5 s.7 (erUp er)
+         | L => lamInv ihf.4
+         | p0 => renderName nParam L.5
+         | ja => iha.1
+         | et3 : csubst av 0 b' = substK 0 (av :: L.2) L.1 =>
+           pmap (csubst av 0) L.6 *> substCommute (vrClosed iha.4) L.2 (erClosed L.8) L.1 L.9
+         | er3 : EnvRel (av :: L.2) (jVar p0 :: L.3) (bindVar L.4 p0 ja) (suc L.5.len) =>
+           erCons L.5 idp linarith ja (lookupSelf p0 ja L.4) iha.4
+                  (erUp (erExt L.8 L.5 <=-refl ja))
+         | ih3 => sim d3 rt cls {av :: L.2} {jVar p0 :: L.3} {bindVar L.4 p0 ja} {sLamBody :: L.5} L.1 et3 L.9 er3
+         | K => ihf.2 Nat.+ iha.2 Nat.+ ih3.2
+         | M => suc (suc (suc K))
+         | pf : evalExpr rt cls M jenv (compileExpr cenv (sFun :: path) s.1).2 = rOk (eVal (vClos p0 (lamBody L.3 L.5 L.1) L.4)) =>
+           transport (\lam x => evalExpr rt cls M jenv (compileExpr cenv (sFun :: path) s.1).2 = rOk (eVal x))
+                     L.7 (upE linarith ihf.3)
+         | pa : evalExpr rt cls M jenv (compileExpr cenv (sArg :: path) s.2).2 = rOk (eVal ja) =>
+           upE linarith iha.3
+         | h3 : evalExpr rt cls K (bindVar L.4 p0 ja) (compileExpr (jVar p0 :: L.3) (sLamBody :: L.5) L.1).2 = rOk (eVal ih3.1) =>
+           upE linarith ih3.3
+         | ex : execStmts rt cls (suc (suc K)) (bindVar L.4 p0 ja) (lamBody L.3 L.5 L.1) = rOk (oReturn ih3.1) =>
+           execRet (noStmts (jVar p0 :: L.3) (sLamBody :: L.5) L.1 L.9) h3
+    \in transport (\lam b'' => SimOut rt cls cenv jenv path b'' v) (inv s.3)
+                  (ih3.1, suc M, bindOk pf (bindOk pa (bindOk ex idp)), ih3.4)
+  | app f' a', evalFix df _ _ _ =>
+    \let | s => appPrep rt cls b et lc er
+         | ihf => sim df rt cls {sg} {cenv} {jenv} {sFun :: path} s.1 s.4 s.6 (erUp er)
+    \in absurd (ftAbsurd (vrShape ihf.4))
+  | app f' a', evalAxiomApp kn args df da sat _ =>
+    \let | s => appPrep rt cls b et lc er
+         | ihf => sim df rt cls {sg} {cenv} {jenv} {sFun :: path} s.1 s.4 s.6 (erUp er)
+    \in absurd (vrNoAxiom ihf.4 sat)
+  | app f' a', evalAppCong df ok da _ _ =>
+    \let | s => appPrep rt cls b et lc er
+         | ihf => sim df rt cls {sg} {cenv} {jenv} {sFun :: path} s.1 s.4 s.6 (erUp er)
+    \in absurd (vrNoCong ihf.4 ok)
+
+-- ---------------------------------------------------------------------------
+-- The theorem.
+-- ---------------------------------------------------------------------------
+
+\func lamProgramCorrect (spec : LBSpec) (rt : RtSpec) {t v : LBTerm}
+                        (d : EvalProgram spec (nil, t) v) (lc : LC 0 t)
+  : \Sigma (jv : Value) (JEval rt (compileClass progClassName (nil, t)) bodyMethodName jv) (VR v jv) =>
+  \let | cls => compileClass progClassName (nil, t)
+       | r => sim d rt cls {nil} {nil} {nil} {nil} t idp lc erNil
+  \in (r.1, (suc (suc (suc r.2)), bindOk (bindOk (execRet (noStmts nil nil t lc) r.3) idp) idp), r.4)
+
+-- On a first-order result, `VR` is `Formal/Correct.ard`'s `ValRel`.
+\func vrValRel {v : LBTerm} {jv : Value} (r : VR v jv) (vb : v = box) : ValRel v jv \elim r
+  | vrBox _ ej => transport2 ValRel (inv vb) (inv ej) (1, idp)
+  | vrLam e _ _ _ => \let q => inv vb *> e \in absurd contradiction
+
+\func lamProgramCorrectFO (spec : LBSpec) (rt : RtSpec) {t : LBTerm}
+                          (d : EvalProgram spec (nil, t) box) (lc : LC 0 t)
+  : \Sigma (jv : Value) (JEval rt (compileClass progClassName (nil, t)) bodyMethodName jv) (ValRel box jv) =>
+  \let r => lamProgramCorrect spec rt d lc \in (r.1, r.2, vrValRel r.3 idp)
