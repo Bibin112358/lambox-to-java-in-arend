@@ -1,0 +1,608 @@
+\import Algebra.Group
+\import Algebra.Monoid
+\import Arith.Int
+\import Arith.Nat
+\import Data.Array (map)
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Formal.Correct
+\import Formal.JavaValue
+\import Formal.LambdaBoxEval
+\import Formal.LbAxioms
+\import Formal.MangleInj (mangleKername-inj)
+\import Formal.Mod64
+\import Formal.OracleArith
+\import Formal.Res
+\import Formal.RtInt63
+\import Formal.RtLong
+\import Int63
+\import JavaAst
+\import JavaAxioms
+\import LambdaBox
+\import Logic
+\import Meta
+\import Order.Biordered
+\import Order.PartialOrder
+\import Order.StrictOrder
+\import Mangle
+\import Paths
+\import Paths.Meta
+\import Set
+\import StringUtil
+
+-- =============================================================================
+-- THE ORACLE HYPOTHESIS HOLDS AT THE SHIPPED PAIR: `OracleAgree lbAxioms
+-- rtInt63` (`oracleShipped`, at the end).
+--
+-- `Formal/Correct.ard`'s correctness statement assumes the λ□ axiom oracle and
+-- the Java runtime model agree on every axiom the backend emits. This file
+-- discharges that assumption for the oracle and runtime the compiler actually
+-- ships, entry by entry of `JavaAxioms.javaAxioms` (all 38):
+--
+--   * ARITY: an axiom compiled to a runtime constant has the same arity on both
+--     sides. This needed `Formal/RtLong.ard` to model the four constants
+--     `Nat.div`/`mod`/`ble`/`blt` route to, which it did not.
+--   * VALUE: on related arguments, what the λ□ oracle returns is related to
+--     what the runtime computes (16 λ□-computable entries; the i64 ones go
+--     through the modular arithmetic of `Formal/Mod64.ard`).
+--   * NO STUB: an axiom λ□ can compute is never compiled to a throwing stub.
+--
+-- Inverting "the table lookup found name `nm`" to "`kn` is entry i" needs the
+-- name mangling to be injective: `Formal/MangleInj.ard`.
+--
+-- A SPEC BUG this found: Arend's `Nat.div n 0` is `n`, and the λ□ oracle used
+-- it, while Lean (`Nat.div_zero`) and `Rt.PRIM_DIV_LONG` give 0. The oracle now
+-- states Lean's semantics (`leanDiv`/`leanMod`, `Formal/LbAxioms.ard`).
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- Small facts about `Maybe` and `Bool`.
+-- ---------------------------------------------------------------------------
+
+\func IsNothing {A : \Type} (m : Maybe A) : \Prop \elim m
+  | nothing => \Sigma
+  | just _ => Empty
+
+\lemma noJust {A : \Type} {x : A} (p : nothing = just x) : Empty => transport IsNothing p ()
+
+\lemma justNo {A : \Type} {x : A} (p : just x = nothing) : Empty => noJust (inv p)
+
+\lemma andL {a b : Bool} (p : (a and b) = true) : a = true => (and.toSigma p).1
+
+\lemma andR {a b : Bool} (p : (a and b) = true) : b = true => (and.toSigma p).2
+
+-- ---------------------------------------------------------------------------
+-- `kernameEq` is sound.
+-- ---------------------------------------------------------------------------
+
+\lemma dirPathEq-sound {a b : DirPath} (p : dirPathEq a b = true) : a = b \elim a, b
+  | nil, nil => idp
+  | nil, _ :: _ => \case p \with {}
+  | _ :: _, nil => \case p \with {}
+  | x :: a, y :: b => pmap2 (\lam (s : Ident) (r : DirPath) => s :: r) (eqTrue (andL p)) (dirPathEq-sound (andR p))
+
+\lemma modPathEq-sound {a b : ModPath} (p : modPathEq a b = true) : a = b \elim a, b
+  | mpFile p1, mpFile q => pmap mpFile (dirPathEq-sound p)
+  | mpFile _, mpBound _ _ _ => \case p \with {}
+  | mpFile _, mpDot _ _ => \case p \with {}
+  | mpBound _ _ _, mpFile _ => \case p \with {}
+  | mpBound p1 x m, mpBound q y n =>
+    \let | e1 => dirPathEq-sound (andL (andL p))
+         | e2 : x = y => eqTrue (andR (andL p))
+         | e3 : m = n => eqTrue (andR p)
+    \in pmap2 (\lam (d : DirPath) (z : \Sigma Ident Nat) => mpBound d z.1 z.2) e1 (pmap2 (\lam (i : Ident) (k : Nat) => (i, k)) e2 e3)
+  | mpBound _ _ _, mpDot _ _ => \case p \with {}
+  | mpDot _ _, mpFile _ => \case p \with {}
+  | mpDot _ _, mpBound _ _ _ => \case p \with {}
+  | mpDot p1 x, mpDot q y => pmap2 mpDot (modPathEq-sound (andL p)) (eqTrue (andR p))
+
+\lemma kernameEq-sound {a b : Kername} (p : kernameEq a b = true) : a = b =>
+  pmap2 (\lam m n => \new Kername m n) (modPathEq-sound (andL p)) (eqTrue (andR p))
+
+-- ---------------------------------------------------------------------------
+-- Inverting the backend's lookup: a name `axiomImpl` finds IS a table entry.
+-- ---------------------------------------------------------------------------
+
+\func AllEntries (P : Kername -> \Type) (tbl : Array (\Sigma Kername JExpr)) : \Type =>
+  \Pi (i : Fin tbl.len) -> P (tbl i).1
+
+\func mangleEntry (e : \Sigma Kername JExpr) : \Sigma String JExpr => (mangleKername e.1, e.2)
+
+\func implIn (kn : Kername) (tbl : Array (\Sigma Kername JExpr)) : Maybe JExpr =>
+  Maybe.map (\lam (e : \Sigma String JExpr) => e.2)
+    (lookupBy (\lam (e : \Sigma String JExpr) => e.1) (mangleKername kn) (map mangleEntry tbl))
+
+\func tableStep (P : Kername -> \Type) (e : \Sigma Kername JExpr) (tbl : Array (\Sigma Kername JExpr))
+                (pe : P e.1) (kn : Kername) (ex : JExpr) (rest : implIn kn tbl = just ex -> P kn)
+                (b : Bool) (eb : (mangleKername e.1 == mangleKername kn) = b)
+                (h : Maybe.map (\lam (e : \Sigma String JExpr) => e.2)
+                       (lookupStep (mangleEntry e) b
+                         (lookupBy (\lam (e : \Sigma String JExpr) => e.1) (mangleKername kn) (map mangleEntry tbl))) = just ex)
+  : P kn \elim b
+  | true => transport P (mangleKername-inj (eqTrue eb)) pe
+  | false => rest h
+
+\func tableInv (P : Kername -> \Type) (tbl : Array (\Sigma Kername JExpr)) (all : AllEntries P tbl)
+               (kn : Kername) (ex : JExpr) (h : implIn kn tbl = just ex) : P kn \elim tbl
+  | nil => absurd (noJust h)
+  | e :: tbl => tableStep P e tbl (all 0) kn ex (tableInv P tbl (\lam i => all (suc i)) kn ex) _ idp h
+
+\lemma rtNone {kn : Kername} (p : axiomImpl kn = nothing) : axiomRtName kn = nothing =>
+  unfold axiomRtName (rewrite p idp)
+
+\func rtNameInv {kn : Kername} {nm : JIdent} (h : axiomRtName kn = just nm) : \Sigma (ex : JExpr) (axiomImpl kn = just ex) =>
+  \case axiomImpl kn \as m, idp : axiomImpl kn = m \with {
+    | just ex, p => (ex, p)
+    | nothing, p => absurd (noJust (inv (rtNone p) *> h))
+  }
+
+-- ---------------------------------------------------------------------------
+-- Decoding the arguments.
+-- ---------------------------------------------------------------------------
+
+\func inv63 {t : LBTerm} {x : Int} (h : int63Of t = just x)
+  : \Sigma (a : Fin int63Mod) (t = prim (primInt63, a)) (x = pos a) \elim t
+  | prim (primInt63, a) => (a, idp, inv (just-injective h))
+  | prim (primInt64, _) => absurd (noJust h)
+  | box => absurd (noJust h)
+  | bvar _ => absurd (noJust h)
+  | fvar _ => absurd (noJust h)
+  | lambda _ _ => absurd (noJust h)
+  | letIn _ _ _ => absurd (noJust h)
+  | app _ _ => absurd (noJust h)
+  | const _ => absurd (noJust h)
+  | construct _ _ _ => absurd (noJust h)
+  | case _ _ _ _ => absurd (noJust h)
+  | proj _ _ => absurd (noJust h)
+  | fix _ _ => absurd (noJust h)
+
+\func inv64 {t : LBTerm} {x : Int} (h : int64Of t = just x)
+  : \Sigma (a : Fin int64Mod) (t = prim (primInt64, a)) (x = pos a) \elim t
+  | prim (primInt64, a) => (a, idp, inv (just-injective h))
+  | prim (primInt63, _) => absurd (noJust h)
+  | box => absurd (noJust h)
+  | bvar _ => absurd (noJust h)
+  | fvar _ => absurd (noJust h)
+  | lambda _ _ => absurd (noJust h)
+  | letIn _ _ _ => absurd (noJust h)
+  | app _ _ => absurd (noJust h)
+  | const _ => absurd (noJust h)
+  | construct _ _ _ => absurd (noJust h)
+  | case _ _ _ _ => absurd (noJust h)
+  | proj _ _ => absurd (noJust h)
+  | fix _ _ => absurd (noJust h)
+
+\func invBoth {m1 m2 : Maybe Int} {x y : Int} (h : bothJust m1 m2 = just (x, y))
+  : \Sigma (m1 = just x) (m2 = just y) \elim m1, m2
+  | just a, just b => (pmap just (pmap __.1 (just-injective h)), pmap just (pmap __.2 (just-injective h)))
+  | just _, nothing => absurd (noJust h)
+  | nothing, _ => absurd (noJust h)
+
+-- What a related Java value is, for each kind of primitive.
+\func rel63 {n : Nat} {a : Fin int63Mod} {j : Value} (h : agrees n (prim (primInt63, a)) j = true) : j = vLong (pos a) \elim n, j
+  | 0, _ => \case h \with {}
+  | suc n, vLong k => inv (pmap vLong (intEqB-sound h))
+  | suc n, vBox => \case h \with {}
+  | suc n, vData _ _ => \case h \with {}
+  | suc n, vClos _ _ _ => \case h \with {}
+  | suc n, vObj _ _ _ => \case h \with {}
+  | suc n, vBuiltin _ _ => \case h \with {}
+  | suc n, vStaticRef _ => \case h \with {}
+  | suc n, vStr _ => \case h \with {}
+  | suc n, vInt _ => \case h \with {}
+  | suc n, vBool _ => \case h \with {}
+  | suc n, vExcObj _ _ => \case h \with {}
+
+\func rel64 {n : Nat} {a : Fin int64Mod} {j : Value} (h : agrees n (prim (primInt64, a)) j = true) : j = vLong (signed64 a) \elim n, j
+  | 0, _ => \case h \with {}
+  | suc n, vLong k => inv (pmap vLong (intEqB-sound h))
+  | suc n, vBox => \case h \with {}
+  | suc n, vData _ _ => \case h \with {}
+  | suc n, vClos _ _ _ => \case h \with {}
+  | suc n, vObj _ _ _ => \case h \with {}
+  | suc n, vBuiltin _ _ => \case h \with {}
+  | suc n, vStaticRef _ => \case h \with {}
+  | suc n, vStr _ => \case h \with {}
+  | suc n, vInt _ => \case h \with {}
+  | suc n, vBool _ => \case h \with {}
+  | suc n, vExcObj _ _ => \case h \with {}
+
+\func Rel (args : Array LBTerm) (jargs : Array Value args.len) : \Type =>
+  \Pi (i : Fin args.len) -> ValRel (args i) (jargs i)
+
+\func Dec63 (x y : Int) (jargs : Array Value) : \Type =>
+  \Sigma (a b : Fin int63Mod) (x = pos a) (y = pos b) (jargs = vLong a :: vLong b :: nil)
+
+\func Dec64 (x y : Int) (jargs : Array Value) : \Type =>
+  \Sigma (a b : Fin int64Mod) (x = pos a) (y = pos b) (jargs = vLong (signed64 a) :: vLong (signed64 b) :: nil)
+
+\func decode63 (args : Array LBTerm) (jargs : Array Value args.len) (rel : Rel args jargs) {x y : Int}
+               (h : twoInts args = just (x, y)) : Dec63 x y jargs \elim args, jargs
+  | nil, nil => absurd (noJust h)
+  | _ :: nil, _ :: nil => absurd (noJust h)
+  | _ :: _ :: _ :: _, _ :: _ :: _ :: _ => absurd (noJust h)
+  | t :: u :: nil, j :: k :: nil =>
+    \let | hb => invBoth h
+         | dt => inv63 hb.1
+         | du => inv63 hb.2
+         | ej : j = vLong dt.1 => rel63 (transport (\lam s => agrees (rel 0).1 s j = true) dt.2 (rel 0).2)
+         | ek : k = vLong du.1 => rel63 (transport (\lam s => agrees (rel 1).1 s k = true) du.2 (rel 1).2)
+    \in (dt.1, du.1, dt.3, du.3, pmap2 (\lam p q => p :: q :: nil) ej ek)
+
+\func decode64 (args : Array LBTerm) (jargs : Array Value args.len) (rel : Rel args jargs) {x y : Int}
+               (h : twoInts64 args = just (x, y)) : Dec64 x y jargs \elim args, jargs
+  | nil, nil => absurd (noJust h)
+  | _ :: nil, _ :: nil => absurd (noJust h)
+  | _ :: _ :: _ :: _, _ :: _ :: _ :: _ => absurd (noJust h)
+  | t :: u :: nil, j :: k :: nil =>
+    \let | hb => invBoth h
+         | dt => inv64 hb.1
+         | du => inv64 hb.2
+         | ej : j = vLong (signed64 dt.1) => rel64 (transport (\lam s => agrees (rel 0).1 s j = true) dt.2 (rel 0).2)
+         | ek : k = vLong (signed64 du.1) => rel64 (transport (\lam s => agrees (rel 1).1 s k = true) du.2 (rel 1).2)
+    \in (dt.1, du.1, dt.3, du.3, pmap2 (\lam p q => p :: q :: nil) ej ek)
+
+-- ---------------------------------------------------------------------------
+-- Per-entry obligations, and how each shape of entry discharges them.
+-- ---------------------------------------------------------------------------
+
+\func Goal (nm : JIdent) (js : Array Value) (v : LBTerm) : \Type =>
+  \Sigma (jv : Value) (builtinRunShipped nm js = rOk jv) (ValRel v jv)
+
+\func ValCore (kn : Kername) (nm : JIdent) : \Type =>
+  \Pi (args : Array LBTerm) (jargs : Array Value args.len) (v : LBTerm)
+    -> Rel args jargs -> axiomRunLb kn args = just v -> Goal nm jargs v
+
+\func goalOf (nm : JIdent) (js : Array Value) (w : LBTerm) {v : LBTerm} (r : just w = just v)
+             (jv : Value) (run : builtinRunShipped nm js = rOk jv) (rel : ValRel w jv) : Goal nm js v =>
+  (jv, run, transport (ValRel __ jv) (just-injective r) rel)
+
+-- `Nat.*`: the arguments are i63, read as naturals by `natAt`.
+\func NatCore (op : String) (nm : JIdent) : \Type =>
+  \Pi (a b : Fin int63Mod) (v : LBTerm) -> natRun op (wrap63 (pos a)) (wrap63 (pos b)) = just v
+    -> Goal nm (vLong a :: vLong b :: nil) v
+
+\func liftNatAt (op : String) (nm : JIdent) (core : NatCore op nm) (args : Array LBTerm) (jargs : Array Value args.len)
+                (v : LBTerm) (rel : Rel args jargs) (m : Maybe (\Sigma Int Int)) (em : twoInts args = m)
+                (r : natAt op m = just v) : Goal nm jargs v \elim m
+  | nothing => absurd (noJust r)
+  | just (x, y) =>
+    \let | d => decode63 args jargs rel em
+         | r' : natRun op (wrap63 (pos d.1)) (wrap63 (pos d.2)) = just v =>
+           transport2 (\lam z w => natRun op (wrap63 z) (wrap63 w) = just v) d.3 d.4 r
+    \in transport (Goal nm __ v) (inv d.5) (core d.1 d.2 v r')
+
+\func liftNat (op : String) (nm : JIdent) (core : NatCore op nm) : ValCore (natKn op) nm =>
+  \lam args jargs v rel r => liftNatAt op nm core args jargs v rel (twoInts args) idp r
+
+-- `prim_*_int`: i63 arguments; an i64 pair gets nowhere.
+\func R63Core (op : String) (nm : JIdent) : \Type =>
+  \Pi (a b : Fin int63Mod) (v : LBTerm) -> int63Run op (pos a) (pos b) = just v
+    -> Goal nm (vLong a :: vLong b :: nil) v
+
+\func liftR63At (op : String) (nm : JIdent) (core : R63Core op nm) (no64 : \Pi (x y : Int) -> int64Run op x y = nothing)
+                (args : Array LBTerm) (jargs : Array Value args.len) (v : LBTerm) (rel : Rel args jargs)
+                (m m64 : Maybe (\Sigma Int Int)) (em : twoInts args = m)
+                (r : rootAt op m m64 = just v) : Goal nm jargs v \elim m, m64
+  | nothing, nothing => absurd (noJust r)
+  | nothing, just (x, y) => absurd (noJust (inv (no64 x y) *> r))
+  | just (x, y), _ =>
+    \let | d => decode63 args jargs rel em
+         | r' : int63Run op (pos d.1) (pos d.2) = just v => transport2 (\lam z w => int63Run op z w = just v) d.3 d.4 r
+    \in transport (Goal nm __ v) (inv d.5) (core d.1 d.2 v r')
+
+\func liftR63 (op : String) (nm : JIdent) (core : R63Core op nm) (no64 : \Pi (x y : Int) -> int64Run op x y = nothing)
+  : ValCore (rootKn op) nm =>
+  \lam args jargs v rel r => liftR63At op nm core no64 args jargs v rel (twoInts args) (twoInts64 args) idp r
+
+-- `prim_*_int64`: i64 arguments, read signed by the JVM.
+\func R64Core (op : String) (nm : JIdent) : \Type =>
+  \Pi (a b : Fin int64Mod) (v : LBTerm) -> int64Run op (pos a) (pos b) = just v
+    -> Goal nm (vLong (signed64 a) :: vLong (signed64 b) :: nil) v
+
+\func liftR64At (op : String) (nm : JIdent) (core : R64Core op nm) (no63 : \Pi (x y : Int) -> int63Run op x y = nothing)
+                (args : Array LBTerm) (jargs : Array Value args.len) (v : LBTerm) (rel : Rel args jargs)
+                (m63 m64 : Maybe (\Sigma Int Int)) (em : twoInts64 args = m64)
+                (r : rootAt op m63 m64 = just v) : Goal nm jargs v \elim m63, m64
+  | just (x, y), _ => absurd (noJust (inv (no63 x y) *> r))
+  | nothing, nothing => absurd (noJust r)
+  | nothing, just (x, y) =>
+    \let | d => decode64 args jargs rel em
+         | r' : int64Run op (pos d.1) (pos d.2) = just v => transport2 (\lam z w => int64Run op z w = just v) d.3 d.4 r
+    \in transport (Goal nm __ v) (inv d.5) (core d.1 d.2 v r')
+
+\func liftR64 (op : String) (nm : JIdent) (core : R64Core op nm) (no63 : \Pi (x y : Int) -> int63Run op x y = nothing)
+  : ValCore (rootKn op) nm =>
+  \lam args jargs v rel r => liftR64At op nm core no63 args jargs v rel (twoInts args) (twoInts64 args) idp r
+
+-- An axiom the oracle does not compute: the value obligation is vacuous.
+\func liftNone (kn : Kername) (nm : JIdent) (none : \Pi (args : Array LBTerm) -> axiomRunLb kn args = nothing) : ValCore kn nm =>
+  \lam args jargs v rel r => absurd (noJust (inv (none args) *> r))
+
+\func natNone (op : String) (hop : \Pi (x y : Nat) -> natRun op x y = nothing) (args : Array LBTerm)
+  : axiomRunLb (natKn op) args = nothing =>
+  \case twoInts args \as m \return natAt op m = nothing \with {
+    | nothing => idp
+    | just (x, y) => hop (wrap63 x) (wrap63 y)
+  }
+
+-- ---------------------------------------------------------------------------
+-- The values.
+-- ---------------------------------------------------------------------------
+
+\func relNorm (z : Int) : ValRel (lbInt z) (vLong (norm63 z)) => (1, intEqB-refl (pos (wrap63 z)))
+
+\func relBool (b : Bool) : ValRel (lbBool b) (mkBool b) \elim b
+  | true => (2, idp)
+  | false => (2, idp)
+
+\func relPos (q : Nat) (hq : q < pow2_63) : ValRel (lbInt (pos q)) (vLong (pos q)) =>
+  (1, transportInv (\lam (z : Nat) => intEqB (pos z) (pos q) = true) (wrap63-lt hq) (intEqB-refl (pos q)))
+
+\lemma le+ (x y : Nat) : x <= x Nat.+ y \elim y
+  | 0 => <=-refl
+  | suc y => <=-transitive (le+ x y) (<=-less id<suc)
+
+\lemma div<=left (a b : Nat) : a Nat.div suc b <= a =>
+  <=-transitive (transport (\lam z => a Nat.div suc b <= z) NatSemiring.+-comm (le+ (a Nat.div suc b) (a Nat.div suc b Nat.* b))) (div_*<=id {a} {suc b})
+
+\lemma wrap64-diff (a b : Nat) (ha : a < pow2_63) (hb : b < pow2_63) : wrap64 (a Nat.- b) = a Nat.- b =>
+  \case a Nat.- b \as d, idp : a Nat.- b = d \return wrap64 d = d \with {
+    | pos k, e => wrap64-pos (minusPos<= e <∘r ha)
+    | neg (suc k), e => wrap64-neg (<=-less (minusNeg<= e <∘r hb))
+  }
+
+\func relTrunc (a b : Nat) (ha : a < pow2_63) : ValRel (lbInt (truncLb (a Nat.- b))) (vLong (clampL (a Nat.- b))) =>
+  \case a Nat.- b \as d, idp : a Nat.- b = d \return ValRel (lbInt (truncLb d)) (vLong (clampL d)) \with {
+    | pos k, e => relPos k (minusPos<= e <∘r ha)
+    | neg (suc k), _ => (1, idp)
+  }
+
+\func relDiv (a b : Nat) (ha : a < pow2_63)
+  : ValRel (lbInt (pos (leanDiv a b))) (vLong (ifZeroL (isZeroL (pos b)) 0 (wrap64 (javaDiv (pos a) (pos b))))) \elim b
+  | 0 => (1, idp)
+  | suc b =>
+    \let hq : a Nat.div suc b < pow2_63 => div<=left a b <∘r ha
+    \in transportInv (\lam z => ValRel (lbInt (pos (a Nat.div suc b))) (vLong z)) (wrap64-pos hq) (relPos _ hq)
+
+\func relMod (a b : Nat) (ha : a < pow2_63)
+  : ValRel (lbInt (pos (leanMod a b))) (vLong (ifZeroL (isZeroL (pos b)) (pos a) (javaRem (pos a) (pos b)))) \elim b
+  | 0 => relPos a ha
+  | suc b => relPos (a Nat.mod suc b) (mod<=left <∘r ha)
+
+\lemma nonNeg-eq (d : Int) : nonNegL d = nonNegLb d \elim d
+  | pos _ => idp
+  | neg (suc _) => idp
+
+\lemma w63 (a : Fin int63Mod) : wrap63 (pos a) = {Nat} a => wrap63-lt (fin_< a)
+
+\lemma w64 (a : Fin int63Mod) : wrap64 (pos a) = pos a => wrap64-pos (fin_< a)
+
+-- The int63 family: both sides compute the same normal form.
+\func coreAdd63 : R63Core "prim_add_int" "PRIM_ADD_INT63" =>
+  \lam a b v r => goalOf "PRIM_ADD_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.+ wrap63 (pos b))))
+
+\func coreMul63 : R63Core "prim_mul_int" "PRIM_MUL_INT63" =>
+  \lam a b v r => goalOf "PRIM_MUL_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.* wrap63 (pos b))))
+
+\func coreSub63 : R63Core "prim_sub_int" "PRIM_SUB_INT63" =>
+  \lam a b v r => goalOf "PRIM_SUB_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relNorm (wrap63 (pos a) Nat.- wrap63 (pos b)))
+
+\func coreEqb63 : R63Core "prim_eqb_int" "PRIM_EQB_INT63" =>
+  \lam a b v r => goalOf "PRIM_EQB_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relBool (intEqB (pos (wrap63 (pos a))) (pos (wrap63 (pos b)))))
+
+\func coreNatAdd : NatCore "add" "PRIM_ADD_INT63" =>
+  \lam a b v r => goalOf "PRIM_ADD_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.+ wrap63 (pos b))))
+
+\func coreNatMul : NatCore "mul" "PRIM_MUL_INT63" =>
+  \lam a b v r => goalOf "PRIM_MUL_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.* wrap63 (pos b))))
+
+-- The `_LONG` family on i63 arguments: `wrap64` is the identity on them.
+\func coreNatBeq : NatCore "beq" "PRIM_EQB_LONG" =>
+  \lam a b v r =>
+    \let B => intEqB (pos a) (pos b)
+    \in goalOf "PRIM_EQB_LONG" (vLong a :: vLong b :: nil) (lbBool B) (pmap2 (\lam (p q : Nat) => just (lbBool (intEqB (pos p) (pos q)))) (inv (w63 a)) (inv (w63 b)) *> r)
+               (mkBool B) (pmap2 (\lam p q => rOk (mkBool (intEqB p q))) (w64 a) (w64 b)) (relBool B)
+
+\func coreNatSub : NatCore "sub" "NAT_SUB_LONG" =>
+  \lam a b v r =>
+    goalOf "NAT_SUB_LONG" (vLong a :: vLong b :: nil) (lbInt (truncLb (a Nat.- b)))
+           (pmap2 (\lam (p q : Nat) => just (lbInt (truncLb (p Nat.- q)))) (inv (w63 a)) (inv (w63 b)) *> r)
+           (vLong (clampL (a Nat.- b)))
+           (pmap (\lam z => rOk (vLong (clampL z))) (wrap64-diff a b (fin_< a) (fin_< b)))
+           (relTrunc a b (fin_< a))
+
+\func coreNatDiv : NatCore "div" "PRIM_DIV_LONG" =>
+  \lam a b v r =>
+    goalOf "PRIM_DIV_LONG" (vLong a :: vLong b :: nil) (lbInt (pos (leanDiv a b)))
+           (pmap2 (\lam (p q : Nat) => just (lbInt (pos (leanDiv p q)))) (inv (w63 a)) (inv (w63 b)) *> r)
+           (vLong (ifZeroL (isZeroL (pos b)) 0 (wrap64 (javaDiv (pos a) (pos b)))))
+           (pmap2 (\lam p q => rOk (vLong (ifZeroL (isZeroL q) 0 (wrap64 (javaDiv p q))))) (w64 a) (w64 b))
+           (relDiv a b (fin_< a))
+
+\func coreNatMod : NatCore "mod" "PRIM_MOD_LONG" =>
+  \lam a b v r =>
+    goalOf "PRIM_MOD_LONG" (vLong a :: vLong b :: nil) (lbInt (pos (leanMod a b)))
+           (pmap2 (\lam (p q : Nat) => just (lbInt (pos (leanMod p q)))) (inv (w63 a)) (inv (w63 b)) *> r)
+           (vLong (ifZeroL (isZeroL (pos b)) (pos a) (javaRem (pos a) (pos b))))
+           (pmap2 (\lam p q => rOk (vLong (ifZeroL (isZeroL q) p (javaRem p q)))) (w64 a) (w64 b))
+           (relMod a b (fin_< a))
+
+\func coreNatBle : NatCore "ble" "PRIM_BLE_LONG" =>
+  \lam a b v r =>
+    \let B => nonNegLb (b Nat.- a)
+    \in goalOf "PRIM_BLE_LONG" (vLong a :: vLong b :: nil) (lbBool B) (pmap2 (\lam (p q : Nat) => just (lbBool (natLeB p q))) (inv (w63 a)) (inv (w63 b)) *> r)
+               (mkBool B)
+               (pmap2 (\lam p q => rOk (mkBool (nonNegL (q - p)))) (w64 a) (w64 b) *> pmap (\lam t => rOk (mkBool t)) (nonNeg-eq (b Nat.- a)))
+               (relBool B)
+
+\func coreNatBlt : NatCore "blt" "PRIM_BLT_LONG" =>
+  \lam a b v r =>
+    \let B => nonNegLb (b Nat.- suc a)
+    \in goalOf "PRIM_BLT_LONG" (vLong a :: vLong b :: nil) (lbBool B) (pmap2 (\lam (p q : Nat) => just (lbBool (natLeB (suc p) q))) (inv (w63 a)) (inv (w63 b)) *> r)
+               (mkBool B)
+               (pmap2 (\lam p q => rOk (mkBool (nonNegL (q - (p + 1))))) (w64 a) (w64 b) *> pmap (\lam t => rOk (mkBool t)) (nonNeg-eq (b Nat.- suc a)))
+               (relBool B)
+
+-- The i64 family. λ□ computes on bit patterns and reads the result signed;
+-- the JVM computes on the signed readings and wraps. `Formal/Mod64.ard`'s
+-- `signed-wrapu` equates the two readings, and `wrap64-cong` says the JVM's
+-- wrap cannot see the multiples of 2^64 by which the readings differ.
+\func relI64 (Z : Int) (J : Value) (jz : Int) (eJ : J = vLong jz) (E : wrap64 Z = jz) : ValRel (lbInt64 Z) J =>
+  (1, transportInv (\lam (w : Value) => agrees 1 (lbInt64 Z) w = true) eJ
+        (transportInv (\lam z => intEqB z jz = true) (signed-wrapu Z *> E) (intEqB-refl jz)))
+
+\func coreAdd64 : R64Core "prim_add_int64" "PRIM_ADD_LONG" =>
+  \lam a b v r =>
+    \let | sa => signed-off a
+         | sb => signed-off b
+         | Z => pos (wrap64u (pos a) Nat.+ wrap64u (pos b))
+         | jz => wrap64 (signed64 a + signed64 b)
+         | E : wrap64 Z = jz =>
+           pmap2 (\lam (p q : Nat) => wrap64 (pos (p Nat.+ q))) (wu-id a) (wu-id b) *>
+           inv (wrap64-cong (pos a + pos b) (sa.1 + sb.1)) *>
+           pmap wrap64 (inv (addRe (pos a) (pos b) sa.1 sb.1 (pos pow2_64)) *> pmap2 (+) (inv sa.2) (inv sb.2))
+    \in goalOf "PRIM_ADD_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbInt64 Z) r (vLong jz) idp (relI64 Z _ jz idp E)
+
+\func coreSub64 : R64Core "prim_sub_int64" "PRIM_SUB_LONG" =>
+  \lam a b v r =>
+    \let | sa => signed-off a
+         | sb => signed-off b
+         | Z => wrap64u (pos a) Nat.- wrap64u (pos b)
+         | jz => wrap64 (signed64 a - signed64 b)
+         | E : wrap64 Z = jz =>
+           pmap2 (\lam (p q : Nat) => wrap64 (p Nat.- q)) (wu-id a) (wu-id b) *>
+           inv (wrap64-cong (pos a - pos b) (sa.1 - sb.1)) *>
+           pmap wrap64 (inv (subRe (pos a) (pos b) sa.1 sb.1 (pos pow2_64)) *> pmap2 (-) (inv sa.2) (inv sb.2))
+    \in goalOf "PRIM_SUB_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbInt64 Z) r (vLong jz) idp (relI64 Z _ jz idp E)
+
+\func coreMul64 : R64Core "prim_mul_int64" "PRIM_MUL_LONG" =>
+  \lam a b v r =>
+    \let | sa => signed-off a
+         | sb => signed-off b
+         | Z => pos (wrap64u (pos a) Nat.* wrap64u (pos b))
+         | jz => wrap64 (signed64 a * signed64 b)
+         | E : wrap64 Z = jz =>
+           pmap2 (\lam (p q : Nat) => wrap64 (pos (p Nat.* q))) (wu-id a) (wu-id b) *>
+           inv (wrap64-cong (pos a * pos b) (sa.1 * pos b + sb.1 * pos a + sa.1 * sb.1 * pos pow2_64)) *>
+           pmap wrap64 (inv (mulRe (pos a) (pos b) sa.1 sb.1 (pos pow2_64)) *> pmap2 (*) (inv sa.2) (inv sb.2))
+    \in goalOf "PRIM_MUL_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbInt64 Z) r (vLong jz) idp (relI64 Z _ jz idp E)
+
+\lemma boolIff {p q : Bool} (f : p = true -> q = true) (g : q = true -> p = true) : p = q \elim p, q
+  | true, true => idp
+  | false, false => idp
+  | true, false => \case f idp \with {}
+  | false, true => \case g idp \with {}
+
+-- Equality of bit patterns is equality of their signed readings.
+\lemma eqb64 (a b : Fin int64Mod) : intEqB (pos a) (pos b) = intEqB (signed64 a) (signed64 b) =>
+  boolIff (\lam h => transport (\lam z => intEqB (signed64 a) z = true)
+                               (signed64-nat {a} {b} (pmap iabs (intEqB-sound {pos a} {pos b} h))) (intEqB-refl (signed64 a)))
+          (\lam h => transport (\lam (z : Nat) => intEqB (pos a) (pos z) = true)
+                               (signed64-inj {a} {b} (intEqB-sound h)) (intEqB-refl (pos a)))
+
+\func coreEqb64 : R64Core "prim_eqb_int64" "PRIM_EQB_LONG" =>
+  \lam a b v r =>
+    \let | B => intEqB (signed64 a) (signed64 b)
+         | X : intEqB (pos (wrap64u (pos a))) (pos (wrap64u (pos b))) = B =>
+           pmap2 (\lam (p q : Nat) => intEqB (pos p) (pos q)) (wu-id a) (wu-id b) *> eqb64 a b
+    \in goalOf "PRIM_EQB_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbBool B)
+               (pmap (\lam t => just (lbBool t)) (inv X) *> r) (mkBool B)
+               (pmap2 (\lam p q => rOk (mkBool (intEqB p q))) (wrap-signed a) (wrap-signed b)) (relBool B)
+
+-- ---------------------------------------------------------------------------
+-- The table, entry by entry.
+-- ---------------------------------------------------------------------------
+
+\func rtArityOf (m : Maybe JIdent) : Maybe Nat \elim m
+  | just nm => builtinArityShipped nm
+  | nothing => nothing
+
+\func Entry (kn : Kername) : \Type =>
+  \Sigma (axiomArityLb kn = rtArityOf (axiomRtName kn))
+         (\Pi (nm : JIdent) -> axiomRtName kn = just nm -> ValCore kn nm)
+
+\func valAt (kn : Kername) (nm0 : JIdent) (e0 : axiomRtName kn = just nm0) (core : ValCore kn nm0)
+  : \Pi (nm : JIdent) -> axiomRtName kn = just nm -> ValCore kn nm =>
+  \lam nm h => transport (ValCore kn) (just-injective (inv e0 *> h)) core
+
+\func valNone (kn : Kername) (none : \Pi (args : Array LBTerm) -> axiomRunLb kn args = nothing)
+  : \Pi (nm : JIdent) -> axiomRtName kn = just nm -> ValCore kn nm =>
+  \lam nm _ => liftNone kn nm none
+
+\func entries (i : Fin javaAxioms.len) : Entry (javaAxioms i).1 \elim i
+  | 0 => (idp, valAt (rootKn "prim_add_int") "PRIM_ADD_INT63" idp (liftR63 "prim_add_int" "PRIM_ADD_INT63" coreAdd63 (\lam _ _ => idp)))
+  | 1 => (idp, valAt (rootKn "prim_mul_int") "PRIM_MUL_INT63" idp (liftR63 "prim_mul_int" "PRIM_MUL_INT63" coreMul63 (\lam _ _ => idp)))
+  | 2 => (idp, valAt (rootKn "prim_sub_int") "PRIM_SUB_INT63" idp (liftR63 "prim_sub_int" "PRIM_SUB_INT63" coreSub63 (\lam _ _ => idp)))
+  | 3 => (idp, valAt (rootKn "prim_eqb_int") "PRIM_EQB_INT63" idp (liftR63 "prim_eqb_int" "PRIM_EQB_INT63" coreEqb63 (\lam _ _ => idp)))
+  | 4 => (idp, valAt (rootKn "prim_add_int64") "PRIM_ADD_LONG" idp (liftR64 "prim_add_int64" "PRIM_ADD_LONG" coreAdd64 (\lam _ _ => idp)))
+  | 5 => (idp, valAt (rootKn "prim_mul_int64") "PRIM_MUL_LONG" idp (liftR64 "prim_mul_int64" "PRIM_MUL_LONG" coreMul64 (\lam _ _ => idp)))
+  | 6 => (idp, valAt (rootKn "prim_sub_int64") "PRIM_SUB_LONG" idp (liftR64 "prim_sub_int64" "PRIM_SUB_LONG" coreSub64 (\lam _ _ => idp)))
+  | 7 => (idp, valAt (rootKn "prim_eqb_int64") "PRIM_EQB_LONG" idp (liftR64 "prim_eqb_int64" "PRIM_EQB_LONG" coreEqb64 (\lam _ _ => idp)))
+  | 8 => (idp, valAt (natKn "add") "PRIM_ADD_INT63" idp (liftNat "add" "PRIM_ADD_INT63" coreNatAdd))
+  | 9 => (idp, valAt (natKn "mul") "PRIM_MUL_INT63" idp (liftNat "mul" "PRIM_MUL_INT63" coreNatMul))
+  | 10 => (idp, valAt (natKn "sub") "NAT_SUB_LONG" idp (liftNat "sub" "NAT_SUB_LONG" coreNatSub))
+  | 11 => (idp, valAt (natKn "beq") "PRIM_EQB_LONG" idp (liftNat "beq" "PRIM_EQB_LONG" coreNatBeq))
+  | 12 => (idp, valAt (natKn "div") "PRIM_DIV_LONG" idp (liftNat "div" "PRIM_DIV_LONG" coreNatDiv))
+  | 13 => (idp, valAt (natKn "mod") "PRIM_MOD_LONG" idp (liftNat "mod" "PRIM_MOD_LONG" coreNatMod))
+  | 14 => (idp, valNone (natKn "pow") (natNone "pow" (\lam _ _ => idp)))
+  | 15 => (idp, valAt (natKn "ble") "PRIM_BLE_LONG" idp (liftNat "ble" "PRIM_BLE_LONG" coreNatBle))
+  | 16 => (idp, valAt (natKn "blt") "PRIM_BLT_LONG" idp (liftNat "blt" "PRIM_BLT_LONG" coreNatBlt))
+  | 17 => (idp, valNone (natKn "decEq") (natNone "decEq" (\lam _ _ => idp)))
+  | 18 => (idp, valNone (natKn "decLe") (natNone "decLe" (\lam _ _ => idp)))
+  | 19 => (idp, valNone (natKn "decLt") (natNone "decLt" (\lam _ _ => idp)))
+  | 20 => (idp, valNone (axKnIn "Int" "ofNat") (\lam _ => idp))
+  | 21 => (idp, valNone (axKnIn "Int" "negSucc") (\lam _ => idp))
+  | 22 => (idp, valNone (axKnIn "Int" "neg") (\lam _ => idp))
+  | 23 => (idp, valNone (axKnIn "Int" "add") (\lam _ => idp))
+  | 24 => (idp, valNone (axKnIn "Int" "mul") (\lam _ => idp))
+  | 25 => (idp, valNone (axKnIn "Int" "ediv") (\lam _ => idp))
+  | 26 => (idp, valNone (axKnIn "Int" "emod") (\lam _ => idp))
+  | 27 => (idp, valNone (axKnIn "Int" "decEq") (\lam _ => idp))
+  | 28 => (idp, valNone (axKnIn "Array" "mk") (\lam _ => idp))
+  | 29 => (idp, valNone (axKnIn "Array" "emptyWithCapacity") (\lam _ => idp))
+  | 30 => (idp, valNone (axKnIn "Array" "push") (\lam _ => idp))
+  | 31 => (idp, valNone (axKnIn "Array" "getInternal") (\lam _ => idp))
+  | 32 => (idp, valNone (axKnIn "Array" "get_u33Internal") (\lam _ => idp))
+  | 33 => (idp, valNone (axKnIn "Array" "set_u33") (\lam _ => idp))
+  | 34 => (idp, valNone (axKnIn "Array" "swap") (\lam _ => idp))
+  | 35 => (idp, valNone (axKnIn "Array" "size") (\lam _ => idp))
+  | 36 => (idp, valNone (axKnIn "Eq" "rec") (\lam _ => idp))
+  | 37 => (idp, valNone (axKnIn "Eq" "ndrec") (\lam _ => idp))
+
+-- ---------------------------------------------------------------------------
+-- The third component: a name the backend does not realize is not one the
+-- oracle computes.
+-- ---------------------------------------------------------------------------
+
+\func AllK (ks : Array Kername) : \Prop \elim ks
+  | nil => \Sigma
+  | k :: ks => \Sigma (axiomRtName k = nothing -> Empty) (AllK ks)
+
+\lemma allNamed : AllK lbAxiomNames =>
+  (justNo, (justNo, (justNo, (justNo, (justNo, (justNo, (justNo, (justNo,
+  (justNo, (justNo, (justNo, (justNo, (justNo, (justNo, (justNo, (justNo, ()))))))))))))))))
+
+\lemma notInStep {kn : Kername} (h : axiomRtName kn = nothing) (k : Kername) (ks : Array Kername)
+                 (pk : axiomRtName k = nothing -> Empty) (rest : arityIn kn ks = nothing)
+                 (b : Bool) (eb : kernameEq kn k = b) : arityStep b (arityIn kn ks) = nothing \elim b
+  | true => absurd (pk (transport (\lam z => axiomRtName z = nothing) (kernameEq-sound eb) h))
+  | false => rest
+
+\lemma notIn {kn : Kername} (h : axiomRtName kn = nothing) (ks : Array Kername) (all : AllK ks) : arityIn kn ks = nothing \elim ks
+  | nil => idp
+  | k :: ks => notInStep h k ks all.1 (notIn h ks all.2) (kernameEq kn k) idp
+
+-- ---------------------------------------------------------------------------
+-- THE THEOREM.
+-- ---------------------------------------------------------------------------
+
+\func entryOf {kn : Kername} {nm : JIdent} (h : axiomRtName kn = just nm) : Entry kn =>
+  \let ri => rtNameInv h
+  \in tableInv Entry javaAxioms (\lam i => entries i) kn ri.1 ri.2
+
+\func oracleShipped : OracleAgree lbAxioms rtInt63 =>
+  (\lam kn nm h => (entryOf h).1 *> pmap rtArityOf h,
+   \lam kn nm args jargs v h rel r => (entryOf h).2 nm h args jargs v rel r,
+   \lam kn h => notIn h lbAxiomNames allNamed)

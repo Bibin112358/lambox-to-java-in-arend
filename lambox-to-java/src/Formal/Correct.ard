@@ -147,14 +147,23 @@
 -- runtime doing the same thing on both sides, and that "modulo" is written down
 -- instead of assumed.
 --
--- Two halves, and the first is not optional. If the arities disagree, the two
+-- Three components, and none is optional. If the arities disagree, the two
 -- sides saturate at different points -- λ□ computing while Java is still
 -- collecting, or the reverse -- and the value half is never even reached.
 -- Writing the arity half down is the same contract `RtSpec.builtinArity` and
 -- `LBSpec.axiomArity` each state alone; this is the statement that they match.
 --
+-- The THIRD covers the names the first two say nothing about: an axiom the
+-- backend does NOT realize (`axiomRtName kn = nothing`, compiled to a throwing
+-- stub) must be one λ□ cannot compute either. Without it the hypothesis was
+-- satisfiable by a backend that realized nothing at all, while λ□ happily
+-- evaluated `Nat.add` -- and then the theorem, which forbids an exception
+-- outcome, would have to be false rather than the hypothesis.
+--
 -- `jargs` is indexed by `args.len`, which is how "same length, pointwise" is
 -- said here (the same device `evalConstruct` uses).
+--
+-- PROVED at the shipped pair: `Formal/OracleShipped.ard`'s `oracleShipped`.
 -- ---------------------------------------------------------------------------
 
 \func OracleAgree (spec : LBSpec) (rt : RtSpec) : \Type =>
@@ -168,6 +177,7 @@
       -> (\Pi (i : Fin args.len) -> ValRel (args i) (jargs i))
       -> axiomRun {spec} kn args = just v
       -> \Sigma (jv : Value) (builtinRun {rt} nm jargs = rOk jv) (ValRel v jv))
+    (\Pi (kn : Kername) -> axiomRtName kn = nothing -> axiomArity {spec} kn = nothing)
 
 -- ---------------------------------------------------------------------------
 -- THE THEOREM.
@@ -255,8 +265,20 @@
 -- restricts to CLOSED programs and relates closures; it is PROVED on the
 -- λ-fragment (`box`/`bvar`/`lambda`/`app`), for every oracle pair, in
 -- `Formal/CorrectLam.ard` (`lamProgramCorrect`, and `lamProgramCorrectFO`
--- for a first-order result). Remaining: `letIn`, `construct`/`case`/`proj`,
--- `fix`, `const`, `prim`, and the oracle.
+-- for a first-order result).
+--
+-- THE FULL LANGUAGE is being done in TWO STEPS, as MetaRocq does
+-- (`EWcbvEvalNamed.v`, then the compilation to Malfunction):
+--   (A1) λ□ by substitution => λ□ by environments. DONE for every construct
+--        (`box`, `bvar`, `lambda`, `letIn`, `app` with all five application
+--        rules, `const`, `construct`, `case`, `proj`, `fix`, `prim`, axioms):
+--        `Formal/EvalEnvSound.ard`'s `evalToEvalEnv`, for closed programs, a
+--        closed global environment, and an oracle with first-order results;
+--        the environment semantics is `Formal/EvalEnv.ard`, the substitution
+--        algebra `Formal/CSubst.ard`.
+--   (A2) λ□ by environments => Java. OPEN; both sides keep environments.
+-- The oracle hypothesis `OracleAgree` is PROVED at the shipped pair
+-- (`Formal/OracleShipped.ard`).
 -- ---------------------------------------------------------------------------
 
 -- (1) FUEL MONOTONICITY. A successful run must survive a bigger clock.
@@ -333,10 +355,10 @@
 -- `Nat.sub` keeps its own truncating constant, which is a difference of
 -- CONVENTION and not of number kind.
 --
--- NO KNOWN COUNTEREXAMPLE REMAINS. `OracleAgree` is still not provable at the
--- shipped pair, but for a bookkeeping reason rather than a wrong answer:
--- `Formal/RtLong.ard` models fewer runtime constants than `javaAxioms` emits,
--- so the arity half fails on names the model does not know. Of the two
+-- NO KNOWN COUNTEREXAMPLE REMAINS, and `OracleAgree` is now PROVED at the
+-- shipped pair (`Formal/OracleShipped.ard`, `oracleShipped`), after the model
+-- gained the four `Nat.div`/`mod`/`ble`/`blt` constants it lacked and the
+-- λ□ oracle's `Nat.div` by zero was corrected to Lean's 0. Of the two
 -- substantive obligations above, `FuelMono` is proved and `SubstLemma` refuted
 -- as stated and repaired on terms; see (2') for what the repair proves.
 -- ---------------------------------------------------------------------------

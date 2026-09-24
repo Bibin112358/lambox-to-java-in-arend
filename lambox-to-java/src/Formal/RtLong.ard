@@ -65,21 +65,30 @@
 -- The `neg` clause is `2^64 - (n mod 2^64)`, guarded on the zero case because
 -- `2^64 - 0` is `2^64`, not `0`. `neg 0` is DEFINITIONALLY `pos 0` (Prelude's
 -- constructor condition on `Int`), and the two clauses agree there.
+--
+-- The tested values are PARAMETERS of `negModU64`/`readS64` rather than `\case`
+-- scrutinees, so that a proof can rewrite them (`Formal/OracleArith.ard` does);
+-- the functions compute exactly what the inline `\case`s they replace did.
 \func modU64 (x : Int) : Nat \elim x
   | pos n => n Nat.mod pow2_64
-  | neg n => \case n Nat.mod pow2_64 \with {
-    | 0 => 0
-    | suc k => iabs (pow2_64 Nat.- suc k)
-  }
+  | neg n => negModU64 (n Nat.mod pow2_64)
+
+\func negModU64 (m : Nat) : Nat \elim m
+  | 0 => 0
+  | suc k => iabs (pow2_64 Nat.- suc k)
 
 -- The unsigned bit pattern read back as a signed `long`: the top half of the
 -- range denotes the negatives, so `r >= 2^63` becomes `r - 2^64`.
-\func wrap64 (x : Int) : Int =>
-  \let r => modU64 x
-  \in \case r Nat.- pow2_63 \with {
-    | pos _ => r Nat.- pow2_64      -- `pos _` is `r >= 2^63`, equality included
-    | neg (suc _) => pos r
-  }
+\func wrap64 (x : Int) : Int => readS64 (modU64 x) (modU64 x Nat.- pow2_63)
+
+-- `d` is `r - 2^63`, whose sign says which half `r` is in.
+\func readS64 (r : Nat) (d : Int) : Int => readSigned pow2_64 r d
+
+-- The modulus is a PARAMETER so that a proof can reason about it abstractly:
+-- a symbolic `j + 2^63` normalized in full is 2^63 `suc`s.
+\func readSigned (m r : Nat) (d : Int) : Int \elim d
+  | pos _ => r Nat.- m      -- `pos _` is `r >= 2^63`, equality included
+  | neg (suc _) => pos r
 
 -- `Rt.FALSE`/`Rt.TRUE` are `Data(0, {})`/`Data(1, {})`: a tag and no fields.
 --
@@ -88,6 +97,72 @@
 -- the result of a comparison.
 \func mkBool (b : Bool) : Value =>
   vData (\case b \with { | true => 1 | false => 0 }) nil
+
+-- ---------------------------------------------------------------------------
+-- DIVISION, REMAINDER AND COMPARISON ON `long`.
+--
+-- JLS 15.17.2: integer `/` rounds TOWARD ZERO, so `-7 / 2` is `-3`, and the
+-- one overflow is `Long.MIN_VALUE / -1`, which is `Long.MIN_VALUE` again --
+-- i.e. the mathematical 2^63, wrapped. JLS 15.17.3: `%` is the remainder of
+-- that division, so its sign is the DIVIDEND's (`-7 % 2` is `-1`) and it can
+-- never overflow (`|x % y| < |y| <= 2^63`). Both on magnitudes, then signed:
+-- that is sign-magnitude division, which Arend's `Nat.div`/`Nat.mod` do on the
+-- magnitudes directly, at 2^63 scale, without peeling.
+--
+-- Division BY ZERO throws in Java; `Rt.java` guards it with Lean's convention
+-- instead (`y == 0 ? 0 : x / y` and `y == 0 ? x : x % y`), and so does the
+-- model. The guard is a pattern match on the divisor, one constructor deep,
+-- not a comparison that walks it.
+--
+-- The small helpers each take the value they test as a PARAMETER, so that a
+-- proof holding an equation about it can rewrite (see Formal/NodePathUnique.ard
+-- on why a `\case` does not reduce under a hypothesis).
+-- ---------------------------------------------------------------------------
+
+-- Strictly negative. `neg 0` is `pos 0`, and the two clauses agree there.
+\func isNegL (x : Int) : Bool
+  | pos _ => false
+  | neg 0 => false
+  | neg (suc _) => true
+
+\func isZeroL (x : Int) : Bool
+  | pos 0 => true
+  | pos (suc _) => false
+  | neg 0 => true
+  | neg (suc _) => false
+
+-- A magnitude with a sign attached.
+\func signedL (negative : Bool) (n : Nat) : Int \elim negative
+  | true => neg n
+  | false => pos n
+
+-- The sign of a quotient: negative iff exactly one operand is.
+\func xorL (a b : Bool) : Bool \elim a, b
+  | true, true => false
+  | true, false => true
+  | false, b => b
+
+-- JLS 15.17.2 on mathematical integers; the caller wraps (for MIN / -1).
+\func javaDiv (x y : Int) : Int => signedL (xorL (isNegL x) (isNegL y)) (iabs x Nat.div iabs y)
+
+-- JLS 15.17.3: the dividend's sign, the magnitudes' remainder.
+\func javaRem (x y : Int) : Int => signedL (isNegL x) (iabs x Nat.mod iabs y)
+
+-- `Rt.java`'s zero guard: `y == 0 ? onZero : other`.
+\func ifZeroL (isZero : Bool) (onZero other : Int) : Int \elim isZero
+  | true => onZero
+  | false => other
+
+-- `0 <= d`, as the sign of an `Int`: after the `neg 0 = pos 0` identification
+-- the negatives are exactly `neg (suc _)`.
+\func nonNegL (d : Int) : Bool
+  | pos _ => true
+  | neg (suc _) => false
+
+-- Lean's truncating `Nat.sub` on a `long` difference: negatives become 0.
+\func clampL (d : Int) : Int
+  | pos k => pos k
+  | neg (suc _) => 0
 
 -- The arity contract. Every one of these is binary in `Rt.java`, reached as
 -- `Fn -> Fn -> result`. Writing it down IS the fix for the `Rt.curry` class of
@@ -98,7 +173,11 @@
   \case f == "PRIM_SUB_LONG" \with { | true => just 2 | false =>
   \case f == "PRIM_MUL_LONG" \with { | true => just 2 | false =>
   \case f == "PRIM_EQB_LONG" \with { | true => just 2 | false =>
-  \case f == "NAT_SUB_LONG"  \with { | true => just 2 | false => nothing } } } } }
+  \case f == "NAT_SUB_LONG"  \with { | true => just 2 | false =>
+  \case f == "PRIM_DIV_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_MOD_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_BLE_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_BLT_LONG" \with { | true => just 2 | false => nothing } } } } } } } } }
 
 -- Any name with a declared arity is an `Fn` constant, unapplied. There is no
 -- `BOX` case: `jBox` is a node of the AST now, so `Rt.BOX` is never read as a
@@ -134,14 +213,28 @@
       -- wrapped `d` is 2^63-1, which is not negative and is returned unchanged.
       --
       -- After `wrap64` the negatives are exactly `neg (suc _)`: `neg 0` is
-      -- DEFINITIONALLY `pos 0`, which the `pos k` clause already covers.
+      -- DEFINITIONALLY `pos 0`, which `clampL`'s `pos k` clause already covers.
       \case f == "NAT_SUB_LONG" \with {
-        | true => \case wrap64 (x - y) \with {
-          | pos k => rOk (vLong (pos k))
-          | neg (suc _) => rOk (vLong 0)
-        }
-        | false => rStuck
-      } } } } }
+        | true => rOk (vLong (clampL (wrap64 (x - y)))) | false =>
+      -- The operands are read as `long`s first (`lng(x)`), hence the `wrap64`s
+      -- on the way IN; they are the identity on a well-formed `vLong`.
+      \let | a => wrap64 x
+           | b => wrap64 y
+      \in
+      -- `lng(y) == 0L ? 0L : lng(x) / lng(y)`. The quotient is wrapped because
+      -- of the one overflowing case, `Long.MIN_VALUE / -1`.
+      \case f == "PRIM_DIV_LONG" \with {
+        | true => rOk (vLong (ifZeroL (isZeroL b) 0 (wrap64 (javaDiv a b)))) | false =>
+      -- `lng(y) == 0L ? lng(x) : lng(x) % lng(y)`. No wrap: `%` cannot overflow.
+      \case f == "PRIM_MOD_LONG" \with {
+        | true => rOk (vLong (ifZeroL (isZeroL b) a (javaRem a b))) | false =>
+      -- `lng(x) <= lng(y)` and `lng(x) < lng(y)`: SIGNED comparisons, decided
+      -- by the sign of an exact `Int` difference (`x < y` iff `x + 1 <= y`).
+      \case f == "PRIM_BLE_LONG" \with {
+        | true => rOk (mkBool (nonNegL (b - a))) | false =>
+      \case f == "PRIM_BLT_LONG" \with {
+        | true => rOk (mkBool (nonNegL (b - (a + 1)))) | false => rStuck
+      } } } } } } } } }
     | _ => rStuck
   }
 

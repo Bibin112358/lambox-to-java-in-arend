@@ -28,10 +28,9 @@
 -- `natOverflowNowAgrees` in `Formal/CorrectInstances.ard` are the two witnesses
 -- that used to fail.
 --
--- `Formal/Correct.ard`'s runtime-agreement hypothesis is still not PROVABLE at
--- this pair, but no longer because of a wrong answer -- only because the model
--- below covers fewer runtime constants than `javaAxioms` emits. That is
--- bookkeeping, and it is the honest reason.
+-- `Formal/Correct.ard`'s runtime-agreement hypothesis `OracleAgree` is PROVED
+-- at this pair: `Formal/OracleShipped.ard`'s `oracleShipped`, once `rtLong`
+-- modelled every constant `javaAxioms` emits for a λ□-computable axiom.
 --
 -- ---------------------------------------------------------------------------
 -- WHY THIS COSTS NOTHING, which is what made it the default

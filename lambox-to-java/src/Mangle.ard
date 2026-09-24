@@ -19,7 +19,8 @@
 -- component, so `mpDot (mpFile ["A"]) "B"` met `mpFile ["A","B"]` as well.
 --
 -- THE ENCODING IS A PREFIX CODE, and that is the whole injectivity argument
--- (stated here; not yet mechanized):
+-- (mechanized: `Formal/MangleInj.ard`'s `mangleKername-inj`, by a parser that
+-- inverts the encoding):
 --
 --   * inside a component, a letter or digit stands for itself, `_` is written
 --     `__`, and every other byte is `$<decimal>$`;

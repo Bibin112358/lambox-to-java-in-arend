@@ -1,0 +1,418 @@
+\import Arith.Fin.Order
+\import Arith.Nat
+\import Data.Array
+\import Data.Bool
+\import Data.Maybe
+\import Data.String (Byte, String, stringExt, ++ \as \infixr 5 ++S)
+\import Formal.NodePathUnique (byteDigit, horner, horner_natToStr, isDelim, NoDelim, noDelim_natToStr)
+\import Formal.OracleArith (eqTrue)
+\import LambdaBox
+\import Logic
+\import Mangle
+\import Paths
+\import Set
+\import StringUtil
+
+-- =============================================================================
+-- `mangleKername` is injective.
+--
+-- `Mangle.ard` states the argument -- the encoding is a prefix code -- and this
+-- module mechanizes it, the same way `Formal/NodePathUnique.ard` does for
+-- `renderName`: by a RETRACTION. A parser reads a mangled name back, and
+-- `mangleKername-inj` is `parse (mangle k) = just k` applied to both sides.
+--
+-- TWO STAGES, because the two halves of the argument are different in kind:
+--
+--   * BYTES -> TOKENS (`tokenize`). The prefix-code half: a single `_` is always
+--     structural and followed by a tag letter, `__` is an escaped underscore,
+--     `$<decimal>$` an escaped byte. This is the half with byte-level content,
+--     and it is a state machine that consumes ONE byte per step -- `comp`,
+--     `compU`, `dollar`, `num` and `tagAt` are its states -- so it is
+--     structurally recursive and needs no fuel. A component's bytes are
+--     collected in a function accumulator, which appends without a reverse.
+--   * TOKENS -> KERNAME (`fromToks`). The grammar half: directories, then an
+--     optional functor-and-index, then `mpDot` steps, then the name. `mpDot`
+--     nests to the LEFT, so the tokens of `mpDot mp x` are those of `mp`
+--     followed by one more, which is exactly the order a left-to-right parse
+--     with the module path as accumulator rebuilds.
+--
+-- `Formal/NodePathUnique.ard`'s Arend facts apply here too: a String literal
+-- unfolds only when matched, so every byte-level statement is about a
+-- CONCATENATION with some `rest`; and byte literals of 100 and above cannot be
+-- patterns, so the tag letters are looked up in a table.
+--
+-- Nothing in the compiler imports this; name it to check it:
+-- `arend arend.yaml Formal.MangleInj`.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- Tokens, and the encoding in terms of them.
+-- ---------------------------------------------------------------------------
+
+-- One structural token and its payload: the SOURCE bytes of a component, or an
+-- `mpBound` index.
+\data MTok
+  | tD (Array Byte)   -- `_d`: a directory
+  | tB (Array Byte)   -- `_b`: an `mpBound` functor name
+  | tI Nat            -- `_i`: an `mpBound` index
+  | tO (Array Byte)   -- `_o`: an `mpDot` step
+  | tN (Array Byte)   -- `_n`: the constant's own name
+
+\func tagByte (t : MTok) : Byte
+  | tD _ => 100  -- 'd'
+  | tB _ => 98   -- 'b'
+  | tI _ => 105  -- 'i'
+  | tO _ => 111  -- 'o'
+  | tN _ => 110  -- 'n'
+
+\func pay (t : MTok) : Array Byte
+  | tD s => (mangleBytes s).bytes
+  | tB s => (mangleBytes s).bytes
+  | tI n => (natToStr n).bytes
+  | tO s => (mangleBytes s).bytes
+  | tN s => (mangleBytes s).bytes
+
+\func encTok (t : MTok) (rest : Array Byte) : Array Byte => 95 :: tagByte t :: (pay t ++ rest)
+
+\func encToks (ts : Array MTok) (rest : Array Byte) : Array Byte \elim ts
+  | nil => rest
+  | t :: ts => encTok t (encToks ts rest)
+
+\lemma encToks_++ (xs ys : Array MTok) (rest : Array Byte) : encToks (xs ++ ys) rest = encToks xs (encToks ys rest) \elim xs
+  | nil => idp
+  | x :: xs => pmap (encTok x) (encToks_++ xs ys rest)
+
+\func dirToks (ds : Array String) : Array MTok \elim ds
+  | nil => nil
+  | d :: ds => tD d.bytes :: dirToks ds
+
+\func toksMP (mp : ModPath) : Array MTok \elim mp
+  | mpFile dp => dirToks dp
+  | mpBound dp id n => dirToks dp ++ (tB id.bytes :: tI n :: nil)
+  | mpDot mp id => toksMP mp ++ (tO id.bytes :: nil)
+
+\func toksK (k : Kername) : Array MTok => toksMP k.kerModPath ++ (tN k.kerName.bytes :: nil)
+
+-- The mangling IS the encoding of those tokens, behind the leading `c`.
+\lemma dirs_bytes (ds : Array String) (rest : Array Byte) : (mangleDirs ds).bytes ++ rest = encToks (dirToks ds) rest \elim ds
+  | nil => idp
+  | d :: ds => pmap (\lam (z : Array Byte) => 95 :: 100 :: z)
+      (++-assoc {Byte} {(manglePart d).bytes} {(mangleDirs ds).bytes} {rest} *>
+       pmap ((manglePart d).bytes ++) (dirs_bytes ds rest))
+
+\lemma mp_bytes (mp : ModPath) (rest : Array Byte) : (mangleModPath mp).bytes ++ rest = encToks (toksMP mp) rest \elim mp
+  | mpFile dp => dirs_bytes dp rest
+  | mpBound dp id n =>
+    \let | P => (manglePart id).bytes
+         | N => (natToStr n).bytes
+         | W => ("_b" ++S manglePart id ++S "_i" ++S natToStr n).bytes
+    \in ++-assoc {Byte} {(mangleDirs dp).bytes} {W} {rest} *>
+        pmap ((mangleDirs dp).bytes ++)
+             (pmap (\lam (z : Array Byte) => 95 :: 98 :: z) (++-assoc {Byte} {P} {("_i" ++S natToStr n).bytes} {rest})) *>
+        dirs_bytes dp (95 :: 98 :: (P ++ (95 :: 105 :: (N ++ rest)))) *>
+        inv (encToks_++ (dirToks dp) (tB id.bytes :: tI n :: nil) rest)
+  | mpDot mp id =>
+    ++-assoc {Byte} {(mangleModPath mp).bytes} {("_o" ++S manglePart id).bytes} {rest} *>
+    mp_bytes mp (95 :: 111 :: ((manglePart id).bytes ++ rest)) *>
+    inv (encToks_++ (toksMP mp) (tO id.bytes :: nil) rest)
+
+\lemma kn_bytes (k : Kername) : (mangleKername k).bytes = 99 :: encToks (toksK k) nil =>
+  \let P => (manglePart k.kerName).bytes
+  \in pmap (\lam (z : Array Byte) => 99 :: z) (
+    mp_bytes k.kerModPath (95 :: 110 :: P) *>
+    pmap (\lam (z : Array Byte) => encToks (toksMP k.kerModPath) (95 :: 110 :: z)) (inv ++_nil) *>
+    inv (encToks_++ (toksMP k.kerModPath) (tN k.kerName.bytes :: nil) nil))
+
+-- ---------------------------------------------------------------------------
+-- Stage 1: bytes -> tokens.
+-- ---------------------------------------------------------------------------
+
+-- The kinds of token that carry a component.
+\data Kind | kD | kB | kO | kN
+
+\func mk (k : Kind) (s : Array Byte) : MTok \elim k
+  | kD => tD s
+  | kB => tB s
+  | kO => tO s
+  | kN => tN s
+
+-- What a tag letter announces: a component of some kind, or an index.
+\data Tag | gS Kind | gI
+
+\func tagTable : Array (\Sigma Byte Tag) =>
+  (100, gS kD) :: (98, gS kB) :: (105, gI) :: (111, gS kO) :: (110, gS kN) :: nil
+
+\func isDollar (n : Nat) : Bool => n == 36
+
+\func toByte (n : Nat) : Byte => finMod n
+
+\func consTok (t : MTok) (m : Maybe (Array MTok)) : Maybe (Array MTok) \elim m
+  | nothing => nothing
+  | just ts => just (t :: ts)
+
+-- After `_` and a tag letter.
+\func tagAt (t : Byte) (bs : Array Byte) : Maybe (Array MTok) => tagGo (lookupKey t tagTable) bs
+
+\func tagGo (m : Maybe Tag) (bs : Array Byte) : Maybe (Array MTok) \elim m
+  | nothing => nothing
+  | just (gS k) => comp k (\lam xs => xs) bs
+  | just gI => num 0 bs
+
+\func tag (bs : Array Byte) : Maybe (Array MTok) \elim bs
+  | nil => nothing
+  | t :: bs => tagAt t bs
+
+-- Inside a component. The end of the input ends it too: the name is last.
+\func comp (k : Kind) (acc : Array Byte -> Array Byte) (bs : Array Byte) : Maybe (Array MTok) \elim bs
+  | nil => just (mk k (acc nil) :: nil)
+  | b :: bs => compK k acc b bs (isUnderscore b) (isDollar b)
+
+\func compK (k : Kind) (acc : Array Byte -> Array Byte) (b : Byte) (bs : Array Byte) (us dl : Bool)
+  : Maybe (Array MTok) \elim us, dl
+  | true, _ => compU k acc bs
+  | false, true => dollar k acc 0 bs
+  | false, false => comp k (\lam xs => acc (b :: xs)) bs
+
+-- After one `_` inside a component: a second one is an escaped `_`, anything
+-- else is the tag letter of the next token.
+\func compU (k : Kind) (acc : Array Byte -> Array Byte) (bs : Array Byte) : Maybe (Array MTok) \elim bs
+  | nil => nothing
+  | c :: cs => compUK k acc c cs (isUnderscore c)
+
+\func compUK (k : Kind) (acc : Array Byte -> Array Byte) (c : Byte) (cs : Array Byte) (us : Bool)
+  : Maybe (Array MTok) \elim us
+  | true => comp k (\lam xs => acc (95 :: xs)) cs
+  | false => consTok (mk k (acc nil)) (tagAt c cs)
+
+-- Inside `$<decimal>$`.
+\func dollar (k : Kind) (acc : Array Byte -> Array Byte) (n : Nat) (bs : Array Byte) : Maybe (Array MTok) \elim bs
+  | nil => nothing
+  | c :: cs => dollarK k acc n c cs (isDollar c)
+
+\func dollarK (k : Kind) (acc : Array Byte -> Array Byte) (n : Nat) (c : Byte) (cs : Array Byte) (dl : Bool)
+  : Maybe (Array MTok) \elim dl
+  | true => comp k (\lam xs => acc (toByte n :: xs)) cs
+  | false => dollar k acc (n Nat.* 10 Nat.+ byteDigit c) cs
+
+-- An `mpBound` index: digits, up to the next `_` or the end.
+\func num (n : Nat) (bs : Array Byte) : Maybe (Array MTok) \elim bs
+  | nil => just (tI n :: nil)
+  | c :: cs => numK n c cs (isDelim c)
+
+\func numK (n : Nat) (c : Byte) (cs : Array Byte) (dl : Bool) : Maybe (Array MTok) \elim dl
+  | true => consTok (tI n) (tag cs)
+  | false => num (n Nat.* 10 Nat.+ byteDigit c) cs
+
+\func top (bs : Array Byte) : Maybe (Array MTok) \elim bs
+  | nil => just nil
+  | b :: bs => topK bs (isUnderscore b)
+
+\func topK (bs : Array Byte) (us : Bool) : Maybe (Array MTok) \elim us
+  | true => tag bs
+  | false => nothing
+
+-- The leading `c` carries no information.
+\func tokenize (bs : Array Byte) : Maybe (Array MTok) \elim bs
+  | nil => nothing
+  | _ :: bs => top bs
+
+-- ---------------------------------------------------------------------------
+-- Stage 1, read back.
+-- ---------------------------------------------------------------------------
+
+\func NoDollar (bs : Array Byte) : \Prop \elim bs
+  | nil => \Sigma
+  | b :: bs => \Sigma (isDollar b = false) (NoDollar bs)
+
+\lemma noDollar_++ {xs ys : Array Byte} (a : NoDollar xs) (b : NoDollar ys) : NoDollar (xs ++ ys) \elim xs
+  | nil => b
+  | x :: xs => (a.1, noDollar_++ a.2 b)
+
+\lemma noDollar_digit (r : Fin 10) : NoDollar (digitLit r).bytes \elim r
+  | 0 => (idp, ()) | 1 => (idp, ()) | 2 => (idp, ()) | 3 => (idp, ()) | 4 => (idp, ())
+  | 5 => (idp, ()) | 6 => (idp, ()) | 7 => (idp, ()) | 8 => (idp, ()) | 9 => (idp, ())
+
+\lemma noDollar_natToStrFuel (fuel n : Nat) : NoDollar (natToStrFuel fuel n).bytes \elim fuel
+  | 0 => noDollar_digit 0
+  | suc fuel => noDollar_natToStrStep fuel (n Nat.div 10) (n Nat.mod 10)
+
+\lemma noDollar_natToStrStep (fuel q : Nat) (r : Fin 10) : NoDollar (natToStrStep fuel q r).bytes \elim q
+  | 0 => noDollar_digit r
+  | suc q => noDollar_++ (noDollar_natToStrFuel fuel (suc q)) (noDollar_digit r)
+
+\lemma noDollar_natToStr (n : Nat) : NoDollar (natToStr n).bytes \elim n
+  | 0 => noDollar_digit 0
+  | suc n => noDollar_natToStrFuel (suc n) (suc n)
+
+\lemma dollarScan (k : Kind) (acc : Array Byte -> Array Byte) (n : Nat) (ds rest : Array Byte) (nd : NoDollar ds)
+  : dollar k acc n (ds ++ 36 :: rest) = comp k (\lam xs => acc (toByte (horner n ds) :: xs)) rest \elim ds
+  | nil => idp
+  | d :: ds => pmap (dollarK k acc n d (ds ++ 36 :: rest)) nd.1 *> dollarScan k acc _ ds rest nd.2
+
+\lemma numScan (n : Nat) (ds rest : Array Byte) (nd : NoDelim ds) : num n (ds ++ rest) = num (horner n ds) rest \elim ds
+  | nil => idp
+  | d :: ds => pmap (numK n d (ds ++ rest)) nd.1 *> numScan _ ds rest nd.2
+
+-- An identifier byte is not `$`: `isJavaIdentByte 36` is `false`.
+\lemma dollarFalse (b : Byte) (eI : isJavaIdentByte b = true) : isDollar b = false =>
+  \case isDollar b \as d, idp : isDollar b = d \return isDollar b = false \with {
+    | false, p => p
+    | true, p => \case transport (\lam (n : Nat) => isJavaIdentByte n = true) (eqTrue p) eI \with {}
+  }
+
+-- One component, read back byte by byte: the three cases of `mangleByteK`.
+\lemma compMangle (k : Kind) (acc : Array Byte -> Array Byte) (s rest : Array Byte)
+  : comp k acc ((mangleBytes s).bytes ++ rest) = comp k (\lam xs => acc (s ++ xs)) rest \elim s
+  | nil => idp
+  | b :: s => compByte k acc b s rest (isJavaIdentByte b) (isUnderscore b) idp idp
+
+\lemma compByte (k : Kind) (acc : Array Byte -> Array Byte) (b : Byte) (s rest : Array Byte) (I U : Bool)
+                (eI : isJavaIdentByte b = I) (eU : isUnderscore b = U)
+  : comp k acc ((mangleByteK b I U ++S mangleBytes s).bytes ++ rest) = comp k (\lam xs => acc (b :: s ++ xs)) rest \elim I, U
+  | true, true =>
+    \let e95 : b = 95 => fin_nat-inj (eqTrue eU)
+    \in compMangle k (\lam xs => acc (95 :: xs)) s rest *>
+        pmap (\lam (y : Byte) => comp k (\lam xs => acc (y :: s ++ xs)) rest) (inv e95)
+  | true, false =>
+    pmap2 (\lam u d => compK k acc b ((mangleBytes s).bytes ++ rest) u d) eU (dollarFalse b eI) *>
+    compMangle k (\lam xs => acc (b :: xs)) s rest
+  | false, _ =>
+    \let | N => (natToStr b).bytes
+         | M => (mangleBytes s).bytes
+         | assoc : ((N ++ ("$" : String).bytes) ++ M) ++ rest = N ++ 36 :: (M ++ rest) =>
+           ++-assoc {Byte} {N ++ ("$" : String).bytes} {M} {rest} *> ++-assoc {Byte} {N} {("$" : String).bytes} {M ++ rest}
+         | q : toByte (horner 0 N) = b => pmap toByte (horner_natToStr b) *> fin_mod_id b
+    \in pmap (dollar k acc 0) assoc *>
+        dollarScan k acc 0 N (M ++ rest) (noDollar_natToStr b) *>
+        pmap (\lam (y : Byte) => comp k (\lam xs => acc (y :: xs)) (M ++ rest)) q *>
+        compMangle k (\lam xs => acc (b :: xs)) s rest
+
+-- The token stream, read back: one lemma per state that can end a token.
+\lemma tagLemma (t : MTok) (ts : Array MTok) : tagAt (tagByte t) (pay t ++ encToks ts nil) = just (t :: ts) \elim t
+  | tD s => compMangle kD (\lam xs => xs) s (encToks ts nil) *> compEnd ts kD (\lam xs => s ++ xs) *>
+            pmap (\lam z => just (tD z :: ts)) ++_nil
+  | tB s => compMangle kB (\lam xs => xs) s (encToks ts nil) *> compEnd ts kB (\lam xs => s ++ xs) *>
+            pmap (\lam z => just (tB z :: ts)) ++_nil
+  | tI n => numScan 0 (natToStr n).bytes (encToks ts nil) (noDelim_natToStr n) *> numEnd ts _ *>
+            pmap (\lam m => just (tI m :: ts)) (horner_natToStr n)
+  | tO s => compMangle kO (\lam xs => xs) s (encToks ts nil) *> compEnd ts kO (\lam xs => s ++ xs) *>
+            pmap (\lam z => just (tO z :: ts)) ++_nil
+  | tN s => compMangle kN (\lam xs => xs) s (encToks ts nil) *> compEnd ts kN (\lam xs => s ++ xs) *>
+            pmap (\lam z => just (tN z :: ts)) ++_nil
+
+\lemma compEnd (ts : Array MTok) (k : Kind) (acc : Array Byte -> Array Byte)
+  : comp k acc (encToks ts nil) = consTok (mk k (acc nil)) (just ts) \elim ts
+  | nil => idp
+  | tD s :: ts => pmap (consTok (mk k (acc nil))) (tagLemma (tD s) ts)
+  | tB s :: ts => pmap (consTok (mk k (acc nil))) (tagLemma (tB s) ts)
+  | tI n :: ts => pmap (consTok (mk k (acc nil))) (tagLemma (tI n) ts)
+  | tO s :: ts => pmap (consTok (mk k (acc nil))) (tagLemma (tO s) ts)
+  | tN s :: ts => pmap (consTok (mk k (acc nil))) (tagLemma (tN s) ts)
+
+\lemma numEnd (ts : Array MTok) (n : Nat) : num n (encToks ts nil) = consTok (tI n) (just ts) \elim ts
+  | nil => idp
+  | t :: ts => pmap (consTok (tI n)) (tagLemma t ts)
+
+\lemma topEnd (ts : Array MTok) : top (encToks ts nil) = just ts \elim ts
+  | nil => idp
+  | t :: ts => tagLemma t ts
+
+-- ---------------------------------------------------------------------------
+-- Stage 2: tokens -> kername, and read back.
+-- ---------------------------------------------------------------------------
+
+\func consFst (d : String) (p : \Sigma (Array String) (Array MTok)) : \Sigma (Array String) (Array MTok) => (d :: p.1, p.2)
+
+\func splitDirs (ts : Array MTok) : \Sigma (Array String) (Array MTok) \elim ts
+  | tD s :: ts => consFst (\new String s) (splitDirs ts)
+  | ts => (nil, ts)
+
+\func dots (mp : ModPath) (ts : Array MTok) : Maybe Kername \elim ts
+  | tO s :: ts => dots (mpDot mp (\new String s)) ts
+  | tN s :: nil => just (\new Kername mp (\new String s))
+  | _ => nothing
+
+-- After the directories: an `mpBound` functor and index, or nothing. One
+-- constructor split per function, so that each reduces as soon as the token
+-- it inspects is known.
+\func baseThen (dp : Array String) (ts : Array MTok) : Maybe Kername \elim ts
+  | nil => nothing
+  | t :: ts => baseStep dp t ts
+
+\func baseStep (dp : Array String) (t : MTok) (ts : Array MTok) : Maybe Kername \elim t
+  | tB s => boundIdx dp s ts
+  | tD s => dots (mpFile dp) (tD s :: ts)
+  | tI n => dots (mpFile dp) (tI n :: ts)
+  | tO s => dots (mpFile dp) (tO s :: ts)
+  | tN s => dots (mpFile dp) (tN s :: ts)
+
+\func boundIdx (dp : Array String) (s : Array Byte) (ts : Array MTok) : Maybe Kername \elim ts
+  | tI n :: ts => dots (mpBound dp (\new String s) n) ts
+  | _ => nothing
+
+\func fromToks (ts : Array MTok) : Maybe Kername => baseThen (splitDirs ts).1 (splitDirs ts).2
+
+\func NotD (t : MTok) : \Prop
+  | tD _ => Empty
+  | tB _ => \Sigma
+  | tI _ => \Sigma
+  | tO _ => \Sigma
+  | tN _ => \Sigma
+
+\func OorN (t : MTok) : \Prop
+  | tD _ => Empty
+  | tB _ => Empty
+  | tI _ => Empty
+  | tO _ => \Sigma
+  | tN _ => \Sigma
+
+\lemma oorn-notd {t : MTok} (on : OorN t) : NotD t \elim t
+  | tD _ => \case on \with {}
+  | tB _ => ()
+  | tI _ => ()
+  | tO _ => ()
+  | tN _ => ()
+
+\lemma splitBase (t : MTok) (r : Array MTok) (nd : NotD t) : splitDirs (t :: r) = (nil, t :: r) \elim t
+  | tD _ => \case nd \with {}
+  | tB _ => idp
+  | tI _ => idp
+  | tO _ => idp
+  | tN _ => idp
+
+\lemma split_dirs (dp : Array String) (t : MTok) (r : Array MTok) (nd : NotD t)
+  : splitDirs (dirToks dp ++ t :: r) = (dp, t :: r) \elim dp
+  | nil => splitBase t r nd
+  | d :: dp => pmap (consFst d) (split_dirs dp t r nd)
+
+\lemma baseFile (dp : Array String) (t : MTok) (r : Array MTok) (on : OorN t)
+  : baseThen dp (t :: r) = dots (mpFile dp) (t :: r) \elim t
+  | tD _ => \case on \with {}
+  | tB _ => \case on \with {}
+  | tI _ => \case on \with {}
+  | tO _ => idp
+  | tN _ => idp
+
+\lemma dots_lemma (mp : ModPath) (t : MTok) (r : Array MTok) (on : OorN t)
+  : fromToks (toksMP mp ++ t :: r) = dots mp (t :: r) \elim mp
+  | mpFile dp => pmap (\lam (p : \Sigma (Array String) (Array MTok)) => baseThen p.1 p.2) (split_dirs dp t r (oorn-notd on)) *>
+                 baseFile dp t r on
+  | mpBound dp id n =>
+    pmap fromToks (++-assoc {MTok} {dirToks dp} {tB id.bytes :: tI n :: nil} {t :: r}) *>
+    pmap (\lam (p : \Sigma (Array String) (Array MTok)) => baseThen p.1 p.2) (split_dirs dp (tB id.bytes) (tI n :: t :: r) ())
+  | mpDot mp id =>
+    pmap fromToks (++-assoc {MTok} {toksMP mp} {tO id.bytes :: nil} {t :: r}) *>
+    dots_lemma mp (tO id.bytes) (t :: r) ()
+
+\lemma from_toks (k : Kername) : fromToks (toksK k) = just k => dots_lemma k.kerModPath (tN k.kerName.bytes) nil ()
+
+-- ---------------------------------------------------------------------------
+-- The theorem.
+-- ---------------------------------------------------------------------------
+
+\lemma mangleKername-inj {k1 k2 : Kername} (e : mangleKername k1 = mangleKername k2) : k1 = k2 =>
+  \let | eb : 99 :: encToks (toksK k1) nil = 99 :: encToks (toksK k2) nil =>
+         inv (kn_bytes k1) *> pmap (\lam (s : String) => s.bytes) e *> kn_bytes k2
+       | et : just (toksK k1) = just (toksK k2) =>
+         inv (topEnd (toksK k1)) *> pmap tokenize eb *> topEnd (toksK k2)
+  \in just-injective (inv (from_toks k1) *> pmap fromToks (just-injective et) *> from_toks k2)

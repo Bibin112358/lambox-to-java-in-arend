@@ -103,8 +103,10 @@
 -- Each is a name `javaAxioms` DOES realize, so each is a place the backend
 -- compiles something this module cannot explain. The counts are the census in
 -- `Formal/Agreement.ard`'s header, which also says which way each gap cuts --
--- several of these are gaps in `Formal/RtLong.ard` too, and three names
--- (`Nat.div`, `Nat.mod`, `Nat.ble`) are covered HERE and not there.
+-- all of these are gaps in `Formal/RtLong.ard` too. (`Nat.div`/`mod`/`ble`/
+-- `blt` used to be covered here and not there; `Formal/RtLong.ard` now models
+-- their `PRIM_*_LONG` constants, and `Formal/OracleShipped.ard` proves the two
+-- sides agree on every name.)
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -138,22 +140,39 @@
 -- un-wrapped value cannot be written down".
 \func lbInt (i : Int) : LBTerm => prim (primInt63, wrap63 i)
 
+-- One primitive of each kind, decoded; `nothing` on anything else.
+\func int63Of (t : LBTerm) : Maybe Int \elim t
+  | prim (primInt63, x) => just x
+  | _ => nothing
+
+\func int64Of (t : LBTerm) : Maybe Int \elim t
+  | prim (primInt64, x) => just x
+  | _ => nothing
+
+\func bothJust (m1 m2 : Maybe Int) : Maybe (\Sigma Int Int) \elim m1, m2
+  | just x, just y => just (x, y)
+  | just _, nothing => nothing
+  | nothing, _ => nothing
+
+-- Exactly two arguments, each decoded by `f`.
+--
+-- Split into these small functions, rather than one nested pattern, so that a
+-- proof inverting it (`Formal/OracleShipped.ard`) meets one constructor split
+-- at a time: the array's shape here, the term's kind in `int63Of`.
+\func twoOf (f : LBTerm -> Maybe Int) (args : Array LBTerm) : Maybe (\Sigma Int Int) \elim args
+  | x :: y :: nil => bothJust (f x) (f y)
+  | _ => nothing
+
 -- The two arguments every axiom here takes, decoded. `nothing` covers both "not
 -- two arguments" and "not primitive ints", which are the same kind of failure:
 -- the runtime was handed something it does not compute on.
-\func twoInts (args : Array LBTerm) : Maybe (\Sigma Int Int) => \case args \with {
-  | prim (primInt63, x) :: prim (primInt63, y) :: nil => just (x, y)
-  | _ => nothing
-}
+\func twoInts (args : Array LBTerm) : Maybe (\Sigma Int Int) => twoOf int63Of args
 
 -- The same for the other kind. Two extractors rather than one that accepts
 -- either: an i64 operation handed i63 operands is a MALFORMED program, not a
 -- conversion opportunity, and it should be stuck rather than silently
 -- reinterpreted. That is the whole reason the kind is in the term.
-\func twoInts64 (args : Array LBTerm) : Maybe (\Sigma Int Int) => \case args \with {
-  | prim (primInt64, x) :: prim (primInt64, y) :: nil => just (x, y)
-  | _ => nothing
-}
+\func twoInts64 (args : Array LBTerm) : Maybe (\Sigma Int Int) => twoOf int64Of args
 
 -- A 64-bit primitive, as a term. `wrap64u` normalizes into [0, 2^64), so as
 -- with `lbInt` the payload cannot be out of range.
@@ -168,45 +187,73 @@
 -- structured name here rather than its mangling is what makes this module
 -- independent of the backend's naming.
 --
--- Written as `kernameEq` chains rather than an association list, because
--- `lookupKey` wants a `DecSet` and `Kername` is a record of a `ModPath` and an
--- `Ident`; `Formal/RtLong.ard`'s `==` chains on `JIdent` are the same shape.
+-- A walk over a list of names with `kernameEq` rather than `lookupKey`,
+-- because `lookupKey` wants a `DecSet` and `Kername` is a record of a
+-- `ModPath` and an `Ident`. It used to be a sixteen-deep `\case` chain, which
+-- said the same thing but could not be reasoned about uniformly: the list form
+-- is what lets `Formal/OracleShipped.ard` prove "every name with an arity
+-- here is realized by the backend" by one induction.
 -- ---------------------------------------------------------------------------
 
 \func natKn (name : String) : Kername => \new Kername (mpDot (mpFile nil) "Nat") name
 
 \func rootKn (name : String) : Kername => \new Kername (mpFile nil) name
 
+-- The axioms this oracle computes, in the order the table used to test them.
+\func lbAxiomNames : Array Kername =>
+  natKn "add" :: natKn "mul" :: natKn "sub" :: natKn "div" ::
+  natKn "mod" :: natKn "beq" :: natKn "ble" :: natKn "blt" ::
+  rootKn "prim_add_int" :: rootKn "prim_sub_int" ::
+  rootKn "prim_mul_int" :: rootKn "prim_eqb_int" ::
+  rootKn "prim_add_int64" :: rootKn "prim_sub_int64" ::
+  rootKn "prim_mul_int64" :: rootKn "prim_eqb_int64" :: nil
+
+-- One step of the walk. The test is a PARAMETER, so that a proof holding
+-- `kernameEq kn k = b` can rewrite it (`StringUtil.lookupStep`'s device).
+\func arityStep (hit : Bool) (rest : Maybe Nat) : Maybe Nat \elim hit
+  | true => just 2
+  | false => rest
+
+\func arityIn (kn : Kername) (ks : Array Kername) : Maybe Nat \elim ks
+  | nil => nothing
+  | k :: ks => arityStep (kernameEq kn k) (arityIn kn ks)
+
 -- Every axiom below is binary, as `javaAxioms` realizes them: `Rt.java`'s
 -- `PRIM_*` and `NAT_*` constants all collect two arguments before computing.
 -- Writing the arity down is the same contract `RtSpec.builtinArity` states, and
 -- it is what `axiomSat` tests against.
-\func axiomArityLb (kn : Kername) : Maybe Nat =>
-  \case kernameEq kn (natKn "add") \with { | true => just 2 | false =>
-  \case kernameEq kn (natKn "mul") \with { | true => just 2 | false =>
-  \case kernameEq kn (natKn "sub") \with { | true => just 2 | false =>
-  \case kernameEq kn (natKn "div") \with { | true => just 2 | false =>
-  \case kernameEq kn (natKn "mod") \with { | true => just 2 | false =>
-  \case kernameEq kn (natKn "beq") \with { | true => just 2 | false =>
-  \case kernameEq kn (natKn "ble") \with { | true => just 2 | false =>
-  \case kernameEq kn (natKn "blt") \with { | true => just 2 | false =>
-  \case kernameEq kn (rootKn "prim_add_int") \with { | true => just 2 | false =>
-  \case kernameEq kn (rootKn "prim_sub_int") \with { | true => just 2 | false =>
-  \case kernameEq kn (rootKn "prim_mul_int") \with { | true => just 2 | false =>
-  \case kernameEq kn (rootKn "prim_eqb_int") \with { | true => just 2 | false =>
-  \case kernameEq kn (rootKn "prim_add_int64") \with { | true => just 2 | false =>
-  \case kernameEq kn (rootKn "prim_sub_int64") \with { | true => just 2 | false =>
-  \case kernameEq kn (rootKn "prim_mul_int64") \with { | true => just 2 | false =>
-  \case kernameEq kn (rootKn "prim_eqb_int64") \with { | true => just 2 | false =>
-    nothing } } } } } } } } } } } } } } } }
+\func axiomArityLb (kn : Kername) : Maybe Nat => arityIn kn lbAxiomNames
 
--- `x <= y`, without peeling. `Nat.-` on two `Nat`s is truncating subtraction
--- landing in `Int`, so the sign of `y - x` decides it; after truncation the
--- negatives are exactly `neg (suc _)`, since `neg 0` is `pos 0`.
-\func natLeB (x y : Nat) : Bool => \case y Nat.- x \with {
+-- `0 <= d` for an `Int`: after the `neg 0 = pos 0` identification the
+-- negatives are exactly `neg (suc _)`.
+\func nonNegLb (d : Int) : Bool
   | pos _ => true
   | neg (suc _) => false
-}
+
+-- `x <= y`, without peeling. `Nat.-` on two `Nat`s is truncating subtraction
+-- landing in `Int`, so the sign of `y - x` decides it.
+\func natLeB (x y : Nat) : Bool => nonNegLb (y Nat.- x)
+
+-- Lean's truncated subtraction, from the `Int` difference: negatives are 0.
+\func truncLb (d : Int) : Int
+  | pos k => pos k
+  | neg (suc _) => 0
+
+-- Lean's `Nat.div` and `Nat.mod`, BY ZERO INCLUDED: `Nat.div_zero : n / 0 = 0`
+-- and `Nat.mod_zero : n % 0 = n` (Lean core, `Nat.div`/`Nat.modCore` are
+-- defined with an `if 0 < y` guard whose else-branch is `0` resp. `x`).
+--
+-- The guard is explicit because Arend's builtins do NOT share the first
+-- convention: `Nat.divMod n 0` is `(n, n)`, so `n Nat.div 0` is `n`, checked by
+-- `idp`. Only the `mod` half happens to agree. One constructor deep on the
+-- divisor, so nothing is peeled.
+\func leanDiv (x y : Nat) : Nat \elim y
+  | 0 => 0
+  | suc y => x Nat.div suc y
+
+\func leanMod (x y : Nat) : Nat \elim y
+  | 0 => x
+  | suc y => x Nat.mod suc y
 
 -- Lean's `Nat` operations, ON i63 VALUES -- see the header's correction of (L).
 --
@@ -223,19 +270,19 @@
 -- `Int`, so the negative case is clamped here, and no wrap is needed: both
 -- arguments are in [0, 2^63) and so is the result.
 --
--- `div`/`mod` by zero are zero in Lean (`Nat.div_zero`, `Nat.mod_zero` are its
--- own lemmas) and Arend's `Nat.div`/`Nat.mod` agree -- `Nat.divMod` is a
--- Prelude builtin with the same convention -- so there is no guard here. Their
--- results cannot leave the range either.
+-- CORRECTION: this comment used to say that "`div`/`mod` by zero are zero in
+-- Lean ... and Arend's `Nat.div`/`Nat.mod` agree", and used them unguarded.
+-- Both halves were wrong. Lean's `n % 0` is `n`, not zero (`Nat.mod_zero`);
+-- and Arend's `n Nat.div 0` is `n`, not zero. So `div` by zero computed `x`
+-- where Lean -- and `Rt.PRIM_DIV_LONG` -- give `0`, a wrong answer on this side;
+-- `mod` was right only because the two mistakes cancelled. `leanDiv`/`leanMod`
+-- state Lean's conventions explicitly. Their results cannot leave the range.
 \func natRun (op : String) (x y : Nat) : Maybe LBTerm =>
   \case op == "add" \with { | true => just (lbInt (pos (x Nat.+ y))) | false =>
   \case op == "mul" \with { | true => just (lbInt (pos (x Nat.* y))) | false =>
-  \case op == "sub" \with { | true => just (lbInt (\case x Nat.- y \with {
-      | pos k => pos k
-      | neg (suc _) => 0
-    })) | false =>
-  \case op == "div" \with { | true => just (lbInt (pos (x Nat.div y))) | false =>
-  \case op == "mod" \with { | true => just (lbInt (pos (x Nat.mod y))) | false =>
+  \case op == "sub" \with { | true => just (lbInt (truncLb (x Nat.- y))) | false =>
+  \case op == "div" \with { | true => just (lbInt (pos (leanDiv x y))) | false =>
+  \case op == "mod" \with { | true => just (lbInt (pos (leanMod x y))) | false =>
   \case op == "beq" \with { | true => just (lbBool (intEqB (pos x) (pos y))) | false =>
   \case op == "ble" \with { | true => just (lbBool (natLeB x y)) | false =>
   \case op == "blt" \with { | true => just (lbBool (natLeB (suc x) y)) | false =>
@@ -297,29 +344,36 @@
 -- Anything else is `nothing`, i.e. `rStuck` -- including a `Nat.*` operation
 -- handed a non-integer, which is the twin of `builtinRunLong`'s `rStuck` on
 -- non-`vLong` arguments.
+--
+-- The decoded arguments are handed to `natAt`/`rootAt` as PARAMETERS rather
+-- than scrutinized by a `\case` here, for the usual reason: a proof can then
+-- rewrite them.
 \func axiomRunLb (kn : Kername) (args : Array LBTerm) : Maybe LBTerm =>
   \case modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") \with {
     -- Lean's machine operations, on i63 values with Lean's conventions.
-    | true => \case twoInts args \with {
-      | just (x, y) => natRun kn.kerName (wrap63 x) (wrap63 y)
-      | nothing => nothing
-    }
+    | true => natAt kn.kerName (twoInts args)
     | false => \case modPathEq kn.kerModPath (mpFile nil) \with {
       -- The root module holds both primitive families, told apart by NAME --
       -- and each accepts only its own kind of operand. An i64 operation handed
       -- i63 values is stuck, not converted: the term would be malformed, and
       -- silently reinterpreting it is exactly what having the kind in the term
       -- is meant to prevent.
-      | true => \case twoInts args \with {
-        | just (x, y) => int63Run kn.kerName x y
-        | nothing => \case twoInts64 args \with {
-          | just (x, y) => int64Run kn.kerName x y
-          | nothing => nothing
-        }
-      }
+      | true => rootAt kn.kerName (twoInts args) (twoInts64 args)
       | false => nothing
     }
   }
+
+\func natAt (op : String) (m : Maybe (\Sigma Int Int)) : Maybe LBTerm \elim m
+  | just (x, y) => natRun op (wrap63 x) (wrap63 y)
+  | nothing => nothing
+
+\func rootAt (op : String) (m63 m64 : Maybe (\Sigma Int Int)) : Maybe LBTerm \elim m63
+  | just (x, y) => int63Run op x y
+  | nothing => int64At op m64
+
+\func int64At (op : String) (m : Maybe (\Sigma Int Int)) : Maybe LBTerm \elim m
+  | just (x, y) => int64Run op x y
+  | nothing => nothing
 
 -- The instance the agreement checks run against.
 --

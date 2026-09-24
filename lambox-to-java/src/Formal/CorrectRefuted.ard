@@ -58,7 +58,7 @@
 
 -- Nothing on either side, so they agree vacuously.
 \func noneAgree : OracleAgree lbNone rtThrow =>
-  (\lam kn nm _ => idp, \lam kn nm args jargs v _ _ (p : nothing = just v) => contradiction)
+  (\lam kn nm _ => idp, \lam kn nm args jargs v _ _ (p : nothing = just v) => contradiction, \lam kn _ => idp)
 
 -- ---------------------------------------------------------------------------
 -- (A) A higher-order result.
