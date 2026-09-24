@@ -340,11 +340,17 @@
 -- (`nthArr`'s element type is given explicitly: left to inference it is solved
 -- at the level variables of THIS definition, and the `defBody` read off the
 -- result then lands in a copy of `LBTerm` that is not the one `substl` expects.)
+--
+-- The lookup result is a PARAMETER of `cunfoldAt` rather than a `\case` inside
+-- `cunfoldFix`, so that a proof holding `nthArr idx defs = m` can rewrite it (the
+-- quirk Formal/NodePathUnique.ard's header describes). `Formal/EvalEnvSound.ard`
+-- is the client; the function computed is unchanged.
+\func cunfoldAt (defs : Array (FixDef LBTerm)) (m : Maybe (FixDef LBTerm)) : Maybe (\Sigma Nat LBTerm) \elim m
+  | nothing => nothing
+  | just d => just (d.principalArgIdx, substl (fixSubst defs) d.defBody)
+
 \func cunfoldFix (defs : Array (FixDef LBTerm)) (idx : Nat) : Maybe (\Sigma Nat LBTerm) =>
-  \case nthArr {FixDef LBTerm} idx defs \with {
-    | nothing => nothing
-    | just d => just (d.principalArgIdx, substl (fixSubst defs) d.defBody)
-  }
+  cunfoldAt defs (nthArr {FixDef LBTerm} idx defs)
 
 
 -- ---------------------------------------------------------------------------
