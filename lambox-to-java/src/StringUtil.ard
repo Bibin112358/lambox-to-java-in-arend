@@ -106,10 +106,14 @@
 -- The first element whose key matches, in order.
 \func lookupBy {K : DecSet} {A : \Type} (key : A -> K) (k : K) (xs : Array A) : Maybe A \elim xs
   | nil => nothing
-  | x :: xs => \case key x == k \with {
-    | true => just x
-    | false => lookupBy key k xs
-  }
+  | x :: xs => lookupStep x (key x == k) (lookupBy key k xs)
+
+-- One step of `lookupBy`. The key test is a PARAMETER rather than a `\case`, so
+-- that a proof holding `(key x == k) = b` can rewrite it (Formal/CorrectLam.ard
+-- does, for variable lookup; see Formal/NodePathUnique.ard's header on why).
+\func lookupStep {A : \Type} (x : A) (hit : Bool) (rest : Maybe A) : Maybe A \elim hit
+  | true => just x
+  | false => rest
 
 -- The common case: a table of (key, value) pairs.
 \func lookupKey {K : DecSet} {A : \Type} (k : K) (tbl : Array (\Sigma K A)) : Maybe A =>

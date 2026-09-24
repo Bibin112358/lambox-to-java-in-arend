@@ -184,13 +184,19 @@
 -- Indices above `k` are decremented (`natPred`), i.e. the binder disappears.
 -- ---------------------------------------------------------------------------
 
+-- What `csubst` does at a `bvar n`, given how `k` compares with `n`. The
+-- comparison is a PARAMETER rather than a `\case` inside `csubst`, so that a
+-- proof holding `natCompare k n = c` can rewrite it (a `\case` does not reduce
+-- under a hypothesis about its scrutinee; see Formal/NodePathUnique.ard's header).
+-- `Formal/CSubstLam.ard` is the client.
+\func csubstVar (t : LBTerm) (n : Nat) (c : Comparison) : LBTerm \elim c
+  | cEq => t
+  | cGt => bvar n
+  | cLt => bvar (natPred n)
+
 \func csubst (t : LBTerm) (k : Nat) (u : LBTerm) : LBTerm \elim u
   | box => box
-  | bvar n => \case natCompare k n \with {
-    | cEq => t
-    | cGt => bvar n
-    | cLt => bvar (natPred n)
-  }
+  | bvar n => csubstVar t n (natCompare k n)
   | fvar x => fvar x
   | lambda na m => lambda na (csubst t (suc k) m)
   | letIn na b b' => letIn na (csubst t k b) (csubst t (suc k) b')
