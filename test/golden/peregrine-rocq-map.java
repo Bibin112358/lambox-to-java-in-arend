@@ -1,11 +1,11 @@
 public final class Prog {
-  public static Object c_Map_Tests_Peregrine__ys(){
-    return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_ListDef_Lists_Corelib__map())).apply(Rt.BOX))).apply(Rt.BOX))).apply(c_Map_Tests_Peregrine__double()))).apply(c_Map_Tests_Peregrine__xs());
+  public static Object c_dMap_dTests_dPeregrine_nys(){
+    return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_dListDef_dLists_dCorelib_nmap())).apply(Rt.BOX))).apply(Rt.BOX))).apply(c_dMap_dTests_dPeregrine_ndouble()))).apply(c_dMap_dTests_dPeregrine_nxs());
   }
-  public static Object c_Map_Tests_Peregrine__xs(){
+  public static Object c_dMap_dTests_dPeregrine_nxs(){
     return new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) }), new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) }) }) }), new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) }) }) }) }) }), new Rt.Data(0, new Object[]{  }) }) }) });
   }
-  public static Object c_Map_Tests_Peregrine__double(){
+  public static Object c_dMap_dTests_dPeregrine_ndouble(){
     return new Rt.Fn(){ public Object apply(Object p){
       class CFL {
         public Object f0(Object py0_FL){
@@ -21,8 +21,8 @@ public final class Prog {
       } })).apply(p);
     } };
   }
-  // inductive c_Datatypes_Init_Corelib__nat: erased; values use Data(tag, fields)
-  public static Object c_ListDef_Lists_Corelib__map(){
+  // inductive c_dDatatypes_dInit_dCorelib_nnat: erased; values use Data(tag, fields)
+  public static Object c_dListDef_dLists_dCorelib_nmap(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Fn(){ public Object apply(Object pL){
         return new Rt.Fn(){ public Object apply(Object pLL){
@@ -44,8 +44,8 @@ public final class Prog {
       } };
     } };
   }
-  // inductive c_Datatypes_Init_Corelib__list: erased; values use Data(tag, fields)
+  // inductive c_dDatatypes_dInit_dCorelib_nlist: erased; values use Data(tag, fields)
   public static Object body(){
-    return c_Map_Tests_Peregrine__ys();
+    return c_dMap_dTests_dPeregrine_nys();
   }
 }

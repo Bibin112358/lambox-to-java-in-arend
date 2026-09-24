@@ -1,22 +1,22 @@
 public final class Prog {
-  public static Object c___suite_cube(){
-    return ((Rt.Fn)(c___cube())).apply(c__Unit__unit());
+  public static Object c_nsuite__cube(){
+    return ((Rt.Fn)(c_ncube())).apply(c_oUnit_nunit());
   }
-  public static Object c__Unit__unit(){
+  public static Object c_oUnit_nunit(){
     return new Rt.Data(0, new Object[]{  });
   }
-  // inductive c___PUnit: erased; values use Data(tag, fields)
-  public static Object c___cube(){
+  // inductive c_nPUnit: erased; values use Data(tag, fields)
+  public static Object c_ncube(){
     return new Rt.Fn(){ public Object apply(Object p){
-      return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__HPow__hPow())).apply(Rt.BOX))).apply(Rt.BOX))).apply(Rt.BOX))).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c___instHPow())).apply(Rt.BOX))).apply(Rt.BOX))).apply(((Rt.Fn)(((Rt.Fn)(c___instPowNat())).apply(Rt.BOX))).apply(c___instNatPowNat()))))).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__OfNat__ofNat())).apply(Rt.BOX))).apply(Long.valueOf(300L)))).apply(((Rt.Fn)(c___instOfNatNat())).apply(Long.valueOf(300L)))))).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__OfNat__ofNat())).apply(Rt.BOX))).apply(Long.valueOf(3L)))).apply(((Rt.Fn)(c___instOfNatNat())).apply(Long.valueOf(3L))));
+      return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oHPow_nhPow())).apply(Rt.BOX))).apply(Rt.BOX))).apply(Rt.BOX))).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_ninstHPow())).apply(Rt.BOX))).apply(Rt.BOX))).apply(((Rt.Fn)(((Rt.Fn)(c_ninstPowNat())).apply(Rt.BOX))).apply(c_ninstNatPowNat()))))).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oOfNat_nofNat())).apply(Rt.BOX))).apply(Long.valueOf(300L)))).apply(((Rt.Fn)(c_ninstOfNatNat())).apply(Long.valueOf(300L)))))).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oOfNat_nofNat())).apply(Rt.BOX))).apply(Long.valueOf(3L)))).apply(((Rt.Fn)(c_ninstOfNatNat())).apply(Long.valueOf(3L))));
     } };
   }
-  public static Object c___instOfNatNat(){
+  public static Object c_ninstOfNatNat(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Data(0, new Object[]{ p });
     } };
   }
-  public static Object c__OfNat__ofNat(){
+  public static Object c_oOfNat_nofNat(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Fn(){ public Object apply(Object pL){
         return new Rt.Fn(){ public Object apply(Object pLL){
@@ -26,25 +26,25 @@ public final class Prog {
       } };
     } };
   }
-  // inductive c___OfNat: erased; values use Data(tag, fields)
-  public static Object c___instNatPowNat(){
-    return new Rt.Data(0, new Object[]{ c__Nat__pow() });
+  // inductive c_nOfNat: erased; values use Data(tag, fields)
+  public static Object c_ninstNatPowNat(){
+    return new Rt.Data(0, new Object[]{ c_oNat_npow() });
   }
-  public static Object c__Nat__pow(){
+  public static Object c_oNat_npow(){
     return Rt.PRIM_POW_LONG;
   }
-  public static Object c___instPowNat(){
+  public static Object c_ninstPowNat(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Fn(){ public Object apply(Object pL){
         return new Rt.Data(0, new Object[]{ new Rt.Fn(){ public Object apply(Object pc0_LL){
           return new Rt.Fn(){ public Object apply(Object pLc0_LL){
-            return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__NatPow__pow())).apply(Rt.BOX))).apply(pL))).apply(pc0_LL))).apply(pLc0_LL);
+            return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oNatPow_npow())).apply(Rt.BOX))).apply(pL))).apply(pc0_LL))).apply(pLc0_LL);
           } };
         } } });
       } };
     } };
   }
-  public static Object c__NatPow__pow(){
+  public static Object c_oNatPow_npow(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Fn(){ public Object apply(Object pL){
         final Rt.Data dLL = ((Rt.Data)(pL));
@@ -52,21 +52,21 @@ public final class Prog {
       } };
     } };
   }
-  // inductive c___NatPow: erased; values use Data(tag, fields)
-  public static Object c___instHPow(){
+  // inductive c_nNatPow: erased; values use Data(tag, fields)
+  public static Object c_ninstHPow(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Fn(){ public Object apply(Object pL){
         return new Rt.Fn(){ public Object apply(Object pLL){
           return new Rt.Data(0, new Object[]{ new Rt.Fn(){ public Object apply(Object pc0_LLL){
             return new Rt.Fn(){ public Object apply(Object pLc0_LLL){
-              return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__Pow__pow())).apply(Rt.BOX))).apply(Rt.BOX))).apply(pLL))).apply(pc0_LLL))).apply(pLc0_LLL);
+              return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oPow_npow())).apply(Rt.BOX))).apply(Rt.BOX))).apply(pLL))).apply(pc0_LLL))).apply(pLc0_LLL);
             } };
           } } });
         } };
       } };
     } };
   }
-  public static Object c__Pow__pow(){
+  public static Object c_oPow_npow(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Fn(){ public Object apply(Object pL){
         return new Rt.Fn(){ public Object apply(Object pLL){
@@ -76,8 +76,8 @@ public final class Prog {
       } };
     } };
   }
-  // inductive c___Pow: erased; values use Data(tag, fields)
-  public static Object c__HPow__hPow(){
+  // inductive c_nPow: erased; values use Data(tag, fields)
+  public static Object c_oHPow_nhPow(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Fn(){ public Object apply(Object pL){
         return new Rt.Fn(){ public Object apply(Object pLL){
@@ -89,8 +89,8 @@ public final class Prog {
       } };
     } };
   }
-  // inductive c___HPow: erased; values use Data(tag, fields)
+  // inductive c_nHPow: erased; values use Data(tag, fields)
   public static Object body(){
-    return c___suite_cube();
+    return c_nsuite__cube();
   }
 }

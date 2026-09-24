@@ -162,9 +162,9 @@
 -- ---------------------------------------------------------------------------
 -- The table.
 --
--- Keyed by `Kername`, where `javaAxioms` is keyed by the MANGLED name -- the two
--- correspond through `ToJava.ard`'s `mangleKername`, which turns
--- `Kername (mpDot (mpFile nil) "Nat") "add"` into `c__Nat__add`. Keeping the
+-- Keyed by `Kername`, as `javaAxioms` is too; the backend compares the two
+-- through `Mangle.ard`'s injective `mangleKername`, which turns
+-- `Kername (mpDot (mpFile nil) "Nat") "add"` into `c_oNat_nadd`. Keeping the
 -- structured name here rather than its mangling is what makes this module
 -- independent of the backend's naming.
 --

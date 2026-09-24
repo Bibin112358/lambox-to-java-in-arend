@@ -1,18 +1,18 @@
 public final class Prog {
-  public static Object c___suite_demo0(){
-    return ((Rt.Fn)(c___demo0())).apply(c__Unit__unit());
+  public static Object c_nsuite__demo0(){
+    return ((Rt.Fn)(c_ndemo0())).apply(c_oUnit_nunit());
   }
-  public static Object c___demo0(){
+  public static Object c_ndemo0(){
     return new Rt.Fn(){ public Object apply(Object p){
-      return new Rt.Data(1, new Object[]{ c__Unit__unit(), new Rt.Data(1, new Object[]{ c__Unit__unit(), new Rt.Data(1, new Object[]{ c__Unit__unit(), new Rt.Data(0, new Object[]{  }) }) }) });
+      return new Rt.Data(1, new Object[]{ c_oUnit_nunit(), new Rt.Data(1, new Object[]{ c_oUnit_nunit(), new Rt.Data(1, new Object[]{ c_oUnit_nunit(), new Rt.Data(0, new Object[]{  }) }) }) });
     } };
   }
-  public static Object c__Unit__unit(){
+  public static Object c_oUnit_nunit(){
     return new Rt.Data(0, new Object[]{  });
   }
-  // inductive c___PUnit: erased; values use Data(tag, fields)
-  // inductive c___List: erased; values use Data(tag, fields)
+  // inductive c_nPUnit: erased; values use Data(tag, fields)
+  // inductive c_nList: erased; values use Data(tag, fields)
   public static Object body(){
-    return c___suite_demo0();
+    return c_nsuite__demo0();
   }
 }

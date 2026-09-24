@@ -1,8 +1,8 @@
 public final class Prog {
-  public static Object c_Nat_Tests_Peregrine__thing(){
-    return ((Rt.Fn)(((Rt.Fn)(c_Nat_Init_Corelib__add())).apply(new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) })))).apply(new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) }) }));
+  public static Object c_dNat_dTests_dPeregrine_nthing(){
+    return ((Rt.Fn)(((Rt.Fn)(c_dNat_dInit_dCorelib_nadd())).apply(new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) })))).apply(new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) }) }));
   }
-  public static Object c_Nat_Init_Corelib__add(){
+  public static Object c_dNat_dInit_dCorelib_nadd(){
     return new Rt.Fn(){ public Object apply(Object p){
       class CFL {
         public Object f0(Object py0_FL){
@@ -20,8 +20,8 @@ public final class Prog {
       } })).apply(p);
     } };
   }
-  // inductive c_Datatypes_Init_Corelib__nat: erased; values use Data(tag, fields)
+  // inductive c_dDatatypes_dInit_dCorelib_nnat: erased; values use Data(tag, fields)
   public static Object body(){
-    return c_Nat_Tests_Peregrine__thing();
+    return c_dNat_dTests_dPeregrine_nthing();
   }
 }

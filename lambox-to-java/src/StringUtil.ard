@@ -76,23 +76,12 @@
 \func isJavaIdentByte (n : Nat) : Bool =>
   inByteRange 48 57 n or inByteRange 65 90 n or inByteRange 97 122 n or (n == 95)
 
--- A collision-free encoding for source-language identifier bytes at the Java
--- boundary. ASCII letters, digits and `_` stay readable. Every other byte is
--- written as `$<decimal>$`; `$` itself is encoded too, so source text cannot
--- imitate an escape. Non-ASCII UTF-8 is handled byte-for-byte in the same way.
+-- A one-byte string. The encoding of source identifiers at the Java boundary
+-- that uses it is `Mangle.ard`'s, which is injective; the per-component
+-- encoding that used to live here let `_` through, and the separators built on
+-- it collided (see that module's header).
 \func oneByteString (b : Byte) : String =>
   \new String { | bytes => b :: nil }
-
-\func javaIdentBytes (bs : Array Byte) : String \elim bs
-  | nil => ""
-  | b :: bs =>
-    \let | head : String => \case isJavaIdentByte b \with {
-      | true => oneByteString b
-      | false => "$" ++ natToStr b ++ "$"
-    }
-    \in head ++ javaIdentBytes bs
-
-\func javaIdentPart (s : String) : String => javaIdentBytes s.bytes
 
 -- ---------------------------------------------------------------------------
 -- Generic helpers, once.

@@ -1,12 +1,12 @@
 public final class Prog {
-  public static Object c___suite_even(){
-    return ((Rt.Fn)(c___even())).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__OfNat__ofNat())).apply(Rt.BOX))).apply(Long.valueOf(10L)))).apply(((Rt.Fn)(c___instOfNatNat())).apply(Long.valueOf(10L))));
+  public static Object c_nsuite__even(){
+    return ((Rt.Fn)(c_neven())).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oOfNat_nofNat())).apply(Rt.BOX))).apply(Long.valueOf(10L)))).apply(((Rt.Fn)(c_ninstOfNatNat())).apply(Long.valueOf(10L))));
   }
-  public static Object c___odd(){
+  public static Object c_nodd(){
     class C {
       public Object f0(Object py0_){
         final Object lLy0_ = new Rt.Fn(){ public Object apply(Object pVLy0_){
-          return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__OfNat__ofNat())).apply(Rt.BOX))).apply(Long.valueOf(1L)))).apply(((Rt.Fn)(c___instOfNatNat())).apply(Long.valueOf(1L)));
+          return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oOfNat_nofNat())).apply(Rt.BOX))).apply(Long.valueOf(1L)))).apply(((Rt.Fn)(c_ninstOfNatNat())).apply(Long.valueOf(1L)));
         } };
         final Object lBLy0_ = new Rt.Fn(){ public Object apply(Object pVBLy0_){
           return ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object pw1_){
@@ -14,14 +14,14 @@ public final class Prog {
           } })).apply(pVBLy0_);
         } };
         final Object lBBLy0_ = py0_;
-        final Rt.Data dBBBLy0_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(c__Nat__beq())).apply(lBBLy0_))).apply(Long.valueOf(0L))));
+        final Rt.Data dBBBLy0_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(c_oNat_nbeq())).apply(lBBLy0_))).apply(Long.valueOf(0L))));
         return ((dBBBLy0_.tag == 0) ? ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object pFb0_BBBLy0_){
           return ((Rt.Fn)(lBLy0_)).apply(pFb0_BBBLy0_);
-        } })).apply(((Rt.Fn)(((Rt.Fn)(c__Nat__sub())).apply(lBBLy0_))).apply(Long.valueOf(1L))) : ((dBBBLy0_.tag == 1) ? ((Rt.Fn)(lLy0_)).apply(c__Unit__unit()) : Rt.noBranch(dBBBLy0_, "BBBLy0_")));
+        } })).apply(((Rt.Fn)(((Rt.Fn)(c_oNat_nsub())).apply(lBBLy0_))).apply(Long.valueOf(1L))) : ((dBBBLy0_.tag == 1) ? ((Rt.Fn)(lLy0_)).apply(c_oUnit_nunit()) : Rt.noBranch(dBBBLy0_, "BBBLy0_")));
       }
       public Object f1(Object py1_){
         final Object lLy1_ = new Rt.Fn(){ public Object apply(Object pVLy1_){
-          return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__OfNat__ofNat())).apply(Rt.BOX))).apply(Long.valueOf(0L)))).apply(((Rt.Fn)(c___instOfNatNat())).apply(Long.valueOf(0L)));
+          return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oOfNat_nofNat())).apply(Rt.BOX))).apply(Long.valueOf(0L)))).apply(((Rt.Fn)(c_ninstOfNatNat())).apply(Long.valueOf(0L)));
         } };
         final Object lBLy1_ = new Rt.Fn(){ public Object apply(Object pVBLy1_){
           return ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object pw0_){
@@ -29,10 +29,10 @@ public final class Prog {
           } })).apply(pVBLy1_);
         } };
         final Object lBBLy1_ = py1_;
-        final Rt.Data dBBBLy1_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(c__Nat__beq())).apply(lBBLy1_))).apply(Long.valueOf(0L))));
+        final Rt.Data dBBBLy1_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(c_oNat_nbeq())).apply(lBBLy1_))).apply(Long.valueOf(0L))));
         return ((dBBBLy1_.tag == 0) ? ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object pFb0_BBBLy1_){
           return ((Rt.Fn)(lBLy1_)).apply(pFb0_BBBLy1_);
-        } })).apply(((Rt.Fn)(((Rt.Fn)(c__Nat__sub())).apply(lBBLy1_))).apply(Long.valueOf(1L))) : ((dBBBLy1_.tag == 1) ? ((Rt.Fn)(lLy1_)).apply(c__Unit__unit()) : Rt.noBranch(dBBBLy1_, "BBBLy1_")));
+        } })).apply(((Rt.Fn)(((Rt.Fn)(c_oNat_nsub())).apply(lBBLy1_))).apply(Long.valueOf(1L))) : ((dBBBLy1_.tag == 1) ? ((Rt.Fn)(lLy1_)).apply(c_oUnit_nunit()) : Rt.noBranch(dBBBLy1_, "BBBLy1_")));
       }
     }
     final C z = new C();
@@ -40,11 +40,11 @@ public final class Prog {
       return z.f1(pw1_);
     } };
   }
-  public static Object c___even(){
+  public static Object c_neven(){
     class C {
       public Object f0(Object py0_){
         final Object lLy0_ = new Rt.Fn(){ public Object apply(Object pVLy0_){
-          return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__OfNat__ofNat())).apply(Rt.BOX))).apply(Long.valueOf(1L)))).apply(((Rt.Fn)(c___instOfNatNat())).apply(Long.valueOf(1L)));
+          return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oOfNat_nofNat())).apply(Rt.BOX))).apply(Long.valueOf(1L)))).apply(((Rt.Fn)(c_ninstOfNatNat())).apply(Long.valueOf(1L)));
         } };
         final Object lBLy0_ = new Rt.Fn(){ public Object apply(Object pVBLy0_){
           return ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object pw1_){
@@ -52,14 +52,14 @@ public final class Prog {
           } })).apply(pVBLy0_);
         } };
         final Object lBBLy0_ = py0_;
-        final Rt.Data dBBBLy0_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(c__Nat__beq())).apply(lBBLy0_))).apply(Long.valueOf(0L))));
+        final Rt.Data dBBBLy0_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(c_oNat_nbeq())).apply(lBBLy0_))).apply(Long.valueOf(0L))));
         return ((dBBBLy0_.tag == 0) ? ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object pFb0_BBBLy0_){
           return ((Rt.Fn)(lBLy0_)).apply(pFb0_BBBLy0_);
-        } })).apply(((Rt.Fn)(((Rt.Fn)(c__Nat__sub())).apply(lBBLy0_))).apply(Long.valueOf(1L))) : ((dBBBLy0_.tag == 1) ? ((Rt.Fn)(lLy0_)).apply(c__Unit__unit()) : Rt.noBranch(dBBBLy0_, "BBBLy0_")));
+        } })).apply(((Rt.Fn)(((Rt.Fn)(c_oNat_nsub())).apply(lBBLy0_))).apply(Long.valueOf(1L))) : ((dBBBLy0_.tag == 1) ? ((Rt.Fn)(lLy0_)).apply(c_oUnit_nunit()) : Rt.noBranch(dBBBLy0_, "BBBLy0_")));
       }
       public Object f1(Object py1_){
         final Object lLy1_ = new Rt.Fn(){ public Object apply(Object pVLy1_){
-          return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__OfNat__ofNat())).apply(Rt.BOX))).apply(Long.valueOf(0L)))).apply(((Rt.Fn)(c___instOfNatNat())).apply(Long.valueOf(0L)));
+          return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oOfNat_nofNat())).apply(Rt.BOX))).apply(Long.valueOf(0L)))).apply(((Rt.Fn)(c_ninstOfNatNat())).apply(Long.valueOf(0L)));
         } };
         final Object lBLy1_ = new Rt.Fn(){ public Object apply(Object pVBLy1_){
           return ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object pw0_){
@@ -67,10 +67,10 @@ public final class Prog {
           } })).apply(pVBLy1_);
         } };
         final Object lBBLy1_ = py1_;
-        final Rt.Data dBBBLy1_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(c__Nat__beq())).apply(lBBLy1_))).apply(Long.valueOf(0L))));
+        final Rt.Data dBBBLy1_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(c_oNat_nbeq())).apply(lBBLy1_))).apply(Long.valueOf(0L))));
         return ((dBBBLy1_.tag == 0) ? ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object pFb0_BBBLy1_){
           return ((Rt.Fn)(lBLy1_)).apply(pFb0_BBBLy1_);
-        } })).apply(((Rt.Fn)(((Rt.Fn)(c__Nat__sub())).apply(lBBLy1_))).apply(Long.valueOf(1L))) : ((dBBBLy1_.tag == 1) ? ((Rt.Fn)(lLy1_)).apply(c__Unit__unit()) : Rt.noBranch(dBBBLy1_, "BBBLy1_")));
+        } })).apply(((Rt.Fn)(((Rt.Fn)(c_oNat_nsub())).apply(lBBLy1_))).apply(Long.valueOf(1L))) : ((dBBBLy1_.tag == 1) ? ((Rt.Fn)(lLy1_)).apply(c_oUnit_nunit()) : Rt.noBranch(dBBBLy1_, "BBBLy1_")));
       }
     }
     final C z = new C();
@@ -78,23 +78,23 @@ public final class Prog {
       return z.f0(pw0_);
     } };
   }
-  public static Object c__Nat__beq(){
+  public static Object c_oNat_nbeq(){
     return Rt.PRIM_EQB_LONG;
   }
-  public static Object c__Nat__sub(){
+  public static Object c_oNat_nsub(){
     return Rt.NAT_SUB_LONG;
   }
-  // inductive c___Bool: erased; values use Data(tag, fields)
-  public static Object c__Unit__unit(){
+  // inductive c_nBool: erased; values use Data(tag, fields)
+  public static Object c_oUnit_nunit(){
     return new Rt.Data(0, new Object[]{  });
   }
-  // inductive c___PUnit: erased; values use Data(tag, fields)
-  public static Object c___instOfNatNat(){
+  // inductive c_nPUnit: erased; values use Data(tag, fields)
+  public static Object c_ninstOfNatNat(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Data(0, new Object[]{ p });
     } };
   }
-  public static Object c__OfNat__ofNat(){
+  public static Object c_oOfNat_nofNat(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Fn(){ public Object apply(Object pL){
         return new Rt.Fn(){ public Object apply(Object pLL){
@@ -104,8 +104,8 @@ public final class Prog {
       } };
     } };
   }
-  // inductive c___OfNat: erased; values use Data(tag, fields)
+  // inductive c_nOfNat: erased; values use Data(tag, fields)
   public static Object body(){
-    return c___suite_even();
+    return c_nsuite__even();
   }
 }

@@ -1,18 +1,18 @@
 public final class Prog {
-  public static Object c___suite_triangle_foldl(){
-    return ((Rt.Fn)(c___triangle_foldl())).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__OfNat__ofNat())).apply(Rt.BOX))).apply(Long.valueOf(10L)))).apply(((Rt.Fn)(c___instOfNatNat())).apply(Long.valueOf(10L))));
+  public static Object c_nsuite__triangle__foldl(){
+    return ((Rt.Fn)(c_ntriangle__foldl())).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oOfNat_nofNat())).apply(Rt.BOX))).apply(Long.valueOf(10L)))).apply(((Rt.Fn)(c_ninstOfNatNat())).apply(Long.valueOf(10L))));
   }
-  public static Object c___triangle_foldl(){
+  public static Object c_ntriangle__foldl(){
     return new Rt.Fn(){ public Object apply(Object p){
-      return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__List__foldl())).apply(Rt.BOX))).apply(Rt.BOX))).apply(c__Nat__add()))).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c__OfNat__ofNat())).apply(Rt.BOX))).apply(Long.valueOf(0L)))).apply(((Rt.Fn)(c___instOfNatNat())).apply(Long.valueOf(0L)))))).apply(((Rt.Fn)(c__List__range())).apply(p));
+      return ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oList_nfoldl())).apply(Rt.BOX))).apply(Rt.BOX))).apply(c_oNat_nadd()))).apply(((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(c_oOfNat_nofNat())).apply(Rt.BOX))).apply(Long.valueOf(0L)))).apply(((Rt.Fn)(c_ninstOfNatNat())).apply(Long.valueOf(0L)))))).apply(((Rt.Fn)(c_oList_nrange())).apply(p));
     } };
   }
-  public static Object c__List__range(){
+  public static Object c_oList_nrange(){
     return new Rt.Fn(){ public Object apply(Object p){
-      return ((Rt.Fn)(((Rt.Fn)(c__List_range__loop())).apply(p))).apply(new Rt.Data(0, new Object[]{  }));
+      return ((Rt.Fn)(((Rt.Fn)(c_oList_orange_nloop())).apply(p))).apply(new Rt.Data(0, new Object[]{  }));
     } };
   }
-  public static Object c__List_range__loop(){
+  public static Object c_oList_orange_nloop(){
     class C {
       public Object f0(Object py0_){
         return new Rt.Fn(){ public Object apply(Object pLy0_){
@@ -27,10 +27,10 @@ public final class Prog {
             } };
           } };
           final Object lBBLLy0_ = py0_;
-          final Rt.Data dBBBLLy0_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(c__Nat__beq())).apply(lBBLLy0_))).apply(Long.valueOf(0L))));
+          final Rt.Data dBBBLLy0_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(c_oNat_nbeq())).apply(lBBLLy0_))).apply(Long.valueOf(0L))));
           return ((dBBBLLy0_.tag == 0) ? ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object pFb0_BBBLLy0_){
             return ((Rt.Fn)(((Rt.Fn)(lBLLy0_)).apply(pFb0_BBBLLy0_))).apply(pLy0_);
-          } })).apply(((Rt.Fn)(((Rt.Fn)(c__Nat__sub())).apply(lBBLLy0_))).apply(Long.valueOf(1L))) : ((dBBBLLy0_.tag == 1) ? ((Rt.Fn)(lLLy0_)).apply(pLy0_) : Rt.noBranch(dBBBLLy0_, "BBBLLy0_")));
+          } })).apply(((Rt.Fn)(((Rt.Fn)(c_oNat_nsub())).apply(lBBLLy0_))).apply(Long.valueOf(1L))) : ((dBBBLLy0_.tag == 1) ? ((Rt.Fn)(lLLy0_)).apply(pLy0_) : Rt.noBranch(dBBBLLy0_, "BBBLLy0_")));
         } };
       }
     }
@@ -39,19 +39,19 @@ public final class Prog {
       return z.f0(pw0_);
     } };
   }
-  public static Object c__Nat__beq(){
+  public static Object c_oNat_nbeq(){
     return Rt.PRIM_EQB_LONG;
   }
-  public static Object c__Nat__sub(){
+  public static Object c_oNat_nsub(){
     return Rt.NAT_SUB_LONG;
   }
-  // inductive c___Bool: erased; values use Data(tag, fields)
-  public static Object c___instOfNatNat(){
+  // inductive c_nBool: erased; values use Data(tag, fields)
+  public static Object c_ninstOfNatNat(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Data(0, new Object[]{ p });
     } };
   }
-  public static Object c__OfNat__ofNat(){
+  public static Object c_oOfNat_nofNat(){
     return new Rt.Fn(){ public Object apply(Object p){
       return new Rt.Fn(){ public Object apply(Object pL){
         return new Rt.Fn(){ public Object apply(Object pLL){
@@ -61,11 +61,11 @@ public final class Prog {
       } };
     } };
   }
-  // inductive c___OfNat: erased; values use Data(tag, fields)
-  public static Object c__Nat__add(){
+  // inductive c_nOfNat: erased; values use Data(tag, fields)
+  public static Object c_oNat_nadd(){
     return Rt.PRIM_ADD_INT63;
   }
-  public static Object c__List__foldl(){
+  public static Object c_oList_nfoldl(){
     class C {
       public Object f0(Object py0_){
         return new Rt.Fn(){ public Object apply(Object pLy0_){
@@ -97,8 +97,8 @@ public final class Prog {
       return z.f0(pw0_);
     } };
   }
-  // inductive c___List: erased; values use Data(tag, fields)
+  // inductive c_nList: erased; values use Data(tag, fields)
   public static Object body(){
-    return c___suite_triangle_foldl();
+    return c_nsuite__triangle__foldl();
   }
 }

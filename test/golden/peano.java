@@ -1,5 +1,5 @@
 public final class Prog {
-  public static Object c___add(){
+  public static Object c_nadd(){
     class C {
       public Object f0(Object py0_){
         return new Rt.Fn(){ public Object apply(Object pLy0_){
@@ -15,8 +15,8 @@ public final class Prog {
       return z.f0(pw0_);
     } };
   }
-  // inductive c___Nat: erased; values use Data(tag, fields)
+  // inductive c_nNat: erased; values use Data(tag, fields)
   public static Object body(){
-    return ((Rt.Fn)(((Rt.Fn)(c___add())).apply(new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) })))).apply(new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) }) }) }));
+    return ((Rt.Fn)(((Rt.Fn)(c_nadd())).apply(new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) })))).apply(new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(1, new Object[]{ new Rt.Data(0, new Object[]{  }) }) }) }));
   }
 }

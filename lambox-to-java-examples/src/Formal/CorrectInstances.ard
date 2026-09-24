@@ -19,6 +19,7 @@
 \import Formal.RtLong
 \import JavaAst
 \import LambdaBox
+\import Mangle
 \import Logic
 \import Paths
 \import Set
@@ -127,6 +128,29 @@
 \func boxAppViaProgram : LBProgram => (nil, app (lambda anon (app (bvar 0) box)) box)
 
 \func jBoxAppVia : relatedTo boxAppViaProgram 20 box = true => idp
+
+-- ---------------------------------------------------------------------------
+-- 3c. NAMES. `const` and the axiom table identify a constant by its mangled
+-- name, so two kernames sharing one is a miscompile. Each pair below mangled
+-- EQUAL under the previous encoding (`_` unescaped, path constructors
+-- forgotten), and each is now distinct (`Mangle.ard`).
+-- ---------------------------------------------------------------------------
+
+\func knAB : Kername => \new Kername (mpFile ("A_B" :: nil)) "x"
+\func knA_B : Kername => \new Kername (mpFile ("A" :: "B" :: nil)) "x"
+\func knDotAB : Kername => \new Kername (mpDot (mpFile ("A" :: nil)) "B") "x"
+
+\func mangleSplitsDirs : (mangleKername knAB == mangleKername knA_B) = false => idp
+\func mangleSplitsDot : (mangleKername knDotAB == mangleKername knA_B) = false => idp
+
+-- A module literally named `_Nat` used to mangle onto `Nat.add`'s table entry
+-- and be realized as Lean's addition. It is now just an unknown axiom (a
+-- throwing stub), while the real `Nat.add` still resolves.
+\func underscoreNatIsNotNat
+  : axiomRtName (\new Kername (mpDot (mpFile nil) "_Nat") "add") = nothing => idp
+
+\func natAddStillResolves
+  : axiomRtName (\new Kername (mpDot (mpFile nil) "Nat") "add") = just "PRIM_ADD_INT63" => idp
 
 -- ---------------------------------------------------------------------------
 -- 4. `prim` -- a primitive integer, i.e. `Long.valueOf(7L)` and `agrees`'s

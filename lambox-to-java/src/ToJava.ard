@@ -8,6 +8,7 @@
 \import JavaAst
 \import JavaAxioms
 \import JavaPrint
+\import Mangle
 \import NodePath
 \import StringUtil
 
@@ -73,17 +74,8 @@
 -- The statements of a sequence of child results, in order.
 \func concatStmts (rs : Array Out) : Array JStmt => concatStmtBlocks (map (\lam r => r.1) rs)
 
--- Kername -> Java method name. Every source component is encoded at this one
--- boundary; the fixed separators and leading `c_` are legal by construction.
-\func joinDirs (ds : Array String) : String => joinStr "_" (map javaIdentPart ds)
-
-\func mangleModPath (mp : ModPath) : String \elim mp
-  | mpFile dp => joinDirs dp
-  | mpBound dp id n => joinDirs dp ++ "_" ++ javaIdentPart id ++ "_" ++ natToStr n
-  | mpDot mp id => mangleModPath mp ++ "_" ++ javaIdentPart id
-
-\func mangleKername (k : Kername) : String =>
-  "c_" ++ mangleModPath k.kerModPath ++ "__" ++ javaIdentPart k.kerName
+-- Kername -> Java method name is `Mangle.mangleKername`, an injective encoding
+-- (see that module).
 
 -- Push a branch's field binders onto the environment, starting at field index
 -- `fieldIx` (= npars, to skip inductive parameters).
@@ -303,7 +295,7 @@
       | just body =>
         \let | o => compileExpr nil nil body
         \in constMethod name (appendStmts o.1 (jReturn o.2 :: nil))
-      | nothing => \case axiomImpl name \with {
+      | nothing => \case axiomImpl kd.1 \with {
         | just impl => constMethod name (jReturn impl :: nil)
         | nothing =>
           constMethod name
@@ -319,7 +311,7 @@
   map (\lam d => compileDecl d) ds
 
 -- `body` is a fixed, unmangled name, and cannot collide with a compiled λ□
--- constant: `mangleKername` prefixes every one of those with `c_`.
+-- constant: `mangleKername` starts every one of those with `c`.
 \func bodyMethodName : JIdent => "body"
 
 -- The program's term, as the one method a caller starts from:

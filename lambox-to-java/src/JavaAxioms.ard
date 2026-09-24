@@ -1,8 +1,11 @@
+\import Data.Array (map)
 \import Data.Bool
 \import Data.Maybe
 \import Data.String
 \import JavaAst
 \import Int63
+\import LambdaBox
+\import Mangle
 \import NodePath
 \import Set
 \import StringUtil
@@ -88,13 +91,24 @@
 -- JavaAst.ard, which is where the runtime's name is decided (once).
 \func rtRef : JExpr => jStatic runtimeClassName
 
+-- The two shapes of axiom name the table uses: a root name (peregrine's
+-- `prim_*`, `mpFile nil`) and a name inside a Lean namespace (`Nat.add` is
+-- `mpDot (mpFile nil) "Nat"`, the way lean-to-lambdabox writes it).
+\func axKnRoot (nm : String) : Kername => \new Kername (mpFile nil) nm
+
+\func axKnIn (ns nm : String) : Kername => \new Kername (mpDot (mpFile nil) ns) nm
+
 -- λ□ axiom (a constant with no body) -> the runtime constant realizing it;
 -- anything absent compiles to a throwing stub. Peregrine does this per run via
--- `--attributes`; a fixed table works here because the runtime is ours. Keys are
--- FULLY MANGLED kernames, module path included -- the Lean frontend puts
--- machine-Nat primitives under `Nat` while the hand-written examples use root
--- names, and the path stops an unrelated `Foo.add` matching `Nat.add`.
-\func javaAxioms : Array (\Sigma String JExpr) =>
+-- `--attributes`; a fixed table works here because the runtime is ours.
+--
+-- KEYED BY THE STRUCTURED `Kername`, module path included -- the Lean frontend
+-- puts machine-Nat primitives under `Nat` while the hand-written examples use
+-- root names, and the path stops an unrelated `Foo.add` matching `Nat.add`. The
+-- keys used to be hand-written MANGLED strings, and since the old mangling was
+-- not injective an axiom at `_Nat.add` (module `_Nat`) was silently realized as
+-- Lean's `Nat.add`.
+\func javaAxioms : Array (\Sigma Kername JExpr) =>
   \let -- A λ□ PRIMITIVE-INT operation: follows `primRepr`.
        | primOp (nm : String) => jField rtRef ("PRIM_" ++ nm ++ "_" ++ primOpSuffix)
        -- A LEAN machine operation. Spelled with the same `PRIM_` prefix because
@@ -108,10 +122,10 @@
   -- THE i63 OPERATIONS, under the names peregrine emits. These are what an
   -- imported program says, and they land on the family that implements
   -- `Uint63`.
-  \in ("c___prim_add_int", primOp "ADD") ::
-      ("c___prim_mul_int", primOp "MUL") ::
-      ("c___prim_sub_int", primOp "SUB") ::
-      ("c___prim_eqb_int", primOp "EQB") ::
+  \in (axKnRoot "prim_add_int", primOp "ADD") ::
+      (axKnRoot "prim_mul_int", primOp "MUL") ::
+      (axKnRoot "prim_sub_int", primOp "SUB") ::
+      (axKnRoot "prim_eqb_int", primOp "EQB") ::
       -- THE i64 OPERATIONS, which nothing imports and only `Int64Rewrite.ard`
       -- produces. Separate NAMES rather than a separate backend setting,
       -- because that is the only way the kind can reach an operation: a `const`
@@ -121,57 +135,59 @@
       -- They land on `PRIM_*_LONG`, i.e. Java's built-in arithmetic with no
       -- mask -- which is now CORRECT rather than a deviation, because the terms
       -- reaching them mean 64-bit two's complement.
-      ("c___prim_add_int64", leanOp "ADD") ::
-      ("c___prim_mul_int64", leanOp "MUL") ::
-      ("c___prim_sub_int64", leanOp "SUB") ::
-      ("c___prim_eqb_int64", leanOp "EQB") ::
-      ("c__Nat__add", primOp "ADD") ::
-      ("c__Nat__mul", primOp "MUL") ::
+      (axKnRoot "prim_add_int64", leanOp "ADD") ::
+      (axKnRoot "prim_mul_int64", leanOp "MUL") ::
+      (axKnRoot "prim_sub_int64", leanOp "SUB") ::
+      (axKnRoot "prim_eqb_int64", leanOp "EQB") ::
+      (axKnIn "Nat" "add", primOp "ADD") ::
+      (axKnIn "Nat" "mul", primOp "MUL") ::
       -- NOT `leanOp "SUB"`: Lean's Nat subtraction truncates at zero, while
       -- `prim_sub_int` is Peregrine's wrapping int63 subtraction.
-      ("c__Nat__sub", jField rtRef ("NAT_SUB_" ++ leanOpSuffix)) ::
-      ("c__Nat__beq", leanOp "EQB") ::
+      (axKnIn "Nat" "sub", jField rtRef ("NAT_SUB_" ++ leanOpSuffix)) ::
+      (axKnIn "Nat" "beq", leanOp "EQB") ::
       -- The rest of the machine-Nat operations lean-to-lambdabox leaves as
       -- axioms. `div`/`mod` follow Lean's total conventions and
       -- `decEq`/`decLe`/`decLt` return `Decidable`, not `Bool` (see Rt.java).
-      ("c__Nat__div", leanOp "DIV") ::
-      ("c__Nat__mod", leanOp "MOD") ::
-      ("c__Nat__pow", leanOp "POW") ::
-      ("c__Nat__ble", leanOp "BLE") ::
-      ("c__Nat__blt", leanOp "BLT") ::
-      ("c__Nat__decEq", leanOp "DEC_EQ") ::
-      ("c__Nat__decLe", leanOp "DEC_LE") ::
-      ("c__Nat__decLt", leanOp "DEC_LT") ::
+      (axKnIn "Nat" "div", leanOp "DIV") ::
+      (axKnIn "Nat" "mod", leanOp "MOD") ::
+      (axKnIn "Nat" "pow", leanOp "POW") ::
+      (axKnIn "Nat" "ble", leanOp "BLE") ::
+      (axKnIn "Nat" "blt", leanOp "BLT") ::
+      (axKnIn "Nat" "decEq", leanOp "DEC_EQ") ::
+      (axKnIn "Nat" "decLe", leanOp "DEC_LE") ::
+      (axKnIn "Nat" "decLt", leanOp "DEC_LT") ::
       -- Lean's machine-`Int` operations. `Int` erases to the same λ□ primitive
       -- int as `Nat`, so `ofNat` is the identity in both representations.
-      ("c__Int__ofNat", fixed "INT_OF_NAT") ::
-      ("c__Int__negSucc", jField rtRef ("INT_NEG_SUCC_" ++ leanOpSuffix)) ::
-      ("c__Int__neg", jField rtRef ("INT_NEG_" ++ leanOpSuffix)) ::
-      ("c__Int__add", jField rtRef ("INT_ADD_" ++ leanOpSuffix)) ::
-      ("c__Int__mul", jField rtRef ("INT_MUL_" ++ leanOpSuffix)) ::
-      ("c__Int__ediv", jField rtRef ("INT_EDIV_" ++ leanOpSuffix)) ::
-      ("c__Int__emod", jField rtRef ("INT_EMOD_" ++ leanOpSuffix)) ::
-      ("c__Int__decEq", jField rtRef ("INT_DEC_EQ_" ++ leanOpSuffix)) ::
+      (axKnIn "Int" "ofNat", fixed "INT_OF_NAT") ::
+      (axKnIn "Int" "negSucc", jField rtRef ("INT_NEG_SUCC_" ++ leanOpSuffix)) ::
+      (axKnIn "Int" "neg", jField rtRef ("INT_NEG_" ++ leanOpSuffix)) ::
+      (axKnIn "Int" "add", jField rtRef ("INT_ADD_" ++ leanOpSuffix)) ::
+      (axKnIn "Int" "mul", jField rtRef ("INT_MUL_" ++ leanOpSuffix)) ::
+      (axKnIn "Int" "ediv", jField rtRef ("INT_EDIV_" ++ leanOpSuffix)) ::
+      (axKnIn "Int" "emod", jField rtRef ("INT_EMOD_" ++ leanOpSuffix)) ::
+      (axKnIn "Int" "decEq", jField rtRef ("INT_DEC_EQ_" ++ leanOpSuffix)) ::
       -- Lean's `Array` operations (`@[extern]`, so erasure keeps no body). Only
       -- `size` returns a Nat, hence only it depends on the representation. The
       -- Lean frontend writes `!` in a name as `_u33`.
-      ("c__Array__mk", fixed "ARRAY_MK") ::
-      ("c__Array__emptyWithCapacity", fixed "ARRAY_EMPTY_WITH_CAPACITY") ::
-      ("c__Array__push", fixed "ARRAY_PUSH") ::
-      ("c__Array__getInternal", fixed "ARRAY_GET_INTERNAL") ::
-      ("c__Array__get_u33Internal", fixed "ARRAY_GET_BANG_INTERNAL") ::
-      ("c__Array__set_u33", fixed "ARRAY_SET_BANG") ::
-      ("c__Array__swap", fixed "ARRAY_SWAP") ::
-      ("c__Array__size", jField rtRef ("ARRAY_SIZE_" ++ leanOpSuffix)) ::
+      (axKnIn "Array" "mk", fixed "ARRAY_MK") ::
+      (axKnIn "Array" "emptyWithCapacity", fixed "ARRAY_EMPTY_WITH_CAPACITY") ::
+      (axKnIn "Array" "push", fixed "ARRAY_PUSH") ::
+      (axKnIn "Array" "getInternal", fixed "ARRAY_GET_INTERNAL") ::
+      (axKnIn "Array" "get_u33Internal", fixed "ARRAY_GET_BANG_INTERNAL") ::
+      (axKnIn "Array" "set_u33", fixed "ARRAY_SET_BANG") ::
+      (axKnIn "Array" "swap", fixed "ARRAY_SWAP") ::
+      (axKnIn "Array" "size", jField rtRef ("ARRAY_SIZE_" ++ leanOpSuffix)) ::
       -- Rewriting along an equality is the identity at runtime.
-      ("c__Eq__rec", fixed "EQ_REC") ::
-      ("c__Eq__ndrec", fixed "EQ_REC") ::
+      (axKnIn "Eq" "rec", fixed "EQ_REC") ::
+      (axKnIn "Eq" "ndrec", fixed "EQ_REC") ::
       nil
 
--- The entry point callers use, so the table stays internal to this file. Lookup
--- is by FULLY MANGLED kername, module path included, and is `StringUtil`'s one
--- association walk rather than a copy of it.
-\func axiomImpl (name : String) : Maybe JExpr => lookupKey name javaAxioms
+-- The entry point callers use, so the table stays internal to this file. The
+-- comparison is on MANGLED names, which is exact because `mangleKername` is
+-- injective (see `Mangle.ard`); it is `StringUtil`'s one association
+-- walk rather than a copy of it.
+\func axiomImpl (kn : Kername) : Maybe JExpr =>
+  lookupKey (mangleKername kn) (map (\lam (e : \Sigma Kername JExpr) => (mangleKername e.1, e.2)) javaAxioms)
 
 -- Three situations have no λ□ value: a `bvar` whose index exceeds the enclosing
 -- binders, an `fvar`, and a `case` whose scrutinee matches no branch. Erasure

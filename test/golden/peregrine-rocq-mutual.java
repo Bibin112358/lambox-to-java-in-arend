@@ -1,8 +1,8 @@
 public final class Prog {
-  public static Object c_Mutual_Tests_Peregrine__test(){
-    return ((Rt.Fn)(c_Mutual_Tests_Peregrine__oddNat())).apply(new Rt.Data(0, new Object[]{ new Rt.Data(0, new Object[]{  }) }));
+  public static Object c_dMutual_dTests_dPeregrine_ntest(){
+    return ((Rt.Fn)(c_dMutual_dTests_dPeregrine_noddNat())).apply(new Rt.Data(0, new Object[]{ new Rt.Data(0, new Object[]{  }) }));
   }
-  public static Object c_Mutual_Tests_Peregrine__oddNat(){
+  public static Object c_dMutual_dTests_dPeregrine_noddNat(){
     return new Rt.Fn(){ public Object apply(Object p){
       class CFL {
         public Object f0(Object py0_FL){
@@ -24,9 +24,9 @@ public final class Prog {
       } })).apply(p);
     } };
   }
-  // inductive c_Datatypes_Init_Corelib__nat: erased; values use Data(tag, fields)
-  // inductive c_Mutual_Tests_Peregrine__Even: erased; values use Data(tag, fields)
+  // inductive c_dDatatypes_dInit_dCorelib_nnat: erased; values use Data(tag, fields)
+  // inductive c_dMutual_dTests_dPeregrine_nEven: erased; values use Data(tag, fields)
   public static Object body(){
-    return c_Mutual_Tests_Peregrine__test();
+    return c_dMutual_dTests_dPeregrine_ntest();
   }
 }

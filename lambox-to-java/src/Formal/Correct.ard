@@ -134,7 +134,7 @@
 -- constant, and then there is nothing to agree about.
 -- ---------------------------------------------------------------------------
 
-\func axiomRtName (kn : Kername) : Maybe JIdent => \case axiomImpl (mangleKername kn) \with {
+\func axiomRtName (kn : Kername) : Maybe JIdent => \case axiomImpl kn \with {
   | just (jField _ nm) => just nm
   | _ => nothing
 }
