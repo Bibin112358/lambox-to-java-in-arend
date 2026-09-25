@@ -1,35 +1,15 @@
 // A hand-written entry point for a generated class. `@PROG@` is the name of
 // that class; substitute it (the harness does, in test/stages/java.sh).
 //
-// THIS IS NOT GENERATED, AND THAT IS THE POINT. The extractor used to emit a
-// `public static void main(String[])` into every program class, which made each
-// output runnable and, for exactly that reason, not reusable: two extracted
-// classes could not sit in one Java program, and the extractor was deciding
-// something that is not its business. A lambda-box term is a VALUE. Whether to
-// print it, hand it to another program, run it under a profiler, or evaluate it
-// at all is the caller's decision -- so the caller writes these five lines.
+// The compiler generates no `main`: a generated class only exposes
+// `public static Object body()`, the program's value, so it can be used as a
+// library. This file is the entry point the test harness uses.
 //
-// What a generated class gives you is `public static Object body()`: the
-// program's value, computed on demand. Everything else here is a choice.
-//
-// The two choices this file makes, and why:
-//
-//   * `Rt.runMain` rather than calling `body()` directly. Lambda-box `fix`
-//     compiles to ordinary, usually NON-TAIL Java recursion, so evaluation depth
-//     is bounded by the thread stack -- and the stack of the primordial thread
-//     that runs `main` is set by the OS (`ulimit -s`), not by the launcher's
-//     `-Xss`, on several JVM/OS combinations. `runMain` runs the body on a
-//     thread it creates with an explicitly requested stack size, which makes the
-//     bound a property of the program instead of a property of how it was
-//     launched. Tunable with `-Dlambox.stack=<bytes>`. See runtime/Rt.java.
-//   * printing the result at all. `runMain` prints it and turns an exception
-//     into a non-zero exit status, so a stack overflow cannot look like success
-//     with no output. That is what makes the harness able to compare backends;
-//     it is not something a library should do to you.
-//
-// The `Rt.Fn` wrapper is because `runMain` takes a function, so that it can
-// evaluate the body ON the new thread rather than on this one. Its argument is
-// ignored, and `Rt.BOX` is what gets passed.
+// It goes through `Rt.runMain` rather than printing `body()` directly: that
+// evaluates and prints the body on a thread with a large stack (generated
+// recursion is mostly non-tail) and turns an exception into a non-zero exit
+// status. The body is passed as an `Rt.Fn` so it runs on that thread; the
+// argument is ignored.
 //
 // Compile all three together:
 //   javac -d <dir> <dir>/Rt.java <dir>/@PROG@.java <dir>/Main.java

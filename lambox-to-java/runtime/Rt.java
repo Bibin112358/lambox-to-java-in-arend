@@ -12,8 +12,11 @@
 //   * constructors       -> Data(tag, fields)
 //   * erased proofs/types -> BOX
 //
-// Kept to plain loops/casts (no lambdas/streams/pattern-switch) per the
-// classic-bytecode-only codegen style used by the generator.
+// Plain loops and casts only (no lambdas, streams or pattern switches), like
+// the generated code.
+//
+// The Arend model of this file is `Semantics/RtLong.ard` + `Semantics/RtInt63.ard`;
+// the correctness proof trusts that the two agree (`test/check diff` spot-checks it).
 public final class Rt {
   private Rt() {}
 
@@ -21,10 +24,8 @@ public final class Rt {
     Object apply(Object x);
   }
 
-  // `toString` overrides here are purely for making printed program output
-  // human-readable (e.g. inspecting `System.out.println(Prog.body())`): a
-  // recursive, indented `tag(\n  field,\n  field\n)` tree, where flat leaves
-  // like `0` print with no parens.
+  // `toString` prints an indented `tag(\n  field,\n  field\n)` tree; a
+  // constructor without fields prints as its bare tag.
   public static final class Data {
     public final int tag;
     public final Object[] fields;
@@ -37,11 +38,8 @@ public final class Rt {
       return sb.toString();
     }
 
-    // Renders into ONE buffer. Returning a String per level instead (as this
-    // used to) copies the whole rendered subtree once per enclosing level, which
-    // is quadratic in the nesting depth: a list of 8000 elements -- the shape a
-    // `List` of that length has -- then took minutes to print, dwarfing the
-    // program that produced it. The text produced is unchanged.
+    // Renders into one shared buffer: building a String per level would be
+    // quadratic in the nesting depth (a long list is deeply nested).
     public void render(StringBuilder sb, int indent) {
       sb.append(tag);
       if (fields.length == 0) return;
@@ -62,13 +60,9 @@ public final class Rt {
     }
   }
 
-  // An erased proof or type. It is an `Fn` RETURNING ITSELF, not a bare
-  // `Object`: λ□ applies erased values (`eval_box`: if `f` evaluates to `box`
-  // then `app f a` evaluates to `box`), and the generated code spells every
-  // application `((Rt.Fn)f).apply(a)`. A bare `Object` made that application a
-  // ClassCastException -- a program λ□ evaluates, failing in Java. The OCaml
-  // backend's box is the same self-returning function. It prints as `BOX`
-  // rather than as a hash code, so output is deterministic.
+  // An erased proof or type. It is an `Fn` that returns itself, because λ□ may
+  // apply erased values (`eval_box`: `app box a` evaluates to `box`) and the
+  // generated code writes every application as `((Rt.Fn)f).apply(a)`.
   public static final Fn BOX = new Fn() {
     public Object apply(Object x) { return BOX; }
     @Override public String toString() { return "BOX"; }
@@ -76,32 +70,15 @@ public final class Rt {
 
   // --- Entry point -----------------------------------------------------------
   //
-  // WHY A CALLER'S `main` SHOULD GO THROUGH THIS RATHER THAN PRINT `body()`.
+  // A generated class only exposes `public static Object body()`; the `main`
+  // is hand-written (runtime/Main.java.in) and should call `runMain`.
   //
-  // (The extractor generates no `main` at all: a generated class exposes
-  // `public static Object body()` and nothing else, so the entry point is
-  // hand-written -- see runtime/Main.java.in for the one the harness uses.)
-  //
-  // λ□'s `fix` compiles to plain Java recursion, and the recursive call is
-  // usually NOT in tail position (building a list, `map`, `foldr`, the deriv
-  // tree walk), so evaluation depth is bounded by the thread stack. Passing
-  // `-Xss` to the launcher is not a dependable way to raise that bound: `-Xss`
-  // sizes threads the JVM creates, while the *primordial* thread running `main`
-  // gets its stack from the OS (`ulimit -s`, typically 8 MB) on several
-  // JVM/OS combinations. So a program that needs a deep stack would work or
-  // overflow depending on how it happened to be launched.
-  //
-  // Running the body on a thread we create ourselves makes the requested stack
-  // size a property of the generated program instead: the size below is honoured
-  // by every JVM, and it is still tunable without recompiling via
-  // `-Dlambox.stack=<bytes>`. This bounds depth, it does not remove the bound --
-  // making non-tail `fix` stack-independent needs CPS/heap-allocated frames, and
-  // is deliberately not attempted here (a trampoline would only flatten TAIL
-  // calls, which is not the recursion we see).
-  //
-  // The value is printed on that thread, since `toString` of a deep `Data` is
-  // recursive too. An exception is reported and turned into a non-zero exit
-  // status, so a stack overflow cannot look like success with no output.
+  // `fix` compiles to ordinary, mostly non-tail Java recursion, so evaluation
+  // depth is bounded by the stack. `-Xss` does not reliably size the thread
+  // running `main` (it gets the OS stack on some platforms), so `runMain` runs
+  // the body, and prints its value, on a thread of its own with a large stack
+  // (`-Dlambox.stack=<bytes>` overrides it). This raises the bound; it does not
+  // remove it. Exceptions are reported and give a non-zero exit status.
   public static final long STACK_BYTES =
     Long.getLong("lambox.stack", 1L << 30).longValue();
 
@@ -134,12 +111,10 @@ public final class Rt {
   //
   // Two λ□ nodes have no Java value: a `bvar` whose de Bruijn index exceeds the
   // enclosing binders (out of scope) and a `fvar` (locally-nameless free
-  // variable) — a closed program produced by erasure contains neither. The
-  // generator used to emit a commented `null` for them, which then either blew
-  // up far away as a NullPointerException or, worse, propagated silently as a
-  // value; it now emits a call of one of these, so the failure is immediate and
-  // names the offending node (`path` is the generator's structural node id, see
-  // `compileExpr` in ToJava.ard).
+  // variable). A closed program produced by erasure contains neither; the
+  // generator compiles them to a call of one of these, so the failure is
+  // immediate and names the node (`path` is the generator's structural node id,
+  // see `compileExpr` in ToJava.ard).
   public static Object unbound(int index, String path) {
     throw new IllegalStateException(
       "ill-formed lambda-box: de Bruijn index " + index + " is out of scope (node " + path + ")");
@@ -152,14 +127,10 @@ public final class Rt {
 
   // The last alternative of the ternary chain a λ□ `case` compiles to: reached
   // when the scrutinee's tag matches no branch. Unreachable for a well-typed
-  // program, since a match is total over its inductive's constructors — this is
-  // the `default:` that the earlier `switch` encoding threw from, kept for the
-  // same reason. It cannot be dropped in favour of using the last branch as the
-  // final `else`: that would turn a malformed tag from a loud error into a
-  // silently wrong answer.
-  // Takes the scrutinee rather than its tag so that the generated code needs no
-  // node for reading a tag on its own: every other tag read is part of a `tag ==
-  // n` test.
+  // program, since a match is total over its inductive's constructors; using
+  // the last branch as the final `else` instead would turn a malformed tag into
+  // a silently wrong answer. Takes the scrutinee rather than its tag, so the
+  // generated code only ever reads a tag inside a `tag == n` test.
   public static Object noBranch(Object scrutinee, String path) {
     String what = scrutinee instanceof Data
       ? "constructor tag " + ((Data) scrutinee).tag
@@ -170,76 +141,23 @@ public final class Rt {
 
   // --- Primitive integer ops -------------------------------------------------
   //
-  // Realization of the arity-2 λ□ axioms `prim_add_int`, `prim_mul_int`,
-  // `prim_sub_int` and `prim_eqb_int` (see ExampleMatMul.ard). The C/OCaml
-  // backends get these by remapping the axioms onto CertiRocq's
-  // prim_int63_add/mul/sub/eqb via peregrine's `--attributes`; for Java the
-  // generator emits a reference to the constants below (axiom table in
-  // ToJava.ard) instead of a throwing stub.
-  //
-  // Both arguments are taken one at a time, since generated code is fully
-  // curried: `((Fn)((Fn)PRIM_ADD_INT).apply(a)).apply(b)`.
-  //
-  // There are TWO families, one per int representation the generator can pick
-  // (the `JavaTarget` record in ToJava.ard) — a program uses exactly one of
-  // them, and its `prim` literals are of the matching type:
-  //   * `PRIM_*_INT`  — java.math.BigInteger values: unbounded, never overflow,
-  //     but boxed arithmetic and NO wraparound.
-  //   * `PRIM_*_LONG` — java.lang.Long values, i.e. Java's built-in integers:
-  //     much faster, wrap — but at 2^64 and signed, whereas λ□ ints are 63-bit
-  //     with unsigned/cyclic (mod 2^63) arithmetic.
-  //
-  // KNOWN MISMATCH (documented, not fixed). λ□'s `tPrim primInt` payload is
-  // int63 by definition of the language: MetaRocq
-  // erasure/theories/EPrimitive.v — `primIntModel (i : PrimInt63.int)`;
-  // lean-to-lambdabox — `PrimModel .primInt := BitVec 63`; Rocq refman
-  // "Primitive objects / Primitive integers" (63-bit machine int, unsigned view
-  // `Uint63`, signed view `Sint63`). Neither family below matches that, nor the
-  // C runtime (CertiRocq prim_int63_add/mul/sub/eqb) or the OCaml one (unboxed
-  // OCaml `int`, cf. ExtrOCamlInt63); they agree as long as values stay well
-  // below 2^62, which holds for the current examples.
-  // DONE, and it is now the DEFAULT: the `PRIM_*_INT63` family below
-  // normalizes mod 2^63 per `Uint63` and is selected by `JavaAxioms.ard`'s
-  // `primRepr`. The mismatch above therefore stands only for the two older
-  // families, which remain because `_LONG` is the fast deviation a program can
-  // still be compiled against and `_INT` is what the unbounded families use.
-  //
-  // It does NOT fix the other half. Lean's `Nat` is arbitrary-precision, and
-  // its operations (`NAT_*`, and the `Nat.*` entries of the axiom table) stay
-  // on `long`, where they still truncate at 2^64. That is a separate defect,
-  // tracked as limitation (L) in `Formal/Correct.ard`.
-  private static java.math.BigInteger num(Object x) { return (java.math.BigInteger) x; }
-
+  // The λ□ axioms the backend realizes (table: `Compiler/JavaAxioms.ard`).
+  // Every value is a `java.lang.Long`, and every operation is curried like
+  // generated code: `((Fn)((Fn)PRIM_ADD_INT63).apply(a)).apply(b)`. Two families:
+  //   * `*_INT63`: λ□'s primitive int, unsigned 63-bit, mod 2^63 (MetaRocq's
+  //     `PrimInt63.int`, lean-to-lambdabox's `BitVec 63`). Used for
+  //     `prim_*_int` and `Nat.add`/`mul`/`beq` (lean-to-lambdabox erases `Nat`
+  //     to this primitive int).
+  //   * `*_LONG`: Java's signed 64-bit `long`. Used for the `prim_*_int64`
+  //     operations introduced by `Compiler/Int64Rewrite.ard`, and for the other
+  //     Lean `Nat`/`Int` operations below (on values in [0, 2^63) they agree
+  //     with the 63-bit reading).
   private static long lng(Object x) { return ((Long) x).longValue(); }
 
   // eqb's result ABI: the two-constructor Bool inductive with no fields,
   // false = tag 0, true = tag 1 (matching the declared constructor order).
   public static final Data FALSE = new Data(0, new Object[]{});
   public static final Data TRUE = new Data(1, new Object[]{});
-
-  public static final Fn PRIM_ADD_INT = new Fn() {
-    public Object apply(final Object x) {
-      return new Fn() { public Object apply(Object y) { return num(x).add(num(y)); } };
-    }
-  };
-
-  public static final Fn PRIM_MUL_INT = new Fn() {
-    public Object apply(final Object x) {
-      return new Fn() { public Object apply(Object y) { return num(x).multiply(num(y)); } };
-    }
-  };
-
-  public static final Fn PRIM_SUB_INT = new Fn() {
-    public Object apply(final Object x) {
-      return new Fn() { public Object apply(Object y) { return num(x).subtract(num(y)); } };
-    }
-  };
-
-  public static final Fn PRIM_EQB_INT = new Fn() {
-    public Object apply(final Object x) {
-      return new Fn() { public Object apply(Object y) { return num(x).equals(num(y)) ? TRUE : FALSE; } };
-    }
-  };
 
   public static final Fn PRIM_ADD_LONG = new Fn() {
     public Object apply(final Object x) {
@@ -265,32 +183,12 @@ public final class Rt {
     }
   };
 
-  // --- PRIM_*_INT63: λ□'s primitive int, as the language actually defines it -
+  // --- PRIM_*_INT63 ------------------------------------------------------------
   //
-  // `Uint63` — unsigned, 63-bit, cyclic mod 2^63. This is the family the
-  // FUTURE WORK note above asked for, and it is the only one of the three that
-  // agrees with λ□'s own evaluation (MetaRocq `primIntModel (i :
-  // PrimInt63.int)`; lean-to-lambdabox `PrimModel .primInt := BitVec 63`; the
-  // Rocq refman's `Uint63`). The other two are deviations: `_INT` never wraps,
-  // `_LONG` wraps at 2^64 and signed.
-  //
-  // AND IT IS ESSENTIALLY FREE, which is the reason there is no longer a
-  // correctness/speed trade here. A value is held in a `long` restricted to
-  // [0, 2^63), which is exactly the non-negative half of `long`'s range, so
-  // nothing is boxed differently from `_LONG` and no BigInteger is involved.
-  // Java's `+`, `-` and `*` on `long` are two's-complement, i.e. mod 2^64
-  // (JLS 4.2.2), so masking the result with 2^63-1 gives mod 2^63: one AND
-  // instruction per operation. Checked against BigInteger `mod 2^63` on two
-  // million random operand pairs for +, -, * and /, plus the two boundary
-  // cases `(2^63-1) + 1 = 0` and `1 - 2 = 2^63-1`.
-  //
-  // Division and remainder need no mask: both operands are already in
-  // [0, 2^63), so they are non-negative `long`s and Java's `/` and `%` are the
-  // unsigned operations on them.
-  //
-  // Arguments are re-normalized on the way in rather than assumed normalized.
-  // That costs nothing and makes each constant correct in isolation, which is
-  // what lets the Arend model (`Formal/RtInt63.ard`) state the same thing.
+  // A value is a `long` in [0, 2^63). Java's `+`, `-`, `*` on `long` are mod
+  // 2^64 (JLS 4.2.2), so masking the result with 2^63-1 gives mod 2^63: one AND
+  // per operation. Arguments are masked on the way in as well, so each constant
+  // is correct on any input, which is how `Semantics/RtInt63.ard` models it.
   public static final long MASK63 = Long.MAX_VALUE; // 2^63 - 1
 
   private static long u63(Object x) { return ((Long) x).longValue() & MASK63; }
@@ -313,10 +211,8 @@ public final class Rt {
 
   // --- Lean machine-Nat operations -------------------------------------------
   //
-  // lean-to-lambdabox erases `Nat` to λ□ primitive ints (`PrimModel .primInt :=
-  // BitVec 63`) and leaves the operations below as axioms, exactly like
-  // `Nat.add`/`mul`/`sub`/`beq` above. Same curried ABI, same two
-  // representations, same 63-bit caveat.
+  // lean-to-lambdabox erases `Nat` to λ□ primitive ints and leaves these
+  // operations as axioms.
   //
   // A binary operation is written once by extending `Bin`: the outer `apply`
   // returns the closure that takes the second argument.
@@ -328,20 +224,8 @@ public final class Rt {
     }
   }
 
-  // Lean's `Nat.sub` is TRUNCATED subtraction: `a - b = 0` when `b >= a`. It
-  // therefore cannot share `PRIM_SUB_*`, which realizes the hand-written
-  // `prim_sub_int` axiom whose reference implementation is Peregrine's int63
-  // subtraction (wrapping, and freely negative). A shared realization produced
-  // wrong -- not crashing -- results: `const_fold` returned 2048 instead of
-  // 4772, because its `v-1` fell below zero and its `if v = 0` guard then never
-  // fired.
-  public static final Fn NAT_SUB_INT = new Bin() {
-    Object run(Object x, Object y) {
-      java.math.BigInteger d = num(x).subtract(num(y));
-      return d.signum() < 0 ? java.math.BigInteger.ZERO : d;
-    }
-  };
-
+  // Lean's `Nat.sub` truncates (`a - b = 0` when `b >= a`), unlike the wrapping
+  // `prim_sub_int`, so it has its own constant.
   public static final Fn NAT_SUB_LONG = new Bin() {
     Object run(Object x, Object y) {
       long d = lng(x) - lng(y);
@@ -363,42 +247,6 @@ public final class Rt {
 
   // Lean total-function conventions, which differ from Java's: division and
   // modulo by zero are `n / 0 = 0` and `n % 0 = n` rather than an exception.
-  public static final Fn PRIM_DIV_INT = new Bin() {
-    Object run(Object x, Object y) {
-      return num(y).signum() == 0 ? java.math.BigInteger.ZERO : num(x).divide(num(y));
-    }
-  };
-
-  public static final Fn PRIM_MOD_INT = new Bin() {
-    Object run(Object x, Object y) {
-      return num(y).signum() == 0 ? num(x) : num(x).mod(num(y));
-    }
-  };
-
-  public static final Fn PRIM_POW_INT = new Bin() {
-    Object run(Object x, Object y) { return num(x).pow(num(y).intValueExact()); }
-  };
-
-  public static final Fn PRIM_BLE_INT = new Bin() {
-    Object run(Object x, Object y) { return num(x).compareTo(num(y)) <= 0 ? TRUE : FALSE; }
-  };
-
-  public static final Fn PRIM_BLT_INT = new Bin() {
-    Object run(Object x, Object y) { return num(x).compareTo(num(y)) < 0 ? TRUE : FALSE; }
-  };
-
-  public static final Fn PRIM_DEC_EQ_INT = new Bin() {
-    Object run(Object x, Object y) { return dec(num(x).equals(num(y))); }
-  };
-
-  public static final Fn PRIM_DEC_LE_INT = new Bin() {
-    Object run(Object x, Object y) { return dec(num(x).compareTo(num(y)) <= 0); }
-  };
-
-  public static final Fn PRIM_DEC_LT_INT = new Bin() {
-    Object run(Object x, Object y) { return dec(num(x).compareTo(num(y)) < 0); }
-  };
-
   public static final Fn PRIM_DIV_LONG = new Bin() {
     Object run(Object x, Object y) {
       return Long.valueOf(lng(y) == 0L ? 0L : lng(x) / lng(y));
@@ -453,42 +301,6 @@ public final class Rt {
   // matches Java's `/` and `%`, so both are computed from the remainder.
   public static final Fn INT_OF_NAT = new Fn() {
     public Object apply(Object x) { return x; }
-  };
-
-  public static final Fn INT_NEG_INT = new Fn() {
-    public Object apply(Object x) { return num(x).negate(); }
-  };
-
-  public static final Fn INT_NEG_SUCC_INT = new Fn() {
-    public Object apply(Object x) {
-      return num(x).add(java.math.BigInteger.ONE).negate();
-    }
-  };
-
-  public static final Fn INT_ADD_INT = new Bin() {
-    Object run(Object x, Object y) { return num(x).add(num(y)); }
-  };
-
-  public static final Fn INT_MUL_INT = new Bin() {
-    Object run(Object x, Object y) { return num(x).multiply(num(y)); }
-  };
-
-  public static final Fn INT_EMOD_INT = new Bin() {
-    Object run(Object x, Object y) {
-      return num(y).signum() == 0 ? num(x) : num(x).mod(num(y).abs());
-    }
-  };
-
-  public static final Fn INT_EDIV_INT = new Bin() {
-    Object run(Object x, Object y) {
-      if (num(y).signum() == 0) return java.math.BigInteger.ZERO;
-      java.math.BigInteger r = num(x).mod(num(y).abs());
-      return num(x).subtract(r).divide(num(y));
-    }
-  };
-
-  public static final Fn INT_DEC_EQ_INT = new Bin() {
-    Object run(Object x, Object y) { return dec(num(x).equals(num(y))); }
   };
 
   private static long emod(long a, long b) {
@@ -676,12 +488,6 @@ public final class Rt {
 
   // `Array.size {α} (a : Array α) : Nat` -- the only array operation whose
   // result is a Nat, hence the only one with a per-representation version.
-  public static final Fn ARRAY_SIZE_INT = curry(2, new Op() {
-    public Object run(Object[] a) {
-      return java.math.BigInteger.valueOf(arr(a[1]).length);
-    }
-  });
-
   public static final Fn ARRAY_SIZE_LONG = curry(2, new Op() {
     public Object run(Object[] a) { return Long.valueOf(arr(a[1]).length); }
   });
