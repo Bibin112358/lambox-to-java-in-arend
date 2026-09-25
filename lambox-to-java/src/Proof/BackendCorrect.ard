@@ -20,27 +20,24 @@
 -- =============================================================================
 -- THE BACKEND IS CORRECT ON CLOSED PROGRAMS: the two steps composed.
 --
---   λ□ (substitution)  --evalToEvalEnv-->  λ□ (environments)  --simE-->  Java
---   Formal/LambdaBoxEval    Formal/EvalEnvSound    Formal/EvalEnv    Formal/EnvToJava
+--   λ□ by substitution  --evalToEvalEnv-->  λ□ by environments  --simE-->  Java
+--   (Semantics/LambdaBoxEval)  (Proof/SubstToEnv)  (Semantics/LambdaBoxEnv)  (Proof/EnvToJava)
 --
--- `backendCorrect`: a program whose body is closed and whose constant bodies
--- are closed, and which λ□ evaluates to `v`, compiles to a class whose
--- `body()` RETURNS -- never throws, never gets stuck -- a Java value related to
--- `v`: `v` is the read-back of an environment value `w`, and the Java value is
--- `CV`-related to `w` (Proof/CompileValue.ard) -- for a function, the Java
--- closure compiled from it. `backendCorrectFO`: on a first-order result,
--- that value satisfies `Proof/Statement.ard`'s `ValRel`.
+-- `backendCorrect`: if λ□ evaluates a closed program (closed body, closed
+-- constant bodies) to `v`, then the compiled class's `body()` RETURNS -- never
+-- throws, never gets stuck -- a Java value `CV`-related to an environment
+-- value `w` whose read-back is `v` (for a function: the closure compiled from
+-- it). `backendCorrectFO`: for a first-order `v`, that value satisfies
+-- `ValRel` (Proof/Statement.ard).
 --
--- This is the repaired form of `Correct.ard`'s `CorrectGeneric`, which is false
--- (Proof/CorrectRefuted.ard): closedness is assumed, and the value relation
--- relates closures. The remaining hypotheses are `SimHyps` -- facts about the
--- compiled class, the runtime and the two oracles, each discharged separately
--- for the shipped backend -- and `hBody`, where `body()` is.
---
--- As upstream (MetaRocq's `verified_malfunction_pipeline_theorem`), the
--- guarantee a Java CALLER can inspect is the first-order one.
+-- Closedness is needed because λ□'s substitution captures free variables. The
+-- other hypotheses are `SimHyps` (class, runtime and oracle facts, discharged
+-- for the shipped backend in Proof/MainTheorem.ard) and `BodyAt`, where
+-- `body()` is. As upstream (MetaRocq's `verified_malfunction_pipeline_theorem`),
+-- the guarantee a Java caller can inspect is the first-order one.
 -- =============================================================================
 
+-- The class has a `body()` method compiled from `t`.
 \func BodyAt (cls : JClass) (t : LBTerm) : \Type =>
   \Sigma (m : JMethod) (lookupMethod cls bodyMethodName = just m) (JMethod.mBody {m} = constBody t)
 

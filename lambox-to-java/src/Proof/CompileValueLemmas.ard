@@ -1,17 +1,17 @@
 \import Algebra.Meta
 \import Arith.Nat
-\import Data.Array (++, mkArray)
+\import Data.Array (++, ++-assoc, mkArray)
 \import Data.Bool
 \import Data.Maybe
 \import Proof.CSubst (skLamF, skFixF)
 \import Proof.CompileValue
 \import Proof.Statement (ValRel, agrees, agreesAll)
 \import Semantics.LambdaBoxEnv
-\import Proof.SubstToEnv (justInj)
 \import Semantics.JavaEval
 \import Semantics.JavaValue
 \import Semantics.LambdaBoxEval
-\import Proof.OracleArith (eqTrue, eqRefl, intEqB-sound, intEqB-refl)
+\import Proof.JavaExec (eqSelf)
+\import Proof.OracleArith (eqTrue, intEqB-sound, intEqB-refl)
 \import Proof.PathFresh
 \import Semantics.Res
 \import Compiler.Int63
@@ -43,14 +43,6 @@
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- Arrays.
--- ---------------------------------------------------------------------------
-
-\func arrAssoc {A : \Type} (X Y Z : Array A) : (X ++ Y) ++ Z = X ++ (Y ++ Z) \elim X
-  | nil => idp
-  | x :: X => pmap (x ::) (arrAssoc X Y Z)
-
--- ---------------------------------------------------------------------------
 -- The environment relation.
 -- ---------------------------------------------------------------------------
 
@@ -67,7 +59,7 @@
   | nil, nil, erNil => erNil
   | w :: rho, e :: cenv, erCons h er =>
     erCons (\lam X nx => \let r => h (X ++ Y) (namesAppend nx ny)
-                        \in (r.1, r.2, transport (\lam E => evalExpr rt cls r.2 E e = rOk (eVal r.1)) (envAssoc X Y jenv) r.3, r.4))
+                        \in (r.1, r.2, transport (\lam E => evalExpr rt cls r.2 E e = rOk (eVal r.1)) (++-assoc {_} {X} {Y} {jenv}) r.3, r.4))
            (erExtend er Y ny)
 
 \func EntryOK (rt : RtSpec) (cls : JClass) (w : EV) (e : JExpr) (jenv : Env) (c : Path) : \Type =>
@@ -79,7 +71,7 @@
   : \Sigma (e : JExpr) (nthArr n cenv = just e) (EntryOK rt cls w e jenv c) \elim rho, cenv, er, n
   | nil, nil, erNil, 0 => \case h
   | nil, nil, erNil, suc _ => \case h
-  | w' :: rho, e :: cenv, erCons hh er, 0 => (e, idp, transport (\lam z => EntryOK rt cls z e jenv c) (justInj h) hh)
+  | w' :: rho, e :: cenv, erCons hh er, 0 => (e, idp, transport (\lam z => EntryOK rt cls z e jenv c) (just-injective h) hh)
   | w' :: rho, e :: cenv, erCons hh er, suc n => erLookup er h
 
 -- ---------------------------------------------------------------------------
@@ -98,11 +90,6 @@
 -- ---------------------------------------------------------------------------
 -- The first-order bridge.
 -- ---------------------------------------------------------------------------
-
-\func andSplit {a b : Bool} (h : (a and b) = true) : \Sigma (a = true) (b = true) \elim a, b
-  | true, true => (idp, idp)
-  | true, false => \case h
-  | false, _ => \case h
 
 -- Agreement from some fuel on (the recursion goes through an array of
 -- fields, whose members each need their own fuel).
@@ -130,7 +117,7 @@
     \let r => allAgrees ws fs ac fo
     \in rewrite e (suc r.1, \lam n le => \case \elim n, le \with {
       | 0, le => absurd (linarith : Empty)
-      | suc n, le => path (\lam i => (eqRefl c @ i) and (r.2 n linarith @ i))
+      | suc n, le => path (\lam i => (eqSelf c @ i) and (r.2 n linarith @ i))
     })
   | evClos na b rho, _ => absurd (transport FOVal (skLamF 0 (quoteEnv rho) na b) fo)
   | evFix defs idx rho, _ => absurd (transport FOVal (skFixF 0 (quoteEnv rho) defs idx) fo)
@@ -190,7 +177,7 @@
 
 \func conInv {n : Nat} (ind : InductiveId) (c : Nat) (args : Array LBTerm) (jv : Value) (h : agrees (suc n) (construct ind c args) jv = true) : \Sigma (fs : Array Value) (jv = vData c fs) (agreesAll n args fs = true) \elim jv
   | vBox => \case h
-  | vData tg fs => \let s => andSplit h \in (fs, pmap (vData __ fs) (inv (eqTrue s.1)), s.2)
+  | vData tg fs => \let s => and.toSigma h \in (fs, pmap (vData __ fs) (inv (eqTrue s.1)), s.2)
   | vClos _ _ _ => \case h
   | vObj _ _ _ => \case h
   | vBuiltin _ _ => \case h
@@ -224,7 +211,7 @@
                   (fo : \Pi (i : Fin ts.len) -> FOVal (ts i)) (h : agreesAll n ts vs = true)
   : AllCV rt cls (mkArray {EV} {ts.len} (\lam i => ofFO (ts i))) vs \elim ts, vs
   | nil, nil => acNil
-  | t :: ts, v :: vs => \let s => andSplit h \in acCons (agreesCV n t v (fo 0) s.1) (agreesAllCV n ts vs (\lam i => fo (suc i)) s.2)
+  | t :: ts, v :: vs => \let s => and.toSigma h \in acCons (agreesCV n t v (fo 0) s.1) (agreesAllCV n ts vs (\lam i => fo (suc i)) s.2)
   | nil, _ :: _ => \case h
   | _ :: _, nil => \case h
 
@@ -290,7 +277,7 @@
   | nil, rcNil e => transport (\lam g => QRel rt cls acc (g ++ jacc)) (inv e) qa
   | w :: ws, rcCons {got0} j cv rc e =>
     transport (\lam g => QRel rt cls (revAppendArr (quoteEnv ws) (quote w :: acc)) g)
-              (inv (arrAssoc got0 (j :: nil) jacc) *> pmap (__ ++ jacc) (inv e))
+              (inv (++-assoc {_} {got0} {j :: nil} {jacc}) *> pmap (__ ++ jacc) (inv e))
               (qRev rc (quote w :: acc) (j :: jacc) (qCons w idp cv qa))
 
 -- The shape `OracleAgree` asks for: a length-indexed array, pointwise `ValRel`.

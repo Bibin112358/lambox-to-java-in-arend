@@ -2,7 +2,7 @@
 \import Arith.Nat
 \import Data.Array (++)
 \import Data.Maybe
-\import Proof.JavaExec (lookupOther, lookupSelf)
+\import Proof.JavaExec (lookupCons)
 \import Semantics.JavaValue
 \import Proof.NodePathUnique (renderName-inj)
 \import Compiler.JavaAst
@@ -20,32 +20,29 @@
 -- =============================================================================
 -- FRESH NAMES, BY POSITION IN THE TREE.
 --
--- Java looks a variable up by NAME, and every generated name is `renderName k
--- q` for the path `q` of the node that minted it (Proof/NodePathUnique.ard:
--- `renderName` is injective). The backend proof needs "binding this name hides
--- nothing that is read later", and the λ-fragment proof (`CorrectLam.ard`) got
--- it from path LENGTHS: every variable in scope was minted strictly above.
+-- Java looks variables up by NAME, and every generated name is `renderName k q`
+-- for the path `q` of the node that minted it (`renderName` is injective,
+-- Proof/NodePathUnique.ard). The backend proof needs "binding this name hides
+-- nothing that is read later".
 --
--- Lengths are not enough once a node emits statements. In `app f a` the
--- statements of `f` run, then those of `a`, and only then is `f`'s value
--- expression evaluated -- in an environment that `a`'s statements extended.
--- `f` and `a` sit at the SAME depth, so what separates their names is that
--- their paths are different, not that one is shorter. Hence the relations here
--- are about SUFFIXES (a path is a list with the innermost selector at the head,
--- so the ancestors of `p` are exactly its suffixes):
+-- Path LENGTHS are not enough for that. In `app f a` the statements of `f`
+-- run, then those of `a`, and only then is `f`'s value expression evaluated,
+-- in an environment `a`'s statements extended. `f` and `a` sit at the same
+-- depth; what separates their names is that they are in different subtrees.
+-- So the relations here are about SUFFIXES (a path lists the innermost
+-- selector first, so the ancestors of `p` are exactly its suffixes):
 --
---   * `IsSuffix q p`: `q` is `p` or an ancestor of `p`.
---   * `StrictSuf q c`: `q` is a proper ancestor of `c`. The variables a node
---     at `c` can READ were minted at such paths (an enclosing lambda, let,
---     case scrutinee or fix class).
---   * `Indep q p`: neither is an ancestor of the other -- `q` is in a
---     different subtree. What a SIBLING's statements bind is at such paths,
---     and independence is inherited by every descendant of `p`.
+--   * `IsSuffix q p`: `q` is `p` or an ancestor of `p`;
+--   * `StrictSuf q c`: `q` is a proper ancestor of `c` -- where the variables
+--     a node at `c` can read were minted (enclosing lambda, let, case, fix);
+--   * `Indep q p`: neither is an ancestor of the other. What a sibling's
+--     statements bind is at such paths, and independence is inherited by
+--     every descendant of `p`.
 --
--- `NamesAt ext P` says every name bound in the environment segment `ext` is
--- `renderName k q` for some `q` with `P q`; `lookupSkip` is the one fact the
--- simulation uses: a lookup of a name whose path is excluded by `P` walks past
--- the whole segment.
+-- `NamesAt ext P`: every name bound in the environment segment `ext` is
+-- `renderName k q` with `P q`. The one fact the simulation uses is
+-- `lookupSkip`: looking up a name whose path `P` excludes walks past the
+-- whole segment.
 -- =============================================================================
 
 \data IsSuffix (q p : Path)
@@ -165,20 +162,8 @@
   )
 
 -- ---------------------------------------------------------------------------
--- Selectors that differ.
--- ---------------------------------------------------------------------------
-
-\func ctorArgNe {i j : Nat} (ne : i /= j) : sCtorArg i /= sCtorArg j =>
-  \lam e => ne (pmap (\lam s => \case s \with { | sCtorArg k => k | _ => 0 }) e)
-
--- ---------------------------------------------------------------------------
 -- Environment segments.
 -- ---------------------------------------------------------------------------
-
-\func namesNil {P : Path -> \Set0} : NamesAt nil P => ()
-
-\func namesOne {P : Path -> \Set0} (k : NameKind) (q : Path) (v : Value) (h : P q) : NamesAt ((renderName k q, v) :: nil) P =>
-  ((k, q, idp, h), ())
 
 \func namesAppend {P : Path -> \Set0} {X Y : Env} (hx : NamesAt X P) (hy : NamesAt Y P) : NamesAt (X ++ Y) P \elim X
   | nil => hy
@@ -188,32 +173,33 @@
   | nil => ()
   | e :: X => ((h.1.1, h.1.2, h.1.3, f h.1.2 h.1.4), namesMono f h.2)
 
-\func envAssoc (X Y Z : Env) : (X ++ Y) ++ Z = X ++ (Y ++ Z) \elim X
-  | nil => idp
-  | e :: X => pmap (e ::) (envAssoc X Y Z)
+-- How the three instances relate, as a node's children are visited.
+\func withinUp {ext : Env} {s : Sel} {p : Path} (h : Within ext (s :: p)) : Within ext p =>
+  namesMono {\lam q => IsSuffix (s :: p) q} {\lam q => IsSuffix p q} (\lam q w => sufTrans (sufChild s (sufSelf p)) w) h
+
+\func withinNotAnc {ext : Env} {s : Sel} {p : Path} (h : Within ext (s :: p)) : NotAnc ext p =>
+  namesMono {\lam q => IsSuffix (s :: p) q} {\lam q => StrictSuf q p -> Empty} (\lam q w st => childNotStrict w st) h
+
+\func withinSibling {ext : Env} {s s' : Sel} (ne : s' /= s) {p : Path} (h : Within ext (s' :: p)) : IndepOf ext (s :: p) =>
+  namesMono {\lam q => IsSuffix (s' :: p) q} {\lam q => Indep q (s :: p)} (\lam q w => siblingIndep ne w) h
+
+\func indepNotAnc {X : Env} {p : Path} (h : IndepOf X p) : NotAnc X p =>
+  namesMono {\lam q => Indep q p} {\lam q => StrictSuf q p -> Empty} (\lam q ind st => indepNotStrict ind st) h
+
+\func indepDown {X : Env} (s : Sel) {p : Path} (h : IndepOf X p) : IndepOf X (s :: p) =>
+  namesMono {\lam q => Indep q p} {\lam q => Indep q (s :: p)} (\lam q ind => indepChild s ind) h
 
 -- THE fact: a name whose path the segment excludes is looked up past it.
 \func lookupSkip {P : Path -> \Set0} {X : Env} (h : NamesAt X P) (k : NameKind) {q : Path} (np : P q -> Empty) (env : Env)
   : lookupVar (X ++ env) (renderName k q) = lookupVar env (renderName k q) \elim X
   | nil => idp
   | a :: X =>
-    lookupOther a.2 (X ++ env) (\lam ee =>
+    lookupCons a.2 (X ++ env) (\lam ee =>
       \let | (k', q', e1, Pq') => h.1
            | (ek, eq) => renderName-inj (inv e1 *> ee)
       \in np (transport P eq Pq')
     ) *> lookupSkip h.2 k np env
 
--- Distinct kinds or distinct paths give distinct names.
+-- Names of distinct kinds are distinct.
 \func renderNeKind {k k' : NameKind} (ne : k /= k') (p p' : Path) : renderName k p /= renderName k' p' =>
   \lam e => ne (renderName-inj e).1
-
-\func renderNePath {p p' : Path} (ne : p /= p') (k k' : NameKind) : renderName k p /= renderName k' p' =>
-  \lam e => ne (renderName-inj e).2
-
--- One binding of a different name is skipped; the head binding is found.
-\func lookupCons {x y : JIdent} (v : Value) (env : Env) (ne : x /= y) : lookupVar ((x, v) :: env) y = lookupVar env y =>
-  lookupOther v env ne
-
-\func lookupHead (x : JIdent) (v : Value) (env : Env) : lookupVar ((x, v) :: env) x = just v =>
-  lookupSelf x v env
-
