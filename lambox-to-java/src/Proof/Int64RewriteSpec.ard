@@ -12,31 +12,20 @@
 \import Compiler.StringUtil (intEqB)
 
 -- =============================================================================
--- WHAT `Compiler/Int64Rewrite.ard` PRESERVES -- stated, with the side condition named.
+-- What the i64 rewrite pass (`Compiler/Int64Rewrite.ard`) preserves, stated.
 --
--- The pass is how a user chooses 64-bit arithmetic. Because it is a rewrite of
--- the PROGRAM rather than a reinterpretation of one, the choice has a
--- statement: two λ□ programs, one semantics, and a question about whether they
--- compute the same thing. That question is the content of this file, and the
--- answer is "not always, and here is exactly when".
---
--- Contrast what this replaces. Compiling i63 terms against `PRIM_*_LONG`
--- performed the same reinterpretation with no statement at all and was simply
--- incorrect -- `oracleDisagrees` in `ModelChecks/CorrectInstances.ard` proved it.
--- Nothing about the arithmetic has improved; what has improved is that the
--- trade is now expressible.
+-- The pass is how a user opts into 64-bit arithmetic: it rewrites the program,
+-- so the question "does the rewritten program compute the same thing?" is a
+-- comparison of two λ□ programs under one semantics and one oracle
+-- (`rewritePreserves`). The answer is "not always": `Int64RewriteSound` below
+-- is deliberately false and refuted in `ModelChecks/CorrectInstances.ard` by an
+-- addition that crosses 2^63.
 -- =============================================================================
 
--- Do an i63 value and an i64 value denote the same number?
---
--- An i63 payload is a magnitude in [0, 2^63); an i64 payload is a BIT PATTERN
--- whose meaning is `signed64` of it. They correspond when those agree, which
--- for values below 2^63 is just "the same number" -- so this is `false`
--- precisely where the rewrite has changed something.
---
--- Non-primitive values are compared structurally by `sameValue`, so a program
--- returning a constructor is covered too: the rewrite descends into
--- constructor fields, and a difference buried in one must not be missed.
+-- Do an i63 and an i64 value denote the same number? An i63 payload is a
+-- magnitude in [0, 2^63), an i64 payload a bit pattern read by `signed64`.
+-- `sameValue` compares constructors structurally, since the rewrite descends
+-- into their fields.
 \func samePrim (i j : Int) : Bool => intEqB i j
 
 \func sameValue (n : Nat) (a b : LBTerm) : Bool \elim n
@@ -54,11 +43,8 @@
   | x :: xs, y :: ys => sameValue n x y and sameValues n xs ys
   | _, _ => false
 
--- "Rewriting this program did not change what it computes", decidably, so that
--- instances are `idp` and a counterexample is a fact rather than an argument.
---
--- Both sides run under the SAME oracle (`lbAxioms`) and the same semantics.
--- That is the point: this compares two programs, not two interpretations.
+-- "Rewriting this program did not change what it computes", decidably, so
+-- that instances are `idp`. Both sides run under the same oracle `lbAxioms`.
 \func rewritePreserves (p : LBProgram) (fuel : Nat) : Bool =>
   \case runProgram lbAxioms p fuel, runProgram lbAxioms (rewriteProgram p) fuel \with {
     | rOk v, rOk v' => sameValue fuel v v'
@@ -66,25 +52,17 @@
   }
 
 -- ---------------------------------------------------------------------------
--- THE OBLIGATION, and it is FALSE as stated -- deliberately.
+-- The unconditional statement. FALSE, and refuted in
+-- `ModelChecks/CorrectInstances.ard`: it pins down what a true version must
+-- assume.
 --
--- `ModelChecks/CorrectInstances.ard` refutes it, with an addition that crosses
--- 2^63. Stating the unconditional version and refuting it is more useful than
--- stating a hedged version nobody checks, because it fixes exactly what a true
--- theorem has to assume.
---
--- WHAT A TRUE VERSION NEEDS. The two families agree on every operand pair
--- whose i63 result does not wrap: below 2^63 the i63 and i64 answers are the
--- same number, and `sub` is the only one that can wrap downwards into
--- disagreement from small inputs. So the side condition is a property of the
--- DERIVATION, not of the program text -- "no `axiomRun` performed during this
--- evaluation left [0, 2^63)" -- which is why it is not written as a `Bool` on
--- `p` here. Making it checkable means instrumenting the semantics to record
--- the operations it performed, which is a real piece of work and is not done.
---
--- That is also the practical reading of the trade: choosing i64 is safe for a
--- program whose arithmetic stays below 2^63, and the compiler cannot tell you
--- whether yours does.
+-- A true version needs: no oracle call during the evaluation leaves
+-- [0, 2^63) (below 2^63 the i63 and i64 answers are the same number; `sub`
+-- can wrap downwards from small inputs). That is a property of the
+-- derivation, not of the program text, so it is not a `Bool` on `p`; stating
+-- it needs a semantics that records the operations performed (not done).
+-- In practice: choosing i64 is safe for a program whose arithmetic stays
+-- below 2^63.
 -- ---------------------------------------------------------------------------
 
 \func Int64RewriteSound : \Type =>

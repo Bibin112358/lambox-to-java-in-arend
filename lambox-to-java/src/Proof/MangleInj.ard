@@ -4,7 +4,7 @@
 \import Data.Bool
 \import Data.Maybe
 \import Data.String (Byte, String, stringExt, ++ \as \infixr 5 ++S)
-\import Proof.NodePathUnique (byteDigit, horner, horner_natToStr, isDelim, NoDelim, noDelim_natToStr)
+\import Proof.NodePathUnique (byteDigit, horner, horner_natToStr, isDelim, NoByte, noByte_natToStr, noDelim_natToStr)
 \import Proof.OracleArith (eqTrue)
 \import Compiler.LambdaBox
 \import Logic
@@ -14,35 +14,24 @@
 \import Compiler.StringUtil
 
 -- =============================================================================
--- `mangleKername` is injective.
+-- `mangleKername` (`Compiler/Mangle.ard`) is injective (`mangleKername-inj`,
+-- used by `Proof/OracleShipped.ard` and `Proof/ClassLookup.ard`).
 --
--- `Compiler/Mangle.ard` states the argument -- the encoding is a prefix code -- and this
--- module mechanizes it, the same way `Proof/NodePathUnique.ard` does for
--- `renderName`: by a RETRACTION. A parser reads a mangled name back, and
--- `mangleKername-inj` is `parse (mangle k) = just k` applied to both sides.
---
--- TWO STAGES, because the two halves of the argument are different in kind:
---
---   * BYTES -> TOKENS (`tokenize`). The prefix-code half: a single `_` is always
+-- As in `Proof/NodePathUnique.ard`, by a retraction: a parser reads a mangled
+-- name back, and injectivity is `parse (mangle k) = just k` on both sides. The
+-- parser has two stages:
+--   * bytes -> tokens (`tokenize`): the prefix-code half. A single `_` is
 --     structural and followed by a tag letter, `__` is an escaped underscore,
---     `$<decimal>$` an escaped byte. This is the half with byte-level content,
---     and it is a state machine that consumes ONE byte per step -- `comp`,
---     `compU`, `dollar`, `num` and `tagAt` are its states -- so it is
---     structurally recursive and needs no fuel. A component's bytes are
---     collected in a function accumulator, which appends without a reverse.
---   * TOKENS -> KERNAME (`fromToks`). The grammar half: directories, then an
---     optional functor-and-index, then `mpDot` steps, then the name. `mpDot`
---     nests to the LEFT, so the tokens of `mpDot mp x` are those of `mp`
---     followed by one more, which is exactly the order a left-to-right parse
---     with the module path as accumulator rebuilds.
---
--- `Proof/NodePathUnique.ard`'s Arend facts apply here too: a String literal
--- unfolds only when matched, so every byte-level statement is about a
--- CONCATENATION with some `rest`; and byte literals of 100 and above cannot be
--- patterns, so the tag letters are looked up in a table.
---
--- Nothing in the compiler imports this; name it to check it:
--- `arend arend.yaml Formal.MangleInj`.
+--     `$<decimal>$` an escaped byte. A state machine consuming one byte per
+--     step (`comp`, `compU`, `dollar`, `num`, `tagAt`), so structurally
+--     recursive; a component's bytes are collected in a function accumulator.
+--   * tokens -> kername (`fromToks`): directories, an optional functor and
+--     index, `mpDot` steps, then the name. `mpDot` nests to the left, which is
+--     the order a left-to-right parse with the module path as accumulator
+--     rebuilds.
+-- The Arend facts of `Proof/NodePathUnique.ard`'s header apply: byte-level
+-- statements are about a concatenation with some `rest`, and tag letters are
+-- looked up in a table.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -93,7 +82,7 @@
 
 \func toksK (k : Kername) : Array MTok => toksMP k.kerModPath ++ (tN k.kerName.bytes :: nil)
 
--- The mangling IS the encoding of those tokens, behind the leading `c`.
+-- The mangling is the encoding of those tokens, behind the leading `c`.
 \lemma dirs_bytes (ds : Array String) (rest : Array Byte) : (mangleDirs ds).bytes ++ rest = encToks (dirToks ds) rest \elim ds
   | nil => idp
   | d :: ds => pmap (\lam (z : Array Byte) => 95 :: 100 :: z)
@@ -220,36 +209,16 @@
 -- Stage 1, read back.
 -- ---------------------------------------------------------------------------
 
-\func NoDollar (bs : Array Byte) : \Prop \elim bs
-  | nil => \Sigma
-  | b :: bs => \Sigma (isDollar b = false) (NoDollar bs)
-
-\lemma noDollar_++ {xs ys : Array Byte} (a : NoDollar xs) (b : NoDollar ys) : NoDollar (xs ++ ys) \elim xs
-  | nil => b
-  | x :: xs => (a.1, noDollar_++ a.2 b)
-
-\lemma noDollar_digit (r : Fin 10) : NoDollar (digitLit r).bytes \elim r
+\lemma noDollar_digit (r : Fin 10) : NoByte (\lam b => isDollar b) (digitLit r).bytes \elim r
   | 0 => (idp, ()) | 1 => (idp, ()) | 2 => (idp, ()) | 3 => (idp, ()) | 4 => (idp, ())
   | 5 => (idp, ()) | 6 => (idp, ()) | 7 => (idp, ()) | 8 => (idp, ()) | 9 => (idp, ())
 
-\lemma noDollar_natToStrFuel (fuel n : Nat) : NoDollar (natToStrFuel fuel n).bytes \elim fuel
-  | 0 => noDollar_digit 0
-  | suc fuel => noDollar_natToStrStep fuel (n Nat.div 10) (n Nat.mod 10)
-
-\lemma noDollar_natToStrStep (fuel q : Nat) (r : Fin 10) : NoDollar (natToStrStep fuel q r).bytes \elim q
-  | 0 => noDollar_digit r
-  | suc q => noDollar_++ (noDollar_natToStrFuel fuel (suc q)) (noDollar_digit r)
-
-\lemma noDollar_natToStr (n : Nat) : NoDollar (natToStr n).bytes \elim n
-  | 0 => noDollar_digit 0
-  | suc n => noDollar_natToStrFuel (suc n) (suc n)
-
-\lemma dollarScan (k : Kind) (acc : Array Byte -> Array Byte) (n : Nat) (ds rest : Array Byte) (nd : NoDollar ds)
+\lemma dollarScan (k : Kind) (acc : Array Byte -> Array Byte) (n : Nat) (ds rest : Array Byte) (nd : NoByte (\lam b => isDollar b) ds)
   : dollar k acc n (ds ++ 36 :: rest) = comp k (\lam xs => acc (toByte (horner n ds) :: xs)) rest \elim ds
   | nil => idp
   | d :: ds => pmap (dollarK k acc n d (ds ++ 36 :: rest)) nd.1 *> dollarScan k acc _ ds rest nd.2
 
-\lemma numScan (n : Nat) (ds rest : Array Byte) (nd : NoDelim ds) : num n (ds ++ rest) = num (horner n ds) rest \elim ds
+\lemma numScan (n : Nat) (ds rest : Array Byte) (nd : NoByte isDelim ds) : num n (ds ++ rest) = num (horner n ds) rest \elim ds
   | nil => idp
   | d :: ds => pmap (numK n d (ds ++ rest)) nd.1 *> numScan _ ds rest nd.2
 
@@ -283,7 +252,7 @@
            ++-assoc {Byte} {N ++ ("$" : String).bytes} {M} {rest} *> ++-assoc {Byte} {N} {("$" : String).bytes} {M ++ rest}
          | q : toByte (horner 0 N) = b => pmap toByte (horner_natToStr b) *> fin_mod_id b
     \in pmap (dollar k acc 0) assoc *>
-        dollarScan k acc 0 N (M ++ rest) (noDollar_natToStr b) *>
+        dollarScan k acc 0 N (M ++ rest) (noByte_natToStr (\lam b => isDollar b) noDollar_digit b) *>
         pmap (\lam (y : Byte) => comp k (\lam xs => acc (y :: xs)) (M ++ rest)) q *>
         compMangle k (\lam xs => acc (b :: xs)) s rest
 

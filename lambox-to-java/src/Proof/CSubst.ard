@@ -1,5 +1,5 @@
+\import Arith.Nat
 \import Data.Array (mkArray, ++)
-\import Proof.CSubstLam
 \import Semantics.LambdaBoxEval
 \import Compiler.LambdaBox
 \import Logic
@@ -8,63 +8,73 @@
 \import Paths.Meta
 
 -- =============================================================================
--- The substitution algebra of λ□'s `csubst`, on the FULL term language.
+-- The substitution algebra of λ□'s closed substitution `csubst`
+-- (`Semantics/LambdaBoxEval.ard`), used by `Proof/SubstToEnv.ard` to relate
+-- evaluation by substitution to evaluation in an environment.
 --
--- `Proof/CSubstLam.ard` proves the three facts a simulation proof needs from
--- the λ□ side (scope, `substK`, `substCommute`) on the λ-fragment only. This is
--- the same development for every `LBTerm` constructor, with the same proof
--- shapes; `CSubstLam` stays as it is (its clients use `LC`) and its `substK`
--- and `natCompare` lemmas are reused.
+--   * `LCf k t`: `t` has its free de Bruijn indices below `k`; `LCf 0` is
+--     "closed". `case` branches and `fix` bodies sit under `|binders|` resp.
+--     `|defs|` extra indices, on the LEFT (`L + k`), exactly where `csubst`
+--     puts them. `fvar` is out of scope: a closed λ□ program has none.
+--   * `csClosedF`: a term in scope `k` is untouched by a substitution at `k`
+--     or above. `csScopeF`: substituting a closed term at `k` removes `k`.
+--   * `csCommGen`: two closed substitutions at depths `k <= K` commute. It
+--     gives `substCommuteF` (a beta step on a closure's substituted body is
+--     the closure's environment extended by the argument) and
+--     `substKAppend` (the multi-substitutions of `iotaRed` and `cunfoldFix`).
 --
--- What is new compared to the fragment:
---
---   * `LCf k t`: scope for the whole language. `case` branches and `fix`
---     bodies live under `|binders|` / `|defs|` extra indices, exactly the
---     depths `csubst` uses for them. `fvar` is out of scope (`Empty`), as a
---     closed λ□ program never contains one.
---   * the binder cases put the depth on the LEFT (`L + k`), which is where
---     `csubst` puts it; the proofs recurse at `m + (L + k)` and transport along
---     `natPlusSwap`. Arrays are compared pointwise (`extArr`) or rebuilt with
---     `mkArray` inside a `path`.
---   * `csCommGen`: two closed substitutions at depths `k <= K` commute. The
---     adjacent case `csCommuteF` is `K = k`; the general one is what multi-
---     substitution needs (`substKAppend`, used for `case` via `iotaRed` and for
---     `fix` via `cunfoldFix`). No scope hypothesis is needed for it: `csubst`
---     leaves `fvar` alone, so `fvar` is not an obstacle.
+-- `csubst` never lifts, so every fact needs closedness of what is
+-- substituted. The binder cases recurse at `m + (L + k)` and transport along
+-- `natPlusSwap`; arrays are compared pointwise (`extArr`) or rebuilt with
+-- `mkArray` inside a `path`.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- Arithmetic (Prelude `Nat.+` recurses on its SECOND argument).
+-- Arithmetic. Prelude `Nat.+` recurses on its SECOND argument.
 -- ---------------------------------------------------------------------------
 
-\func natPlus0L (y : Nat) : 0 Nat.+ y = y \elim y
-  | 0 => idp
-  | suc y => pmap suc (natPlus0L y)
+\func natPlus0L (y : Nat) : 0 Nat.+ y = y => NatSemiring.zro-left
 
-\func natPlusSucL (x y : Nat) : suc x Nat.+ y = suc (x Nat.+ y) \elim y
-  | 0 => idp
-  | suc y => pmap suc (natPlusSucL x y)
-
-\func natPlusComm (x y : Nat) : x Nat.+ y = y Nat.+ x \elim y
-  | 0 => inv (natPlus0L x)
-  | suc y => pmap suc (natPlusComm x y) *> inv (natPlusSucL y x)
-
-\func natPlusAssoc (x y z : Nat) : (x Nat.+ y) Nat.+ z = x Nat.+ (y Nat.+ z) \elim z
-  | 0 => idp
-  | suc z => pmap suc (natPlusAssoc x y z)
+\func natPlusSucL (x y : Nat) : suc x Nat.+ y = suc (x Nat.+ y) =>
+  NatSemiring.+-comm {suc x} {y} *> pmap suc (NatSemiring.+-comm {y} {x})
 
 \func natPlusSwap (l m k : Nat) : l Nat.+ (m Nat.+ k) = m Nat.+ (l Nat.+ k) =>
-  inv (natPlusAssoc l m k) *> pmap (\lam x => x Nat.+ k) (natPlusComm l m) *> natPlusAssoc m l k
+  inv (NatSemiring.+-assoc {l} {m} {k}) *> pmap (\lam x => x Nat.+ k) (NatSemiring.+-comm {l} {m})
+    *> NatSemiring.+-assoc {m} {l} {k}
+
+-- `natCompare` (Coq's `Nat.compare`), as `csubstVar` consumes it.
+
+\func ncEq {k n : Nat} (e : natCompare k n = cEq) : k = n \elim k, n
+  | 0, 0 => idp
+  | 0, suc n => contradiction
+  | suc k, 0 => contradiction
+  | suc k, suc n => pmap suc (ncEq e)
+
+\func ncGtPlus (m : Nat) {k n : Nat} (e : natCompare k n = cGt) : natCompare (m Nat.+ k) n = cGt \elim k, n
+  | 0, 0 => contradiction
+  | 0, suc n => contradiction
+  | suc k, 0 => idp
+  | suc k, suc n => ncGtPlus m e
+
+\func ncGtSuc {k n : Nat} (e : natCompare k n = cGt) : natCompare (suc k) n = cGt \elim k, n
+  | 0, 0 => contradiction
+  | 0, suc n => contradiction
+  | suc k, 0 => idp
+  | suc k, suc n => ncGtSuc e
+
+\func ncSucSelf (k : Nat) : natCompare (suc k) k = cGt \elim k
+  | 0 => idp
+  | suc k => ncSucSelf k
+
+\func ncNotLt0 {k : Nat} (e : natCompare k 0 = cLt) : Empty \elim k
+  | 0 => contradiction
+  | suc k => contradiction
 
 \func ncLtPlus (d : Nat) {k n : Nat} (e : natCompare (d Nat.+ k) n = cLt) : natCompare k n = cLt \elim k, n
   | 0, 0 => absurd (ncNotLt0 e)
   | 0, suc n => idp
   | suc k, 0 => contradiction
   | suc k, suc n => ncLtPlus d e
-
--- ---------------------------------------------------------------------------
--- Arrays.
--- ---------------------------------------------------------------------------
 
 -- An array rebuilt pointwise is the array.
 \func extArr {A : \Type} (l : Array A) (f : Fin l.len -> A) (p : \Pi (j : Fin l.len) -> f j = l j)
@@ -89,14 +99,10 @@
   | fix defs _ => \Pi (j : Fin defs.len) -> LCf (defs.len Nat.+ k) (defs j).defBody
   | prim _ => \Sigma
 
--- Every value of `s` closed.
+-- Every entry of `s` is closed.
 \func AllCf (s : Array LBTerm) : \Set0 \elim s
   | nil => \Sigma
   | t :: s => \Sigma (LCf 0 t) (AllCf s)
-
-\func allCfAt {s : Array LBTerm} (c : AllCf s) (i : Fin s.len) : LCf 0 (s i) \elim s, i
-  | t :: s, 0 => c.1
-  | t :: s, suc i => allCfAt c.2 i
 
 \func allCfOf {s : Array LBTerm} (h : \Pi (i : Fin s.len) -> LCf 0 (s i)) : AllCf s \elim s
   | nil => ()
@@ -245,13 +251,13 @@
       idx)
   | prim _ => idp
 
--- Adjacent depths. The scope hypothesis `lb` is NOT needed (kept for the API).
-\func csCommuteF {a s : LBTerm} (ca : LCf 0 a) (cs : LCf 0 s) (k : Nat) {j : Nat} (b : LBTerm) (lb : LCf j b)
+-- The adjacent case `K = k`.
+\func csCommuteF {a s : LBTerm} (ca : LCf 0 a) (cs : LCf 0 s) (k : Nat) (b : LBTerm)
   : csubst a k (csubst s (suc k) b) = csubst s k (csubst a k b) =>
   transport (\lam D => csubst a k (csubst s (suc D) b) = csubst s D (csubst a k b)) (natPlus0L k) (csCommGen ca cs 0 k b)
 
 -- ---------------------------------------------------------------------------
--- Substituting an environment (`substK` from `CSubstLam`).
+-- Substituting an environment (`substK`), constructor by constructor.
 -- ---------------------------------------------------------------------------
 
 \func skBoxF (k : Nat) (sg : Array LBTerm) : substK k sg box = box \elim sg
@@ -320,17 +326,17 @@
   : LCf m (substK m sg b) \elim sg
   | nil => lb
   | s :: sg => skScopeF m sg csg.2 (csubst s m b)
-      (transport (\lam D => LCf D (csubst s m b)) (natPlusComm sg.len m)
-        (csScopeF csg.1 sg.len m b (transport (\lam D => LCf (suc D) b) (natPlusComm m sg.len) lb)))
+      (transport (\lam D => LCf D (csubst s m b)) (NatSemiring.+-comm {sg.len} {m})
+        (csScopeF csg.1 sg.len m b (transport (\lam D => LCf (suc D) b) (NatSemiring.+-comm {m} {sg.len}) lb)))
 
--- THE LEMMA: the beta step on a closure's substituted body is the closure's
--- environment extended with the argument.
+-- The beta step on a closure's substituted body is the closure's environment
+-- extended with the argument.
 \func substCommuteF {a : LBTerm} (ca : LCf 0 a) (sg : Array LBTerm) (csg : AllCf sg) (b : LBTerm) (lb : LCf (suc sg.len) b)
   : csubst a 0 (substK 1 sg b) = substK 0 (a :: sg) b \elim sg
   | nil => idp
   | s :: sg =>
     substCommuteF ca sg csg.2 (csubst s 1 b) (csScopeF csg.1 sg.len 1 b lb)
-      *> pmap (substK 0 sg) (csCommuteF ca csg.1 0 b lb)
+      *> pmap (substK 0 sg) (csCommuteF ca csg.1 0 b)
 
 -- ---------------------------------------------------------------------------
 -- Multi-substitution (`case` via `iotaRed`, `fix` via `cunfoldFix`).
@@ -351,7 +357,7 @@
   | nil => idp
   | a :: tau =>
     pmap (substK k tau)
-      (transport (\lam D => csubst a k (csubst s (suc D) b) = csubst s D (csubst a k b)) (natPlusComm tau.len k)
+      (transport (\lam D => csubst a k (csubst s (suc D) b) = csubst s D (csubst a k b)) (NatSemiring.+-comm {tau.len} {k})
                  (csCommGen ctau.1 cs tau.len k b))
       *> skCsubstPast cs k tau ctau.2 (csubst a k b)
 
@@ -364,20 +370,14 @@
            (transport (\lam D => substK 0 tau (csubst s D b) = csubst s 0 (substK 0 tau b)) (natPlus0L tau.len)
                       (skCsubstPast csg.1 0 tau ctau b))
 
--- `++` is `Data.Array.++`. The scope hypothesis `lb` is NOT needed (kept for the API).
-\func substKAppend (tau sg : Array LBTerm) (ctau : AllCf tau) (csg : AllCf sg) (b : LBTerm) (lb : LCf (tau.len Nat.+ sg.len) b)
+-- Substituting `tau` below an already substituted `sg` is substituting `tau ++ sg`.
+\func substKAppend (tau sg : Array LBTerm) (ctau : AllCf tau) (csg : AllCf sg) (b : LBTerm)
   : substK 0 tau (substK tau.len sg b) = substK 0 (tau ++ sg) b =>
   skSwapEnv tau sg ctau csg b *> inv (skAppend 0 tau sg b)
 
 -- ---------------------------------------------------------------------------
--- Closedness of the environments `iotaRed` and `cunfoldFix` substitute.
+-- Lengths.
 -- ---------------------------------------------------------------------------
-
-\func allCfRevApp {xs acc : Array LBTerm} (cx : AllCf xs) (cacc : AllCf acc) : AllCf (revAppendArr xs acc) \elim xs
-  | nil => cacc
-  | x :: xs => allCfRevApp cx.2 (cx.1, cacc)
-
-\func allCfRev {xs : Array LBTerm} (c : AllCf xs) : AllCf (revArr xs) => allCfRevApp c ()
 
 \func lenRevApp {A : \Type} (xs acc : Array A) : (revAppendArr xs acc).len = acc.len Nat.+ xs.len \elim xs
   | nil => idp
@@ -385,28 +385,3 @@
 
 \func lenRev {A : \Type} (xs : Array A) : (revArr xs).len = xs.len => lenRevApp xs nil *> natPlus0L xs.len
 
-\func allCfDrop (n : Nat) {xs : Array LBTerm} (c : AllCf xs) : AllCf (dropArr n xs) \elim n, xs
-  | 0, xs => c
-  | suc n, nil => ()
-  | suc n, x :: xs => allCfDrop n c.2
-
--- `|dropArr n xs| = m` when `|xs| = n + m` (no truncated subtraction needed).
-\func lenDrop {A : \Type} (n : Nat) (xs : Array A) (m : Nat) (h : xs.len = n Nat.+ m) : (dropArr n xs).len = m \elim n, xs
-  | 0, xs => h *> natPlus0L m
-  | suc n, nil => absurd (zeroNotSuc (h *> natPlusSucL n m))
-  | suc n, x :: xs => lenDrop n xs m (pmap natPred (h *> natPlusSucL n m))
-  \where
-    \func zeroNotSuc {x : Nat} (p : 0 = suc x) : Empty => contradiction
-
-\func allCfFixAux (defs : Array (FixDef LBTerm)) (c : LCf 0 (fix defs 0)) (n : Nat) : AllCf (fixSubstAux defs n) \elim n
-  | 0 => ()
-  | suc n => (c, allCfFixAux defs c n)
-
-\func allCfFixSubst {defs : Array (FixDef LBTerm)} {idx : Nat} (c : LCf 0 (fix defs idx)) : AllCf (fixSubst defs) =>
-  allCfFixAux defs c defs.len
-
-\func lenFixAux (defs : Array (FixDef LBTerm)) (n : Nat) : (fixSubstAux defs n).len = n \elim n
-  | 0 => idp
-  | suc n => pmap suc (lenFixAux defs n)
-
-\func lenFixSubst (defs : Array (FixDef LBTerm)) : (fixSubst defs).len = defs.len => lenFixAux defs defs.len

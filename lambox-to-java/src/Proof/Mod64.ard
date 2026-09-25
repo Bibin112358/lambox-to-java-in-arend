@@ -18,19 +18,16 @@
 -- =============================================================================
 -- Arithmetic modulo 2^64, for the i64 entries of `Proof/OracleShipped.ard`.
 --
--- The JVM (`Semantics/RtLong.ard`'s `wrap64`) and λ□ (`Int63.signed64` of a
--- `wrap64u` bit pattern) both read an integer modulo 2^64, by DIFFERENT
--- functions. That they agree -- and that `wrap64` ignores multiples of 2^64,
--- which is what makes `(signed a) + (signed b)` wrap to the same `long` as
--- `a + b` -- is the content of this file.
+-- The JVM (`RtLong.wrap64`) and λ□ (`Int63.signed64` of a `wrap64u` bit
+-- pattern) both read an integer modulo 2^64, by different functions. This
+-- file shows they agree (`signed-wrapu`) and that `wrap64` ignores multiples
+-- of 2^64 (`wrap64-cong`), so `signed a + signed b` wraps to the same `long`
+-- as `a + b`.
 --
--- THE MODULUS IS ABSTRACT until the very end. A symbolic `x + 2^64` on `Nat`
--- (or `pos x + pos 2^64` on `Int`, which reduces to it) normalizes by peeling
--- 2^64 `suc`s, which is what exhausted the checker's memory in an earlier
--- version of `Proof/OracleArith.ard`. So the theory is developed for any
--- modulus `suc m`, over `modU`, and `modU64` is identified with its instance
--- only in the last section, where the literal appears nowhere but as an
--- argument.
+-- The modulus stays abstract (`suc m`, over `modU`) until the last section: a
+-- symbolic `x + 2^64` normalizes by peeling 2^64 `suc`s and exhausts the
+-- checker. `modU64` is identified with its instance only at the end, where
+-- the literal appears only as an argument.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -137,7 +134,7 @@
   | pos n => idp
   | neg (suc n) => negModU64-eq _
 
--- `wrap64` ignores multiples of 2^64: the JVM's arithmetic IS modular.
+-- `wrap64` ignores multiples of 2^64: the JVM's arithmetic is modular.
 \lemma wrap64-cong (x k : Int) : wrap64 (x + k * pos pow2_64) = wrap64 x =>
   pmap (\lam r => readS64 r (r Nat.- pow2_63)) (modU64-eq _ *> modU-cong m64 x k *> inv (modU64-eq x))
 
@@ -160,7 +157,7 @@
   | pos n => idp
   | neg (suc n) => wuNeg (suc n Nat.mod int64Mod) (mod<right {suc n} {suc m64} suc/=0)
 
--- THE BRIDGE: λ□'s signed reading of its bit pattern is the JVM's `long`.
+-- λ□'s signed reading of its bit pattern is the JVM's `long`.
 \lemma signed-wrapu (z : Int) : signed64 (wrap64u z) = wrap64 z =>
   signed64-read (wrap64u z) *> pmap (\lam (r : Nat) => readSigned pow2_64 r (r Nat.- int63Mod)) (wrap64u-eq z)
 
