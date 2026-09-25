@@ -16,37 +16,21 @@
 \import Compiler.StringUtil (intEqB)
 
 -- =============================================================================
--- THE SHIPPED ORACLE IS FIRST-ORDER, BOTH WAYS: `OracleFO lbAxioms`
--- (`oracleFOShipped`) and `OracleArgsFO lbAxioms` (`oracleArgsFOShipped`).
+-- The shipped oracle `lbAxioms` is first-order both ways: its results are
+-- first-order values (`oracleFOShipped : OracleFO lbAxioms`, the hypothesis of
+-- `Proof/SubstToEnv.ard`, whose environment semantics embeds results with
+-- `ofFO`) and it only computes on first-order arguments (`oracleArgsFOShipped`).
 --
--- `Proof/SubstToEnv.ard` assumes of the oracle it is given that whatever it
--- returns is a first-order value (`FOVal`), because the environment semantics
--- embeds the result back with `ofFO`, which is faithful only on those. This
--- file discharges that assumption for the oracle the compiler actually ships,
--- `Semantics/LambdaBoxAxioms.ard`'s `lbAxioms`, and proves the dual fact too: the oracle
--- only ever COMPUTES on first-order arguments.
+-- Both are facts about the shape of `axiomRunLb`, not its arithmetic: every
+-- `just` it returns is `lbInt`/`lbInt64` (a `prim`) or `lbBool` (a nullary
+-- `construct`), and every `just` goes through `twoOf int63Of`/`twoOf int64Of`,
+-- which succeed only on two `prim` literals. `wrap63`/`wrap64u` stay abstract.
 --
--- Both are shallow facts about the SHAPE of `axiomRunLb`, not about its
--- arithmetic:
---   * RESULTS: every `just` it produces is `lbInt`/`lbInt64` (a `prim`) or
---     `lbBool` (a `construct` with no arguments). Which operation ran, and on
---     what numbers, never matters -- in particular nothing here ever computes
---     with an i63/i64 payload (`wrap63`/`wrap64u` stay abstract).
---   * ARGUMENTS: every `just` goes through `twoOf int63Of` or `twoOf int64Of`,
---     which succeed only on exactly two `prim` literals. (Stronger than stated:
---     the arguments are PRIMITIVES, not merely first-order.)
---
--- THE DEVICE, as in `Proof/OracleShipped.ard`'s `rtNone`: the operation name
--- is arbitrary here (it is `kn.kerName`), so the `\case op == ...` chains of
--- `natRun`/`int63Run`/`int64Run` and the `modPathEq` tests of `axiomRunLb` do
--- not reduce. Each is split by `\case e \as b, idp : e = b` and the GOAL -- the
--- unfolded body -- is rewritten with the equation, never a hypothesis. The
--- argument half is therefore stated as an implication `IsJ (...) -> ...` so the
--- oracle call sits in the goal.
---
--- Self-contained on purpose: `Proof/OracleShipped.ard` has the same decoding
--- lemmas (`inv63`/`invBoth`), but importing it would pull in the whole
--- backend-agreement development for four small facts about `Maybe`.
+-- The operation name is arbitrary (`kn.kerName`), so the `\case op == ...`
+-- chains of `natRun`/`int63Run`/`int64Run` do not reduce. Each test is split by
+-- `\case e \as b, idp : e = b` and the goal (the unfolded body) is rewritten --
+-- a `\case` does not reduce under a hypothesis about its scrutinee. Hence the
+-- argument half is stated as `IsJ (...) -> ...`, with the oracle call in the goal.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -66,7 +50,7 @@
 \func ArgsFO (xs : Array LBTerm) : \Prop => \Pi (i : Fin xs.len) -> FOVal (xs i)
 
 -- ---------------------------------------------------------------------------
--- RESULTS: what each helper returns is first-order.
+-- Results: what each helper returns is first-order.
 -- ---------------------------------------------------------------------------
 
 -- `lbBool` is a constructor with no arguments.
@@ -151,7 +135,7 @@
   })
 
 -- ---------------------------------------------------------------------------
--- ARGUMENTS: a `just` means two `prim` literals went in.
+-- Arguments: a `just` means two `prim` literals went in.
 -- ---------------------------------------------------------------------------
 
 \lemma int63OfFO {t : LBTerm} (h : IsJ (int63Of t)) : FOVal t \elim t
@@ -226,7 +210,7 @@
   })
 
 -- ---------------------------------------------------------------------------
--- THE THEOREMS.
+-- The theorems.
 -- ---------------------------------------------------------------------------
 
 \func oracleFOShipped : OracleFO lbAxioms =>

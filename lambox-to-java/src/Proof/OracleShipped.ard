@@ -10,6 +10,7 @@
 \import Semantics.JavaValue
 \import Semantics.LambdaBoxEval
 \import Semantics.LambdaBoxAxioms
+\import Proof.LambdaBoxSound (kernameEq-eq)
 \import Proof.MangleInj (mangleKername-inj)
 \import Proof.Mod64
 \import Proof.OracleArith
@@ -32,32 +33,26 @@
 \import Compiler.StringUtil
 
 -- =============================================================================
--- THE ORACLE HYPOTHESIS HOLDS AT THE SHIPPED PAIR: `OracleAgree lbAxioms
--- rtInt63` (`oracleShipped`, at the end).
+-- The shipped oracle and runtime agree: `oracleShipped : OracleAgree lbAxioms
+-- rtInt63` (at the end), the oracle hypothesis of `Proof/Statement.ard`
+-- discharged for what the compiler ships. It goes entry by entry through
+-- `JavaAxioms.javaAxioms` (all 38):
+--   * arity: an axiom compiled to a runtime constant has the same arity on
+--     both sides;
+--   * value: on related arguments, the λ□ oracle's result is related to what
+--     the runtime computes (16 computable entries; the i64 ones go through
+--     `Proof/Mod64.ard`);
+--   * no stub: an axiom λ□ can compute is never compiled to a throwing stub.
+-- Inverting "the table lookup found name `nm`" to "`kn` is entry i" uses
+-- `mangleKername-inj` (`Proof/MangleInj.ard`).
 --
--- `Proof/Statement.ard`'s correctness statement assumes the λ□ axiom oracle and
--- the Java runtime model agree on every axiom the backend emits. This file
--- discharges that assumption for the oracle and runtime the compiler actually
--- ships, entry by entry of `JavaAxioms.javaAxioms` (all 38):
---
---   * ARITY: an axiom compiled to a runtime constant has the same arity on both
---     sides. This needed `Semantics/RtLong.ard` to model the four constants
---     `Nat.div`/`mod`/`ble`/`blt` route to, which it did not.
---   * VALUE: on related arguments, what the λ□ oracle returns is related to
---     what the runtime computes (16 λ□-computable entries; the i64 ones go
---     through the modular arithmetic of `Proof/Mod64.ard`).
---   * NO STUB: an axiom λ□ can compute is never compiled to a throwing stub.
---
--- Inverting "the table lookup found name `nm`" to "`kn` is entry i" needs the
--- name mangling to be injective: `Proof/MangleInj.ard`.
---
--- A SPEC BUG this found: Arend's `Nat.div n 0` is `n`, and the λ□ oracle used
--- it, while Lean (`Nat.div_zero`) and `Rt.PRIM_DIV_LONG` give 0. The oracle now
--- states Lean's semantics (`leanDiv`/`leanMod`, `Semantics/LambdaBoxAxioms.ard`).
+-- Note: the oracle divides as Lean does (`Nat.div n 0 = 0`, `leanDiv`/
+-- `leanMod` in `Semantics/LambdaBoxAxioms.ard`), matching `Rt.PRIM_DIV_LONG`;
+-- Arend's own `Nat.div n 0` is `n`.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- Small facts about `Maybe` and `Bool`.
+-- `Maybe`.
 -- ---------------------------------------------------------------------------
 
 \func IsNothing {A : \Type} (m : Maybe A) : \Prop \elim m
@@ -68,40 +63,15 @@
 
 \lemma justNo {A : \Type} {x : A} (p : just x = nothing) : Empty => noJust (inv p)
 
-\lemma andL {a b : Bool} (p : (a and b) = true) : a = true => (and.toSigma p).1
-
-\lemma andR {a b : Bool} (p : (a and b) = true) : b = true => (and.toSigma p).2
-
 -- ---------------------------------------------------------------------------
 -- `kernameEq` is sound.
 -- ---------------------------------------------------------------------------
 
-\lemma dirPathEq-sound {a b : DirPath} (p : dirPathEq a b = true) : a = b \elim a, b
-  | nil, nil => idp
-  | nil, _ :: _ => \case p \with {}
-  | _ :: _, nil => \case p \with {}
-  | x :: a, y :: b => pmap2 (\lam (s : Ident) (r : DirPath) => s :: r) (eqTrue (andL p)) (dirPathEq-sound (andR p))
-
-\lemma modPathEq-sound {a b : ModPath} (p : modPathEq a b = true) : a = b \elim a, b
-  | mpFile p1, mpFile q => pmap mpFile (dirPathEq-sound p)
-  | mpFile _, mpBound _ _ _ => \case p \with {}
-  | mpFile _, mpDot _ _ => \case p \with {}
-  | mpBound _ _ _, mpFile _ => \case p \with {}
-  | mpBound p1 x m, mpBound q y n =>
-    \let | e1 => dirPathEq-sound (andL (andL p))
-         | e2 : x = y => eqTrue (andR (andL p))
-         | e3 : m = n => eqTrue (andR p)
-    \in pmap2 (\lam (d : DirPath) (z : \Sigma Ident Nat) => mpBound d z.1 z.2) e1 (pmap2 (\lam (i : Ident) (k : Nat) => (i, k)) e2 e3)
-  | mpBound _ _ _, mpDot _ _ => \case p \with {}
-  | mpDot _ _, mpFile _ => \case p \with {}
-  | mpDot _ _, mpBound _ _ _ => \case p \with {}
-  | mpDot p1 x, mpDot q y => pmap2 mpDot (modPathEq-sound (andL p)) (eqTrue (andR p))
-
-\lemma kernameEq-sound {a b : Kername} (p : kernameEq a b = true) : a = b =>
-  pmap2 (\lam m n => \new Kername m n) (modPathEq-sound (andL p)) (eqTrue (andR p))
+-- `Proof/LambdaBoxSound.ard`'s `kernameEq-eq`, under the name `Proof/ClassLookup.ard` imports.
+\lemma kernameEq-sound {a b : Kername} (p : kernameEq a b = true) : a = b => kernameEq-eq p
 
 -- ---------------------------------------------------------------------------
--- Inverting the backend's lookup: a name `axiomImpl` finds IS a table entry.
+-- Inverting the backend's lookup: a name `axiomImpl` finds is a table entry.
 -- ---------------------------------------------------------------------------
 
 \func AllEntries (P : Kername -> \Type) (tbl : Array (\Sigma Kername JExpr)) : \Type =>
@@ -340,9 +310,7 @@
 \func relPos (q : Nat) (hq : q < pow2_63) : ValRel (lbInt (pos q)) (vLong (pos q)) =>
   (1, transportInv (\lam (z : Nat) => intEqB (pos z) (pos q) = true) (wrap63-lt hq) (intEqB-refl (pos q)))
 
-\lemma le+ (x y : Nat) : x <= x Nat.+ y \elim y
-  | 0 => <=-refl
-  | suc y => <=-transitive (le+ x y) (<=-less id<suc)
+\lemma le+ (x y : Nat) : x <= x Nat.+ y => NatSemiring.<=_+ <=-refl zero<=_
 
 \lemma div<=left (a b : Nat) : a Nat.div suc b <= a =>
   <=-transitive (transport (\lam z => a Nat.div suc b <= z) NatSemiring.+-comm (le+ (a Nat.div suc b) (a Nat.div suc b Nat.* b))) (div_*<=id {a} {suc b})
@@ -595,7 +563,7 @@
   | k :: ks => notInStep h k ks all.1 (notIn h ks all.2) (kernameEq kn k) idp
 
 -- ---------------------------------------------------------------------------
--- THE THEOREM.
+-- The theorem.
 -- ---------------------------------------------------------------------------
 
 \func entryOf {kn : Kername} {nm : JIdent} (h : axiomRtName kn = just nm) : Entry kn =>

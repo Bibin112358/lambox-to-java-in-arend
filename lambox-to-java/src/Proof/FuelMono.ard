@@ -11,21 +11,16 @@
 \import Paths.Meta
 
 -- =============================================================================
--- OBLIGATION (1) OF `Proof/Statement.ard`, PROVED: FUEL MONOTONICITY.
+-- Fuel monotonicity of the Java-fragment evaluator (`Semantics/JavaEval.ard`):
+-- a run that returns `rOk r` at fuel `n` returns the same `rOk r` at any
+-- larger fuel. Proofs by induction on derivations use it to combine the
+-- clocks of sub-derivations (`Proof/JavaExec.ard`).
 --
--- "A run that succeeds survives a bigger clock": if the evaluator returns
--- `rOk r` at fuel `n`, it returns the same `rOk r` at every `m >= n`. This is
--- what lets a proof by induction on a λ□ derivation combine the clocks of its
--- sub-derivations (take the max), and what lifts a refutation at one clock to
--- one at every clock.
---
--- The proof is the obvious one, and the file's only design decision is to make
--- it obvious: one lemma per function of the evaluator's mutual cycle, all by
--- induction on the fuel together, each saying `F n .. <= F (suc n) ..` for the
--- order `Mono` below. Every clause of the evaluator is `bindRes` of recursive
--- calls at the SAME fuel, so each clause of the proof is `bindMono` of the
--- induction hypotheses; the continuations that do not recurse are identical at
--- both clocks (`monoRefl`).
+-- One lemma per function of the evaluator's mutual cycle, each stating
+-- `F n .. <= F (suc n) ..` for the order `Mono`. Every clause of the
+-- evaluator is `bindRes` of recursive calls at the same fuel, so each clause
+-- of the proof is `bindMono` of the induction hypotheses; continuations that
+-- do not recurse are identical at both clocks (`monoRefl`).
 -- =============================================================================
 
 -- `a` is below `b`: whatever value `a` produces, `b` produces too. Timeouts and
@@ -196,11 +191,9 @@
   })
 
 -- ---------------------------------------------------------------------------
--- Any amount of extra fuel, and the whole-program runner.
---
--- Stated as `n + k` rather than `n <= m`, because `+` recurses on its second
--- argument: `n + suc k` IS `suc (n + k)`, so the step lemmas iterate with no
--- arithmetic at all.
+-- Any amount of extra fuel. Stated as `n + k` rather than `n <= m`: `+`
+-- recurses on its second argument, so `n + suc k` is `suc (n + k)` and the
+-- step lemmas iterate with no arithmetic.
 -- ---------------------------------------------------------------------------
 
 \func evalExprMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (env : Env) (e : JExpr)
@@ -212,23 +205,6 @@
   : Mono (execStmts rt cls n env ss) (execStmts rt cls (n Nat.+ k) env ss) \elim k
   | 0 => monoRefl
   | suc k => monoTrans (execStmtsMonoPlus rt cls n k env ss) (execStmtsMono rt cls (n Nat.+ k) env ss)
-
-\func runClassMono (rt : RtSpec) (cls : JClass) (entry : JIdent) (n : Nat)
-  : Mono (runClass rt cls entry n) (runClass rt cls entry (suc n)) =>
-  bindMono (callStaticMono rt cls n entry nil) (\lam o => monoRefl)
-
-\func runClassMonoPlus (rt : RtSpec) (cls : JClass) (entry : JIdent) (n k : Nat)
-  : Mono (runClass rt cls entry n) (runClass rt cls entry (n Nat.+ k)) \elim k
-  | 0 => monoRefl
-  | suc k => monoTrans (runClassMonoPlus rt cls entry n k) (runClassMono rt cls entry (n Nat.+ k))
-
--- `JEval`'s clock can be raised to any bigger one. This is the form a proof by
--- induction on a λ□ derivation consumes: the clocks of two sub-derivations are
--- combined by raising both to their sum.
-\func jevalAtLeast {rt : RtSpec} {cls : JClass} {entry : JIdent} {v : Value}
-                   (j : JEval rt cls entry v) (k : Nat)
-  : runClass rt cls entry (j.1 Nat.+ k) = rOk (rvValue v) =>
-  runClassMonoPlus rt cls entry j.1 k (rvValue v) j.2
 
 \func fuelMono {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} {e : JExpr} {r : ExprOut}
                 (p : evalExpr rt cls n env e = rOk r) : evalExpr rt cls (suc n) env e = rOk r =>

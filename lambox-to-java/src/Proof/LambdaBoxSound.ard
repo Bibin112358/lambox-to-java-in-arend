@@ -14,41 +14,31 @@
 \import Paths.Meta
 \import Set
 \import Compiler.StringUtil (nthArr)
+\import Proof.OracleArith (eqTrue)
 
 -- =============================================================================
--- The oracle is sound: whatever `evalT` computes, the relation derives.
+-- The fuelled λ□ runner is sound for the big-step relation:
 --
---     evalT spec env n t = rOk v  ->  Eval spec env t v
+--     evalT spec env n t = rOk v  ->  Eval spec env t v        (`evalT-sound`)
 --
--- This is the first of the two obligations `Semantics/LambdaBoxRun.ard` states,
--- and the one that matters for the agreement checks: it turns every `bothAgree`
--- instance from "the oracle and the Java semantics agree" into "λ□'S SEMANTICS
--- and the Java semantics agree", because the value the oracle produced is now
--- backed by a derivation of the transcribed relation.
+-- So every value the runner (`Semantics/LambdaBoxRun.ard`) produces, e.g. in
+-- the agreement checks of `ModelChecks/`, is backed by an `Eval` derivation.
+-- Completeness (every derivation is found at some fuel) is not proved; without
+-- it, `rStuck` only means "the runner found no rule". CertiRocq has the
+-- opposite pair for its λ□ layer (`LambdaBoxMut/wcbvEval.v`: completeness
+-- `WcbvEval_wcbvEval` proved, soundness `wcbvEval_WcbvEval` admitted).
 --
--- The other direction (completeness: every derivation is found at some fuel) is
--- not proved here. It is what would let a STUCK oracle result be read as "the
--- relation does not derive anything either"; without it, `rStuck` means only
--- "this function found no rule".
---
--- For comparison, CertiRocq proves the same pair for its own λ□ layer
--- (`LambdaBoxMut/wcbvEval.v`, `Function wcbvEval (tmr:nat)` against `Inductive
--- WcbvEval`): there the completeness direction `WcbvEval_wcbvEval` is proved
--- and the soundness direction `wcbvEval_WcbvEval` is `Admitted` -- the opposite
--- half from the one below.
---
--- SHAPE. Induction is on FUEL, in the same clause order as the oracle, so each
--- case reads next to the code it is about. Everything else is inversion:
--- `bindRes-inv` for the sequencing, `rOk-inj` for the results, and a `\case`
--- with `\as`/`idp` for each scrutinee the oracle tests -- which is exactly the
--- premise list of the corresponding rule.
+-- Induction is on fuel, in the runner's clause order, so each case reads next
+-- to the code it is about. The rest is inversion: `bindRes-inv` for
+-- sequencing, `rOk-inj` for results, and a `\case ... \as x, idp` for each
+-- scrutinee the runner tests -- these tests are exactly the rule's premises.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
 -- Inversion of `Res`.
 -- ---------------------------------------------------------------------------
 
--- "is a value", as a type, so that the two impossible outcomes are refutable.
+-- "is a value", as a type, to refute the other two outcomes.
 \func ResOk {A : \Type} (r : Res A) : \Prop
   | rOk _ => \Sigma
   | rStuck => Empty
@@ -67,26 +57,23 @@
 
 \func rOk-inj {A : \Type} {a b : A} (p : rOk a = rOk b) : a = b => pmap (unRes a) p
 
--- The workhorse: a sequenced computation that produced a value did so by both
--- halves producing one. Every clause of the oracle goes through this.
+-- A sequenced computation that produced a value did so by both halves
+-- producing one.
 \func bindRes-inv {A B : \Type} (r : Res A) {f : A -> Res B} {v : B} (p : bindRes r f = rOk v)
   : \Sigma (a : A) (r = rOk a) (f a = rOk v) \elim r
   | rOk a => (a, idp, p)
   | rStuck => absurd (stuck/=ok p)
   | rOutOfFuel => absurd (fuel/=ok p)
 
--- A Bool test the oracle made and passed, as the equation the rule wants.
-\lemma fromEqB {A : DecSet} {a b : A} (q : (a == b) = true) : a = b => ==_= (So.toSo q)
-
--- The oracle's identity tests, as the equations the rules want. `indEq` is the
--- only place the oracle compares structured data, and it bottoms out in
--- `Set.==` on strings and numbers, so these four are one induction each.
+-- The runner's identity tests, as the equations the rules want. They bottom
+-- out in `Set.==` on strings and numbers (`eqTrue`). `kernameEq-eq` is also
+-- used by `Proof/OracleShipped.ard`.
 \lemma dirPathEq-eq {a b : DirPath} (q : dirPathEq a b = true) : a = b \elim a, b
   | nil, nil => idp
   | nil, y :: b => absurd (true/=false (inv q))
   | x :: a, nil => absurd (true/=false (inv q))
   | x :: a, y :: b => \case and.toSigma q \with {
-    | (q1, q2) => cong_:: (fromEqB q1) (dirPathEq-eq q2)
+    | (q1, q2) => cong_:: (eqTrue q1) (dirPathEq-eq q2)
   }
 
 \lemma modPathEq-eq {a b : ModPath} (q : modPathEq a b = true) : a = b \elim a, b
@@ -96,24 +83,24 @@
   | mpBound _ _ _, mpFile _ => absurd (true/=false (inv q))
   | mpBound p x m, mpBound p' y n => \case and.toSigma q \with {
     | (q1, q2) => \case and.toSigma q1 \with {
-      | (q3, q4) => path (\lam i => mpBound (dirPathEq-eq q3 i) (fromEqB q4 i) (fromEqB q2 i))
+      | (q3, q4) => path (\lam i => mpBound (dirPathEq-eq q3 i) (eqTrue q4 i) (eqTrue q2 i))
     }
   }
   | mpBound _ _ _, mpDot _ _ => absurd (true/=false (inv q))
   | mpDot _ _, mpFile _ => absurd (true/=false (inv q))
   | mpDot _ _, mpBound _ _ _ => absurd (true/=false (inv q))
   | mpDot p x, mpDot p' y => \case and.toSigma q \with {
-    | (q1, q2) => path (\lam i => mpDot (modPathEq-eq q1 i) (fromEqB q2 i))
+    | (q1, q2) => path (\lam i => mpDot (modPathEq-eq q1 i) (eqTrue q2 i))
   }
 
 \lemma kernameEq-eq {a b : Kername} (q : kernameEq a b = true) : a = b
   => \case and.toSigma q \with {
-    | (q1, q2) => path (\lam i => \new Kername (modPathEq-eq q1 i) (fromEqB q2 i))
+    | (q1, q2) => path (\lam i => \new Kername (modPathEq-eq q1 i) (eqTrue q2 i))
   }
 
 \lemma indEq-eq {a b : InductiveId} (q : indEq a b = true) : a = b
   => \case and.toSigma q \with {
-    | (q1, q2) => path (\lam i => \new InductiveId (kernameEq-eq q1 i) (fromEqB q2 i))
+    | (q1, q2) => path (\lam i => \new InductiveId (kernameEq-eq q1 i) (eqTrue q2 i))
   }
 
 -- The pointwise premise of `evalConstruct`, one step. A definition of its own
@@ -130,7 +117,7 @@
 -- ---------------------------------------------------------------------------
 -- Soundness, by induction on fuel.
 --
--- `\elim n, t` in the oracle's own clause order, so that `evalT spec env n t`
+-- `\elim n, t` in the runner's own clause order, so that `evalT spec env n t`
 -- reduces in each case and `p` is an equation about the clause's body.
 -- ---------------------------------------------------------------------------
 
@@ -138,20 +125,18 @@
                   (p : evalT spec env n t = rOk v) : Eval spec env t v \elim n, t
   | 0, _ => absurd (fuel/=ok p)
 
-  -- The atoms: the oracle returned the term itself, and the rule says the value
-  -- IS the term.
+  -- The atoms: the runner returns the term itself, as the rules do.
   | suc _, box => evalAtomBox (inv (rOk-inj p))
   | suc _, lambda na b => evalAtomLambda (inv (rOk-inj p))
   | suc _, fix defs idx => evalAtomFix (inv (rOk-inj p))
   | suc _, prim pv => evalPrim (inv (rOk-inj p))
 
-  -- No rule, and the oracle agrees: nothing to derive.
+  -- No rule, and the runner is stuck: nothing to derive.
   | suc _, bvar _ => absurd (stuck/=ok p)
   | suc _, fvar _ => absurd (stuck/=ok p)
 
-  -- `evalDelta`: the two lookups the oracle made ARE the rule's two premises.
-  -- With no body there is a third lookup and a second rule, `evalAxiom`: the
-  -- three tests the oracle made in order are the three premises it asks for.
+  -- `evalDelta`: the two lookups are the rule's two premises. With no body, a
+  -- third lookup (the axiom's arity) gives `evalAxiom`'s three premises.
   | suc n, const kn =>
     \case lookupConstant env kn \as lc, idp : lookupConstant env kn = lc \with {
       | nothing, q => rewrite q at p $ absurd (stuck/=ok p)
@@ -159,7 +144,7 @@
         \case ConstantBody.cstBody {cb} \as body?, idp : ConstantBody.cstBody {cb} = body? \with {
           | nothing, q2 => rewrite q2 at p $
             \case axiomArity {spec} kn \as ar, idp : axiomArity {spec} kn = ar \with {
-              -- An axiom the oracle does not know: stuck, and no rule to derive.
+              -- An axiom the oracle does not know: stuck, no rule.
               | nothing, q3 => rewrite q3 at p $ absurd (stuck/=ok p)
               | just arity, q3 => rewrite q3 at p $ evalAxiom q q2 q3 (inv (rOk-inj p))
             }
@@ -189,13 +174,13 @@
           | true, q2 => rewrite q2 at p $
             \case bindRes-inv {Array LBTerm args.len} (evalArgsT spec env n args) p \with {
               | (vs, e1, e2) =>
-                evalConstruct q (fromEqB q2) (evalArgsT-sound spec n args vs e1) (inv (rOk-inj e2))
+                evalConstruct q (eqTrue q2) (evalArgsT-sound spec n args vs e1) (inv (rOk-inj e2))
             }
         }
     }
-  -- `evalIota`. The oracle's four-way Bool test is the rule's four premises,
-  -- and `indEq-eq` is what turns its identity check back into the equation the
-  -- rule states by SHARING the variable `ind`.
+  -- `evalIota`: the four-way Bool test is the rule's four premises; `indEq-eq`
+  -- turns the identity check into the equation the rule expresses by sharing
+  -- the variable `ind`.
   | suc n, case ind npars discr brs =>
     \case bindRes-inv (evalT spec env n discr) p \with {
       | (dv, e1, e2) => \case \elim dv, \elim e1, \elim e2 \with {
@@ -225,10 +210,10 @@
                                        -- `npars`.
                                        (transport (\lam x => constructorInfo env ind c
                                                              = just (false, x, na))
-                                                  (inv (fromEqB c2)) q)
+                                                  (inv (eqTrue c2)) q)
                                        q2
-                                       (fromEqB c3)
-                                       (fromEqB c4)
+                                       (eqTrue c3)
+                                       (eqTrue c4)
                                        (evalT-sound spec n e2)
                           }
                         }
@@ -236,7 +221,7 @@
                   }
               }
           }
-        -- Every other value: the oracle has no rule and neither has the relation.
+        -- Every other value: neither the runner nor the relation has a rule.
         | box, e1, e2 => absurd (stuck/=ok e2)
         | bvar k, e1, e2 => absurd (stuck/=ok e2)
         | fvar x, e1, e2 => absurd (stuck/=ok e2)
@@ -283,9 +268,9 @@
                                      (transport (\lam x => constructorInfo env
                                                              (ProjectionInfo.projIndType {pi}) 0
                                                            = just (false, x, na))
-                                                (fromEqB c2) q)
+                                                (eqTrue c2) q)
                                      (transport (\lam x => cargs.len = x Nat.+ na)
-                                                (fromEqB c2) (fromEqB c3))
+                                                (eqTrue c2) (eqTrue c3))
                                      q3
                                      (evalT-sound spec n e2)
                         }
@@ -324,35 +309,26 @@
         | nothing, q => rewrite q at p $ absurd (stuck/=ok p)
         | just (narg, fn), q => rewrite q at p $ evalFix ef q ea (evalT-sound spec n p)
       }
-    -- `evalAppCong`, where the oracle's `appCongOk` test is the rule's premise.
-    -- For most values it computes to `true` outright; for an application it
-    -- depends on the spine, and for the two that can start a redex it is
-    -- `false`, so there is nothing to derive.
-    -- FOR THESE FIVE THE ORACLE'S EXCLUSION IS `idp`. `axiomSat` demands a
-    -- `const` at the head of the application spine, and none of these is one or
-    -- has one, so `axiomSpine` reduces to `nothing` without knowing anything
-    -- about `spec` -- the runner's dispatch takes its `nothing` branch by
-    -- computation, and `evalAppCong`'s new premise is discharged the same way.
+    -- `evalAppCong`, whose premise is the runner's `appCongOk` test. For these
+    -- five heads both `appCongOk` and `axiomSat = nothing` hold by `idp`:
+    -- `axiomSat` needs a `const` at the head of the spine, whatever `spec` is.
     | bvar k, ef, p => evalAppCong ef idp ea idp (inv (rOk-inj p))
     | fvar x, ef, p => evalAppCong ef idp ea idp (inv (rOk-inj p))
     | letIn na b0 b1, ef, p => evalAppCong ef idp ea idp (inv (rOk-inj p))
     | case ind npars discr brs, ef, p => evalAppCong ef idp ea idp (inv (rOk-inj p))
     | proj pi discr, ef, p => evalAppCong ef idp ea idp (inv (rOk-inj p))
 
-    -- THE TWO SHAPES A SATURATED AXIOM CALL CAN HAVE: the function value is the
-    -- axiom itself (a unary one, applied here), or an application still
-    -- collecting arguments whose spine head is the axiom. Both go through the
-    -- same three steps as the runner -- is it saturated, did the oracle compute,
-    -- and is what it computed the value we were given.
+    -- A saturated axiom call: the function value is the axiom itself (unary),
+    -- or an application spine headed by it. Both follow the runner: is it
+    -- saturated, did the oracle compute, and is that the value we were given.
     | const kn, ef, p =>
       \case axiomSat spec (app (const kn) av) \as sat,
             idp : axiomSat spec (app (const kn) av) = sat \with {
         | nothing, q => rewrite q at p $ evalAppCong ef idp ea q (inv (rOk-inj p))
         | just (kn', args), q => rewrite q at p $
           \case axiomRun {spec} kn' args \as r, idp : axiomRun {spec} kn' args = r \with {
-            -- The oracle declined: stuck, and `evalAppCong` is NOT available
-            -- (its premise wants `axiomSat = nothing`, and `q` says otherwise),
-            -- which is the asymmetry the runner's comment is about.
+            -- The oracle declined: stuck, and `evalAppCong` does not apply
+            -- (it needs `axiomSat = nothing`).
             | nothing, q2 => rewrite q2 at p $ absurd (stuck/=ok p)
             | just w, q2 => evalAxiomApp kn' args ef ea q
                                          (q2 *> pmap just (rOk-inj (rewrite q2 at p $ p)))
@@ -377,25 +353,23 @@
     | prim pv, ef, p => absurd (stuck/=ok p)
   }
 
--- The fields of a constructor, pointwise. The result is length-indexed exactly
--- so that this statement is the premise `evalConstruct` asks for.
--- `xs` and `vs` are EXPLICIT: left implicit, the elaborator has to solve an
--- array from `Fin xs.len` in the result type, which is higher-order, and it
--- reports the failure as a mismatch between two identical-looking `Fin`s.
+-- The fields of a constructor, pointwise: the premise of `evalConstruct`.
+-- `xs` and `vs` are explicit: left implicit, the elaborator must solve an
+-- array from `Fin xs.len` (higher-order) and reports it as a mismatch between
+-- two identical-looking `Fin`s.
 \func evalArgsT-sound (spec : LBSpec) {env : GlobalDeclarations} (n : Nat) (xs : Array LBTerm)
                       (vs : Array LBTerm xs.len) (p : evalArgsT spec env n xs = rOk vs)
   : \Pi (i : Fin xs.len) -> Eval spec env (xs i) (vs i) \elim n, xs
   | 0, _ => absurd (fuel/=ok p)
   | suc n, nil => \lam i => \case i
-  -- `m` is the FUEL; the array's tail length is its own variable.
+  -- `m` is the fuel.
   | suc m, x :: xs =>
     \case bindRes-inv (evalT spec env m x) p \with {
       | (xv, e1, e2) => \case bindRes-inv {Array LBTerm xs.len} (evalArgsT spec env m xs) e2 \with {
         | (xvs, e3, e4) =>
-          -- The equation is used POINTWISE (`pmap (__ i)`) rather than by
-          -- rewriting the array inside the `\Pi`: abstracting an array under a
-          -- binder leaves the elaborator comparing two `Fin`s it prints
-          -- identically and cannot unify.
+          -- Used pointwise rather than by rewriting the array under the `\Pi`,
+          -- which leaves two identically printed `Fin`s the elaborator cannot
+          -- unify.
           \lam i => transport (Eval spec env ((x :: xs) i))
                               (pmap (\lam (w : Array LBTerm (suc xs.len)) => w i) (rOk-inj e4))
                               (consPointwise spec x xv xs xvs (evalT-sound spec m e1)
