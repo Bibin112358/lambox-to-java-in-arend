@@ -1,0 +1,244 @@
+-- Encoding of the lambda-box (λ□) language in Arend.
+--
+-- Sources / inspiration:
+--   * MetaRocq EAst.v   : erasure/theories/EAst.v   (the canonical λ□ `term`)
+--   * lean-to-lambdabox : LeanToLambdaBox/Basic.lean (the `LBTerm` adaptation)
+--   * Links
+--     - https://github.com/peregrine-project/lean-to-lambdabox/blob/main/LeanToLambdaBox/Basic.lean
+--     - https://metarocq.github.io/html/MetaRocq.Erasure.EAst.html
+--     - https://metacoq.github.io/v1.2-8.16/MetaCoq.Erasure.EAst.html
+--     - https://github.com/MetaRocq/metarocq/blob/coq-8.20/erasure/theories/EAst.v
+-- We follow the LBTerm shape (cleaner names, locally-nameless friendly):
+--   * keep `fvar` (a locally-nameless free variable, à la Lean) alongside `bvar`
+--     (de Bruijn).  The canonical EAst λ□ uses only `bvar`; drop `fvar` if you
+--     build de Bruijn directly during erasure.
+--   * drop `tVar`, `tEvar`, `tCoFix`, `tLazy`, `tForce` (LBTerm does the same):
+--     they are not needed for a strict, non-coinductive `\Set`+IO fragment.
+--   * `prim` is simplified: MetaRocq/LBTerm carry 63-bit primitive ints; Arend
+--     has no fixed-width BitVec, so we model the payload with the unbounded
+--     Prelude `Int`.  This is the FIRST of three layers of the known int63
+--     mismatch -- see the `PrimModel` comment below and KNOWN MISMATCH in
+--     Compiler/ToJava.ard.
+
+\import Data.Bool
+\import Compiler.Int63 (int63Mod, int64Mod)
+\import Data.Maybe
+\import Data.String
+-- All sequences are `Array` (Prelude) so ToJava can recurse inline via `xs i` and
+-- there is no `List`/`Array` `nil`/`::` ambiguity. (No `\import Data.List`.)
+
+-- When to use String, type synonym (ident) or class (FreeVarId) ?
+
+\func Ident => String
+\func DirPath => Array String
+
+\class FreeVarId
+  | varName : String
+
+\data BinderName
+  | named FreeVarId
+  | anon  -- Identifiers that are allowed to be anonymous (i.e. "_" in concrete syntax).
+
+\data ModPath
+  | mpFile DirPath
+  | mpBound DirPath Ident Nat
+  | mpDot ModPath Ident
+
+\record Kername (kerModPath : ModPath) (kerName : Ident)
+
+\record InductiveId (indMutualBlock : Kername) (indIdx : Nat)
+-- Q (Lean) : Which of the mutually inductive types defined in this block is used here?
+
+\record ProjectionInfo
+  (projIndType : InductiveId)
+  (projParamCount : Nat)  -- number of (non-let) parameters
+  (projFieldIdx : Nat)  -- argument to project
+
+\record FixDef (term : \Type)
+  | defName : BinderName
+  | defBody : term
+  | principalArgIdx : Nat  -- Principal/structural argument for recursion
+
+-- THE KIND OF NUMBER IS PART OF THE TERM, not of the backend.
+--
+-- Upstream λ□ has one primitive integer: MetaRocq's `EPrimitive.v`
+-- `primIntModel (i : PrimInt63.int)` with `prim_model_of primInt :=
+-- PrimInt63.int`, the tag set coming from `common/theories/Primitive.v`
+-- (`primInt63 | primFloat | primString | primArray` -- no primNat, no primZ);
+-- the Rocq refman, "Primitive objects / Primitive integers"; and
+-- lean-to-lambdabox's `PrimModel .primInt := BitVec 63`. `primInt63` IS that
+-- tag, renamed so the width is part of the name rather than part of a comment.
+--
+-- Note this concerns ONLY `tPrim`: Rocq's default numbers (`nat`, `Z`) and
+-- Lean's Peano mode erase to ordinary CONSTRUCTORS, never to `prim`.
+--
+-- WHY THE KIND BELONGS HERE. A backend may reasonably prefer JVM `long`
+-- arithmetic, for speed. That choice cannot live in the backend: if the term
+-- means i63 and the backend computes int64 then the backend is simply WRONG,
+-- which this project proved -- and then papered over by parameterizing the
+-- VALUE RELATION by the chosen normalization. A correctness statement whose
+-- notion of "these two values correspond" takes a compiler flag cannot be read
+-- without knowing the build configuration. With the kind in the term, each
+-- backend is correct for the terms it is given, and choosing a representation
+-- becomes a source-to-source rewrite that can be stated and argued about
+-- instead of an invisible reinterpretation.
+--
+-- The precedent is in the frontend already: lean-to-lambdabox's `config.nat`
+-- chooses between Peano constructors and machine i63 for Lean's `Nat`, and it
+-- makes that choice by emitting DIFFERENT λ□ TERMS.
+--
+-- `primInt64` IS NOT YET COMPILED, deliberately. The operations are selected by
+-- kername at a `const` node, which never sees its operands, so a kind on the
+-- values cannot by itself pick `PRIM_ADD_LONG`; that needs per-kind axiom names
+-- and is a separate step (see `Compiler/JavaAxioms.ard`). Declaring the kind first is
+-- what lets the semantics talk about it at all.
+--
+-- DEVIATION FROM UPSTREAM, accepted: a `primInt64` term has no peregrine
+-- counterpart, so `Compiler/Serialize.ard`'s export cannot represent one. λ□ is a
+-- stepping stone here rather than an interchange format, and export is allowed
+-- to be partial.
+\data PrimTag
+  | primInt63  -- MetaRocq/peregrine's `Uint63`: unsigned, cyclic mod 2^63
+  | primInt64  -- two's-complement 64-bit, i.e. a JVM `long`
+-- | primFloat
+-- | primList
+
+-- THE PAYLOAD IS BOUNDED BY CONSTRUCTION, which the old encoding was not. It
+-- used the unbounded Prelude `Int`, so values >= 2^63 were representable and
+-- nothing wrapped; this file called that "the FIRST of three layers of the
+-- known int63 mismatch" and left it as FUTURE WORK ("model the payload as
+-- `Fin (2^63)` / a `mod 2^63`-normalized Int").
+--
+-- DONE. The only way to build a payload is `Int63.wrap63`/`wrap64u`, which
+-- normalize, so an out-of-range primitive cannot be written down -- and the
+-- value relation compares exactly instead of normalizing as it goes.
+\func PrimModel (t : PrimTag) : \Set0
+  | primInt63 => Fin int63Mod
+  | primInt64 => Fin int64Mod
+
+\func PrimVal : \Type => \Sigma (t : PrimTag) (PrimModel t)
+
+
+-- ---------------------------------------------------------------------------
+-- The Lambda Box Term
+--  https://metarocq.github.io/html/MetaRocq.Erasure.EAst.html#term
+--  https://github.com/peregrine-project/lean-to-lambdabox/blob/main/LeanToLambdaBox/Basic.lean#L90
+-- ---------------------------------------------------------------------------
+
+\data LBTerm
+  | box  -- represents computation irrelevant things, like proofs and types
+  | bvar Nat  -- bound variable, accessed as a de Bruijn index
+  | fvar FreeVarId  -- free variables (e.g. in a goal)
+  -- tEvar  (not part of Lean pipeline?)
+  | lambda BinderName LBTerm  -- \lam x => x + 1
+  | letIn BinderName LBTerm LBTerm  -- \let | x => 1 \in x + 1
+  | app LBTerm LBTerm  -- f x
+  | const Kername  --  a constant living in the environment
+  -- The array contains exactly all constructor fields (constructor-block form),
+  -- as produced for external programs by Peregrine's `ast box` pass.
+  | construct InductiveId Nat {- index of the constructor used -} (Array LBTerm)  -- \data ...  (Array so ToJava can recurse inline via `args i`)
+  | case InductiveId Nat {- number of parameters -} LBTerm (Array (\Sigma (Array BinderName) LBTerm))
+  -- \case {Type, number of parameters} expr \with ...
+  | proj ProjectionInfo LBTerm
+  | fix (Array (FixDef LBTerm)) Nat {- index of the one mutually defined function we want to access -}
+  -- | tCoFix  (not part of Lean pipeline?)
+  | prim PrimVal
+-- | lazy  -- lazy evaltiation? (not part of Lean pipeline?)
+-- | force  -- eager evaltiation? (not part of Lean pipeline?)
+
+
+-- ---------------------------------------------------------------------------
+-- The Lambda Box Program
+--  https://metarocq.github.io/html/MetaRocq.Erasure.EAst.html#program
+--  https://github.com/peregrine-project/lean-to-lambdabox/blob/main/LeanToLambdaBox/Basic.lean#L182
+-- ---------------------------------------------------------------------------
+
+\record ConstructorBody (cstrName : Ident) (cstrNargs : Nat)
+
+\record ProjectionBody (projBodyName : Ident)
+
+\data AllowedEliminations  -- TODO : adjust for Arend?
+  | IntoSProp
+  | IntoPropSProp
+  | IntoSetPropSProp
+  | IntoAny
+
+\record OneInductiveBody
+  (indName : Ident)
+  (indPropositional : Bool)   -- Should always be false? since erasure should remove anything which ends up in Prop
+  (indKelim : AllowedEliminations)
+  (indCtors : Array ConstructorBody)
+  (indProjs : Array ProjectionBody)  -- This is only about giving user-visible names to projections, but `peregrine` complains about wellformedness if it is empty.
+
+\data RecursivityKind
+  | finite
+  | cofinite  -- Lean doesn't have primitive coinductive types, but including this here anyway to match the MetaCoq side.
+  | bifinite
+
+\record MutualInductiveBody
+  (indFinite : RecursivityKind)  -- Should always be finite ?
+  (indNpars : Nat)  -- Number of parameters to this family of mutually inductive types.
+  (indBodies : Array OneInductiveBody)
+
+\record ConstantBody (cstBody : Maybe LBTerm)
+
+\data GlobalDecl
+  | constantDecl ConstantBody
+  | inductiveDecl MutualInductiveBody
+
+-- ORDER: the list is newest-first, i.e. the HEAD is the declaration added
+-- LAST. MetaRocq's `EWellformed.wf_glob` (and peregrine's `CheckWf.v`) checks
+-- each entry's body against only the *tail* of the list (`wf_global_decl Σ d`
+-- for `(kn,d)::Σ`), so a declaration may only reference declarations that come
+-- AFTER it -- dependents first, dependencies last, the reverse of a normal
+-- "declare before use" order. Lookup (`lookup_env`) scans from the head, so
+-- getting this wrong is invisible to our own generator and only shows up when
+-- an exported program is checked by peregrine.
+\func GlobalDeclarations : \Type => Array (\Sigma Kername GlobalDecl)
+
+\func LBProgram : \Type => \Sigma GlobalDeclarations LBTerm
+
+
+-- ---------------------------------------------------------------------------
+-- The rest of Basic.lean, not otherwise needed by Compiler/ToJava.ard, but needed by
+-- Compiler/Serialize.ard (mirrors the tail of Basic.lean: ASTType/Program plus the
+-- extraction-attribute-remapping types).
+-- ---------------------------------------------------------------------------
+
+-- Basic.lean's `Program := ASTType`; `term` is `Option LBTerm` there (unlike
+-- LBProgram above, which requires one) -- a program can be a bare library
+-- with no distinguished entry term.
+\data ASTType
+  | untyped GlobalDeclarations (Maybe LBTerm)
+
+\record RemappedInductive
+  (reIndName : Ident)
+  (reIndCtors : Array Ident)
+  (reIndMatch : Maybe Ident)
+
+\record ExtractInductive
+  (extractCstrs : Array Kername)
+  (extractElim : Kername)
+
+\record RemappedConstant
+  (reConstExt : Maybe Ident)
+  (reConstArity : Nat)
+  (reConstGC : Bool)
+  (reConstInl : Bool)
+  (reConstS : Ident)
+
+\data RemapInductive
+  | knIndRemap ExtractInductive
+  | stringIndRemap RemappedInductive
+
+\record InductiveMapping
+  (indMapKn : Kername)
+  (indMapS : Ident)
+  (indMapN : Array Nat)
+
+\record AttributesConfig
+  (acInlinings : Array Kername)
+  (acConstRemappings : Array (\Sigma Kername RemappedConstant))
+  (acIndRemappings : Array (\Sigma InductiveId RemapInductive))
+  (acCstrReorders : Array InductiveMapping)
+  (acCustomAttributes : Array (\Sigma Kername Ident))

@@ -1,0 +1,196 @@
+\import Algebra.Meta
+\import Arith.Int (iabs, -'=-)
+\import Arith.Nat
+\import Data.Array
+\import Data.Bool
+\import Data.String (Byte, String, stringExt, ++ \as \infixr 5 ++S)
+\import Proof.NodePathUnique (horner, horner_natToStr)
+\import Semantics.RtLong (pow2_63, pow2_64, wrap64, readS64, readSigned, negModU64, modU64)
+\import Compiler.Int63 (int63Mod, wrap63)
+\import Logic
+\import Order.Biordered
+\import Order.PartialOrder
+\import Order.StrictOrder
+\import Paths
+\import Paths.Meta
+\import Set
+\import Compiler.StringUtil
+
+-- =============================================================================
+-- Arithmetic and decision-procedure lemmas for `Proof/OracleShipped.ard`.
+--
+-- The two runtimes compare and normalize integers with BOOLEAN functions --
+-- `==` on a `DecSet`, `StringUtil.intEqB`, `Int63.wrap63`, `Semantics/RtLong.ard`'s
+-- `wrap64` -- because both are meant to be run, at 2^63 scale, by `idp`. A
+-- proof about ALL values cannot run them; it needs to know what their answers
+-- MEAN. That is this file: each lemma turns a Boolean answer or a normal form
+-- into the proposition it decides.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- `==` on any `DecSet`: what `true` means, and that it is reflexive.
+-- ---------------------------------------------------------------------------
+
+\lemma decToBoolTrue {E : \Prop} (d : Dec E) (p : decToBool d = true) : E \elim d
+  | yes e => e
+  | no _ => \case p \with {}
+
+\lemma eqTrue {A : DecSet} {x y : A} (p : (x == y) = true) : x = y => decToBoolTrue (decideEq x y) p
+
+\lemma decToBoolSelf {E : \Prop} (d : Dec E) (e : E) : decToBool d = true \elim d
+  | yes _ => idp
+  | no q => absurd (q e)
+
+\lemma eqRefl {A : DecSet} (x : A) : (x == x) = true => decToBoolSelf (decideEq x x) idp
+
+-- ---------------------------------------------------------------------------
+-- `intEqB`: sound and reflexive, via the decimal round trip.
+--
+-- `Proof/NodePathUnique.ard` already proves `horner 0 (natToStr n).bytes = n`,
+-- which is `natToStr`'s injectivity with the inverse written out. `intToStr`
+-- adds a `-` in front of the negatives, and no digit string starts with one.
+-- ---------------------------------------------------------------------------
+
+\lemma natToStr-inj {a b : Nat} (e : natToStr a = natToStr b) : a = b =>
+  inv (horner_natToStr a) *> pmap (\lam (s : String) => horner 0 s.bytes) e *> horner_natToStr b
+
+\func isMinus (n : Nat) : Bool => n == 45
+
+\func NoMinus (bs : Array Byte) : \Prop \elim bs
+  | nil => \Sigma
+  | b :: bs => \Sigma (isMinus b = false) (NoMinus bs)
+
+\lemma noMinus_++ {xs ys : Array Byte} (a : NoMinus xs) (b : NoMinus ys) : NoMinus (xs ++ ys) \elim xs
+  | nil => b
+  | x :: xs => (a.1, noMinus_++ a.2 b)
+
+\lemma noMinus_digit (r : Fin 10) : NoMinus (digitLit r).bytes \elim r
+  | 0 => (idp, ()) | 1 => (idp, ()) | 2 => (idp, ()) | 3 => (idp, ()) | 4 => (idp, ())
+  | 5 => (idp, ()) | 6 => (idp, ()) | 7 => (idp, ()) | 8 => (idp, ()) | 9 => (idp, ())
+
+\lemma noMinus_natToStrFuel (fuel n : Nat) : NoMinus (natToStrFuel fuel n).bytes \elim fuel
+  | 0 => noMinus_digit 0
+  | suc fuel => noMinus_natToStrStep fuel (n Nat.div 10) (n Nat.mod 10)
+
+\lemma noMinus_natToStrStep (fuel q : Nat) (r : Fin 10) : NoMinus (natToStrStep fuel q r).bytes \elim q
+  | 0 => noMinus_digit r
+  | suc q => noMinus_++ (noMinus_natToStrFuel fuel (suc q)) (noMinus_digit r)
+
+\lemma noMinus_natToStr (n : Nat) : NoMinus (natToStr n).bytes \elim n
+  | 0 => noMinus_digit 0
+  | suc n => noMinus_natToStrFuel (suc n) (suc n)
+
+-- A digit string is never `-` followed by anything.
+\lemma natToStr/=minus (n : Nat) (s : String) (e : natToStr n = "-" ++S s) : Empty =>
+  \case (transport NoMinus (pmap (\lam (t : String) => t.bytes) e) (noMinus_natToStr n)).1 \with {}
+
+\lemma intToStr-inj {a b : Int} (e : intToStr a = intToStr b) : a = b \elim a, b
+  | pos n, pos m => pmap pos (natToStr-inj e)
+  | pos n, neg (suc m) => absurd (natToStr/=minus n _ e)
+  | neg (suc n), pos m => absurd (natToStr/=minus m _ (inv e))
+  | neg (suc n), neg (suc m) =>
+    \let eb : 45 :: (natToStr (suc n)).bytes = {Array Byte} 45 :: (natToStr (suc m)).bytes => pmap (\lam (t : String) => t.bytes) e
+    \in pmap neg (natToStr-inj (stringExt (untail eb)))
+
+\lemma intEqB-sound {a b : Int} (h : intEqB a b = true) : a = b => intToStr-inj (eqTrue h)
+
+\lemma intEqB-refl (a : Int) : intEqB a a = true => eqRefl (intToStr a)
+
+-- ---------------------------------------------------------------------------
+-- `wrap63`: the identity on what is already in range.
+-- ---------------------------------------------------------------------------
+
+\lemma wrap63-fin (a : Fin int63Mod) : wrap63 (pos a) = a => fin_mod_id a
+
+\lemma wrap63-lt {k : Nat} (p : k < int63Mod) : wrap63 (pos k) = {Nat} k => mod_< p
+
+-- ---------------------------------------------------------------------------
+-- `Nat.-` into `Int`: its sign, and bounds on what it returns.
+-- ---------------------------------------------------------------------------
+
+\func minusLt {a m : Nat} (p : a < m) : \Sigma (k : Nat) (a Nat.- m = neg (suc k)) \elim a, m, p
+  | 0, suc m, NatOrder.zero<suc => (m, idp)
+  | suc a, suc m, NatOrder.suc<suc p => minusLt p
+
+\func minusGe {a m : Nat} (p : m <= a) : \Sigma (k : Nat) (a Nat.- m = pos k) => (a -' m, inv (-'=- p))
+
+-- `t - (s + t) = -s`, by the recursion `Nat.-` itself uses.
+\lemma minusSum (t s : Nat) : t Nat.- (s Nat.+ t) = neg s \elim t
+  | 0 => idp
+  | suc t => minusSum t s
+
+\lemma minusPos<= {a b k : Nat} (e : a Nat.- b = pos k) : k <= a \elim a, b
+  | 0, 0 => transport (\lam z => z <= 0) (pmap iabs e) <=-refl
+  | 0, suc b => \case pmap signB e \with {}
+  | suc a, 0 => transport (\lam z => z <= suc a) (pmap iabs e) <=-refl
+  | suc a, suc b => <=-transitive (minusPos<= e) (<=-less id<suc)
+
+\lemma minusNeg<= {a b k : Nat} (e : a Nat.- b = neg (suc k)) : suc k <= b \elim a, b
+  | 0, 0 => \case pmap signB e \with {}
+  | 0, suc b => transport (\lam z => suc k <= z) (pmap iabs (inv e)) <=-refl
+  | suc a, 0 => \case pmap signB e \with {}
+  | suc a, suc b => <=-transitive (minusNeg<= e) (<=-less id<suc)
+
+-- A sign test, to tell `pos` from `neg (suc _)` apart in a path.
+\func signB (x : Int) : Bool
+  | pos _ => true
+  | neg (suc _) => false
+
+-- `(m + a) - a = m`, and cancelling a common summand.
+\lemma minusPos (m a : Nat) : (m Nat.+ a) Nat.- a = pos m \elim a
+  | 0 => \case \elim m \with { | 0 => idp | suc _ => idp }
+  | suc a => minusPos m a
+
+\lemma minusCancel (x y c : Nat) : (x Nat.+ c) Nat.- (y Nat.+ c) = x Nat.- y \elim c
+  | 0 => idp
+  | suc c => minusCancel x y c
+
+-- A strict inequality between the two literals. NOT by a concrete proof:
+-- `NatOrder.<` is a data type indexed by `suc` patterns, and a proof term
+-- checked against `2^63 < 2^64` directly makes the checker peel 2^63 `suc`s.
+-- The generic `P < P + P` is proved over a variable, then instantiated.
+\lemma ltDouble (P M : Nat) (hM : M = P Nat.+ P) (h : 0 < P) : P < M => rewrite hM linarith
+
+\lemma pow2_63<pow2_64 : pow2_63 < pow2_64 => ltDouble pow2_63 pow2_64 idp NatOrder.zero<suc
+
+-- ---------------------------------------------------------------------------
+-- `wrap64`: the identity on [-2^63, 2^63).
+--
+-- The bound `2^63` never meets a symbolic summand here except through the
+-- generic lemmas above: `j + 2^63` normalized in full is 2^63 `suc`s, which is
+-- what an early version of this section asked the checker to build.
+-- ---------------------------------------------------------------------------
+
+\lemma wrap64-pos {a : Nat} (p : a < pow2_63) : wrap64 (pos a) = pos a =>
+  \let | ma : a Nat.mod pow2_64 = a => mod_< (<-transitive p pow2_63<pow2_64)
+       | lt => minusLt p
+  \in pmap (\lam r => readS64 r (r Nat.- pow2_63)) ma *> pmap (readS64 a) lt.2
+
+-- The upper half, read back, for an ABSTRACT bound `P` and modulus `M = P + P`:
+-- with `suc n + j = P`, the pattern `j + P` is the negative `-(suc n)`.
+\lemma readHiG (M P n j : Nat) (hM : M = P Nat.+ P) (hj : suc n Nat.+ j = P)
+  : readSigned M (j Nat.+ P) ((j Nat.+ P) Nat.- P) = neg (suc n) =>
+  pmap (readSigned M (j Nat.+ P)) (minusPos j P) *>
+  pmap ((j Nat.+ P) Nat.-) hM *> minusCancel j P P *>
+  pmap (j Nat.-) (inv hj) *> minusSum j (suc n)
+
+\lemma sumSwap (a j P : Nat) (hj : a Nat.+ j = P) : (j Nat.+ P) Nat.+ a = P Nat.+ P =>
+  NatSemiring.+-comm *> inv NatSemiring.+-assoc *> pmap (Nat.+ P) hj
+
+-- `M - (suc n)`, read as a signed number modulo `M = P + P`, is `-(suc n)`.
+-- Everything is ABSTRACT in `M` and `P`: instantiated only at the very end.
+\lemma readNegG (M P n : Nat) (hM : M = P Nat.+ P) (p : suc n <= P)
+  : readSigned M (iabs (M Nat.- suc n)) (iabs (M Nat.- suc n) Nat.- P) = neg (suc n) =>
+  \let | j => P -' suc n
+       | hj : suc n Nat.+ j = P => <=_exists p
+       | eM : (j Nat.+ P) Nat.+ suc n = M => sumSwap (suc n) j P hj *> inv hM
+       | e : iabs (M Nat.- suc n) = j Nat.+ P =>
+         pmap (\lam z => iabs (z Nat.- suc n)) (inv eM) *> pmap iabs (minusPos (j Nat.+ P) (suc n))
+  \in pmap (\lam r => readSigned M r (r Nat.- P)) e *> readHiG M P n j hM hj
+
+\lemma wrap64-neg {n : Nat} (p : n <= pow2_63) : wrap64 (neg n) = neg n \elim n
+  | 0 => idp
+  | suc n =>
+    \let e1 : suc n Nat.mod pow2_64 = suc n => mod_< (p <∘r pow2_63<pow2_64)
+    \in pmap (\lam m => readS64 (negModU64 m) (negModU64 m Nat.- pow2_63)) e1 *>
+        readNegG pow2_64 pow2_63 n idp p

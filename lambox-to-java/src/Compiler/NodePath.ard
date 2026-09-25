@@ -1,0 +1,109 @@
+\import Data.String
+\import Compiler.StringUtil
+
+-- =============================================================================
+-- Structural node paths, and the generated names derived from them.
+--
+-- The generator has no fresh-name counter: a name is derived from WHERE its node
+-- sits in the λ□ term. A path is built by prepending one selector per step down,
+-- so it reads from the node UP to the root, and distinct nodes have distinct
+-- paths -- which is the whole uniqueness argument, provided the step from a
+-- (kind, path) pair to an identifier is injective.
+--
+-- WHY A DATATYPE AND NOT A STRING. The path used to be a `String`, extended with
+-- `"b" ++ natToStr i ++ path` and friends at ten sites, and names were spelled
+-- `"p" ++ path` at five more. Injectivity was then a FILE-WIDE convention -- the
+-- selector letters pairwise distinct, the name-kind letters pairwise distinct, and
+-- no path ever starting with a digit so that `natToStr i` could not run into the
+-- path behind it. Each of those is invisible in the branch that relies on it: a
+-- new selector spelled `"c1"`, or a numeric selector without the delimiter, is a
+-- silent miscompile, and the branch that introduced it looks fine.
+--
+-- Here the selectors and the name kinds are CONSTRUCTORS, distinct and injective
+-- by definition, and `renderName` is the single place where a name becomes text.
+-- Adding a construct means adding a constructor; forgetting to render is a type
+-- error. What was left to prove is one lemma about one function -- `renderName`
+-- is injective, so two names are equal only if they come from the same node and
+-- the same kind -- and `Proof/NodePathUnique.ard` proves it. Nothing imports that
+-- module, so it costs a normal compile nothing.
+--
+-- WHAT THE RENDERING GUARANTEES. `renderSel` emits a letter, and a selector that
+-- carries an index emits digits after it, terminated by `_`. So the tokens form a
+-- prefix code: the first byte says which selector, and a numeric one ends at the
+-- one byte that is neither a letter nor a digit. `_` is used for NOTHING else
+-- here, and a name always starts with its kind letter, so no generated identifier
+-- is a bare `_` (reserved in Java since 9).
+-- =============================================================================
+
+-- One step from a node to a child. There is one constructor per (node kind, child
+-- slot) in `compileExpr`, so a child's path determines which sub-term it is; the
+-- indexed ones number the children of a node that has an array of them.
+\data Sel
+  | sFun               -- app: the function
+  | sArg               -- app: the argument
+  | sLamBody           -- lambda: the body
+  | sLetVal            -- letIn: the bound value
+  | sLetBody           -- letIn: the body
+  | sScrut             -- case: the scrutinee
+  | sProj              -- proj: the record
+  -- compileFixMethod's second clause compiles an UNGUARDED fix body, and does it
+  -- at the method's own path. Without a step of its own, a body that IS a lambda
+  -- would mint the parameter name of that path a second time -- safe today only
+  -- because `\elim` has already taken the lambda case, which is exactly the kind
+  -- of reasoning-about-other-branches this type exists to remove.
+  | sEta
+  | sCtorArg Nat       -- construct: the i-th argument
+  | sBranch Nat        -- case: the i-th branch
+  | sMethod Nat        -- fix: the j-th mutually defined function
+  | sWrap Nat          -- fix: the closure forwarding to the j-th function
+
+-- A node address: the selectors from the node to the root, nearest first. Passed
+-- down and branched per child, never threaded, so it costs the termination
+-- checker nothing (see Compiler/ToJava.ard's TERMINATION note).
+\func Path : \Type => Array Sel
+
+-- What a generated name IS. One per naming site in the generator; a node mints at
+-- most one name of each kind, so the pair (kind, path) identifies a name.
+\data NameKind
+  | nParam             -- a lambda's, method's or forwarding closure's parameter
+  | nLet               -- a letIn's local
+  | nScrut             -- a case's scrutinee local
+  | nThunk             -- a case arm's thunk parameter
+  | nFixInst           -- a fix's local-class instance
+  | nFixClass          -- a fix's local class (capitalized, as Java classes are)
+
+-- The one byte per kind. Distinct letters; nothing else has to hold of them,
+-- since a kind is one byte and comes first.
+\func renderKind (k : NameKind) : String
+  | nParam => "p"
+  | nLet => "l"
+  | nScrut => "d"
+  | nThunk => "t"
+  | nFixInst => "z"
+  | nFixClass => "C"
+
+-- A letter per selector; an index becomes digits delimited by `_`, so a selector
+-- cannot run into the path behind it whatever that path starts with.
+\func renderSel (s : Sel) : String
+  | sFun => "F"
+  | sArg => "A"
+  | sLamBody => "L"
+  | sLetVal => "V"
+  | sLetBody => "B"
+  | sScrut => "S"
+  | sProj => "P"
+  | sEta => "E"
+  | sCtorArg i => "c" ++ natToStr i ++ "_"
+  | sBranch i => "b" ++ natToStr i ++ "_"
+  | sMethod j => "y" ++ natToStr j ++ "_"
+  | sWrap j => "w" ++ natToStr j ++ "_"
+
+-- The path as text. Also the node id in a runtime diagnostic (`Rt.unbound` and
+-- friends, see Compiler/JavaAxioms.ard), which is why it is readable at all: the root is
+-- the empty string, and reading left to right walks from the node to the root.
+\func renderPath (p : Path) : String \elim p
+  | nil => ""
+  | s :: p => renderSel s ++ renderPath p
+
+-- The only way a name becomes text.
+\func renderName (k : NameKind) (p : Path) : String => renderKind k ++ renderPath p

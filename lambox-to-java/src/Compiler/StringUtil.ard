@@ -1,0 +1,142 @@
+\import Arith.Nat
+-- Only `Big`: importing Data.Array wholesale would shadow String's `++` with the
+-- array one (the same reason Compiler/ToJava.ard aliases it).
+\import Data.Array (Big)
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Set
+
+-- =============================================================================
+-- Small String helpers used by the code generators (ToJava, Serialize).
+--
+-- Generated text is plain `Data.String.String`, concatenated with its native,
+-- pure `++`. Historically Arend's `String` was opaque (`\data String`, no
+-- constructors, no eliminator), so no pure Arend function could concatenate two
+-- Strings; the code generator therefore worked against a `Code` rope (`Array
+-- String` of literal fragments) declared in `Code.ard`. `String` is a real
+-- record over `Array Byte` now, so that workaround -- the `Code` type, `<+>`,
+-- `litC`, `nilC` -- is gone, and only the genuinely missing pieces are left
+-- here: decimal rendering of numbers, joining/indenting of fragments.
+-- =============================================================================
+
+-- Concatenate an array of String fragments (no separator). `Data.Array.Big` is
+-- exactly this fold, so there is no recursion of our own here.
+\func concatStr (xs : Array String) : String => Big (++) "" xs
+
+-- Concatenate with a separator BETWEEN fragments (none after the last one).
+\func joinStr (sep : String) (xs : Array String) : String \elim xs
+  | nil => ""
+  | x :: nil => x
+  | x :: xs => x ++ sep ++ joinStr sep xs
+
+-- `n` levels of two-space indentation.
+\func indentStr (n : Nat) : String \elim n
+  | 0 => ""
+  | suc n => "  " ++ indentStr n
+
+-- A digit is a `Fin 10`, not a `Nat` with an unreachable clause: the only caller
+-- passes `_ mod 10`, which IS one (Arend's `mod` by a literal elaborates at that
+-- type), and typing it so leaves no case whose correctness has to be argued.
+\func digitLit (d : Fin 10) : String
+  | 0 => "0" | 1 => "1" | 2 => "2" | 3 => "3" | 4 => "4"
+  | 5 => "5" | 6 => "6" | 7 => "7" | 8 => "8" | 9 => "9"
+
+-- Decimal rendering of a Nat. `n Nat.div 10` is not a sub-pattern of `n`, so
+-- the termination checker can't see it as structurally smaller; recursing on
+-- an explicit `fuel` (seeded to `n`, always more than enough since dividing by
+-- 10 needs far fewer steps than `n`) gives it a real structural decrease.
+-- Recurring on the quotient BEFORE appending the remainder digit produces
+-- digits in the correct most-significant-first order (checked: natToStr 42 =
+-- natToStrFuel _ 4 ++ "2" = "4" ++ "2" = "42").
+--
+-- The quotient is split off into `natToStrStep` rather than tested by an inner
+-- `\case`, so that a proof about this recursion can `\elim` the quotient the same
+-- way the definition does (see Proof/NodePathUnique.ard, which needs that).
+\func natToStrFuel (fuel n : Nat) : String \elim fuel
+  | 0 => "0"
+  | suc fuel => natToStrStep fuel (n Nat.div 10) (n Nat.mod 10)
+
+\func natToStrStep (fuel q : Nat) (r : Fin 10) : String \elim q
+  | 0 => digitLit r
+  | suc q => natToStrFuel fuel (suc q) ++ digitLit r
+
+\func natToStr (n : Nat) : String =>
+  \case n \with {
+    | 0 => "0"
+    | suc _ => natToStrFuel n n
+  }
+
+-- `lo <= n <= hi`, through arend-lib's Bool-valued `<=` on Nat rather than the
+-- walk-the-range test this used to do (which compared `n` against every byte of
+-- every class in turn).
+\func inByteRange (lo hi n : Nat) : Bool =>
+  nat_<=-dec.nat_<=_Bool lo n and nat_<=-dec.nat_<=_Bool n hi
+
+\func isJavaIdentByte (n : Nat) : Bool =>
+  inByteRange 48 57 n or inByteRange 65 90 n or inByteRange 97 122 n or (n == 95)
+
+-- A one-byte string. The encoding of source identifiers at the Java boundary
+-- that uses it is `Compiler/Mangle.ard`'s, which is injective; the per-component
+-- encoding that used to live here let `_` through, and the separators built on
+-- it collided (see that module's header).
+\func oneByteString (b : Byte) : String =>
+  \new String { | bytes => b :: nil }
+
+-- ---------------------------------------------------------------------------
+-- Generic helpers, once.
+--
+-- Four modules had a copy of the association walk: the axiom table
+-- (JavaAxioms), the environment and a `fix` class's methods (Formal/JavaValue),
+-- and a byte-keyed table (Formal/NodePathUnique). arend-lib has no assoc-list
+-- lookup to borrow, so this is the next best thing -- one of ours, generic in
+-- the key's `DecSet`, with the per-use wrappers one line each.
+-- ---------------------------------------------------------------------------
+
+-- Indexing with a `Maybe` result: arend-lib's `!!` takes a `Fin`, and both
+-- semantics need the index that MAY be out of range (a field read in the Java
+-- fragment, `List.nth_error` in λ□'s). Its `drop` is likewise avoided there,
+-- since the length in its result type would put arithmetic into every rule that
+-- mentions it.
+\func nthArr {A : \Type} (n : Nat) (xs : Array A) : Maybe A \elim n, xs
+  | _, nil => nothing
+  | 0, x :: _ => just x
+  | suc n, _ :: xs => nthArr n xs
+
+-- The first element whose key matches, in order.
+\func lookupBy {K : DecSet} {A : \Type} (key : A -> K) (k : K) (xs : Array A) : Maybe A \elim xs
+  | nil => nothing
+  | x :: xs => lookupStep x (key x == k) (lookupBy key k xs)
+
+-- One step of `lookupBy`. The key test is a PARAMETER rather than a `\case`, so
+-- that a proof holding `(key x == k) = b` can rewrite it (Proof/CorrectLam.ard
+-- does, for variable lookup; see Proof/NodePathUnique.ard's header on why).
+\func lookupStep {A : \Type} (x : A) (hit : Bool) (rest : Maybe A) : Maybe A \elim hit
+  | true => just x
+  | false => rest
+
+-- The common case: a table of (key, value) pairs.
+\func lookupKey {K : DecSet} {A : \Type} (k : K) (tbl : Array (\Sigma K A)) : Maybe A =>
+  Maybe.map (\lam e => e.2) (lookupBy (\lam e => e.1) k tbl)
+
+-- `neg zero` is DEFINITIONALLY `pos zero` (see Int's constructor condition in
+-- Prelude.ard), so the `neg 0` clause must agree with `pos 0`'s -- no "-".
+\func intToStr (i : Int) : String \elim i
+  | pos n => natToStr n
+  | neg 0 => natToStr 0
+  | neg (suc n) => "-" ++ natToStr (suc n)
+
+-- Decidable equality on `Int`, via the canonical decimal form above.
+--
+-- `intToStr` is total and injective on `Int` (`neg 0` and `pos 0` both render
+-- "0", which is right: they are definitionally equal), so this is a genuine
+-- decision procedure -- and it avoids both hand-rolling a comparison over the
+-- `pos`/`neg` split and, more importantly, any comparison that peels `suc` one
+-- at a time. Both semantics compare integers at 2^63 scale, where peeling does
+-- not terminate in practice.
+--
+-- HERE rather than in either semantics because both need it and it carries no
+-- specification of its own: `Semantics/RtLong.ard` (the JVM's `long`) and
+-- `Semantics/LambdaBoxAxioms.ard` (λ□'s int63) disagree about what the integers MEAN, but
+-- not about when two of them are equal.
+\func intEqB (a b : Int) : Bool => intToStr a == intToStr b

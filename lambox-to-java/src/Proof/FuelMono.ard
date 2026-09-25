@@ -1,0 +1,235 @@
+\import Arith.Nat
+\import Data.Bool
+\import Data.Maybe
+\import Semantics.JavaEval
+\import Semantics.JavaValue
+\import Semantics.Res
+\import Compiler.JavaAst
+\import Logic.Meta
+\import Meta
+\import Paths
+\import Paths.Meta
+
+-- =============================================================================
+-- OBLIGATION (1) OF `Proof/Statement.ard`, PROVED: FUEL MONOTONICITY.
+--
+-- "A run that succeeds survives a bigger clock": if the evaluator returns
+-- `rOk r` at fuel `n`, it returns the same `rOk r` at every `m >= n`. This is
+-- what lets a proof by induction on a λ□ derivation combine the clocks of its
+-- sub-derivations (take the max), and what lifts a refutation at one clock to
+-- one at every clock.
+--
+-- The proof is the obvious one, and the file's only design decision is to make
+-- it obvious: one lemma per function of the evaluator's mutual cycle, all by
+-- induction on the fuel together, each saying `F n .. <= F (suc n) ..` for the
+-- order `Mono` below. Every clause of the evaluator is `bindRes` of recursive
+-- calls at the SAME fuel, so each clause of the proof is `bindMono` of the
+-- induction hypotheses; the continuations that do not recurse are identical at
+-- both clocks (`monoRefl`).
+-- =============================================================================
+
+-- `a` is below `b`: whatever value `a` produces, `b` produces too. Timeouts and
+-- stuck states on the left are unconstrained, which is exactly "more fuel can
+-- only turn a timeout into an answer".
+\func Mono {A : \Type} (a b : Res A) : \Type => \Pi (r : A) -> a = rOk r -> b = rOk r
+
+\func monoRefl {A : \Type} {a : Res A} : Mono a a => \lam r p => p
+
+\func monoTrans {A : \Type} {a b c : Res A} (p : Mono a b) (q : Mono b c) : Mono a c =>
+  \lam r s => q r (p r s)
+
+\func monoFuel {A : \Type} {b : Res A} : Mono rOutOfFuel b => \lam r p => contradiction
+
+\func bindMono {A B : \Type} {m m' : Res A} {k k' : A -> Res B}
+               (hm : Mono m m') (hk : \Pi (x : A) -> Mono (k x) (k' x))
+  : Mono (bindRes m k) (bindRes m' k') \elim m
+  | rOk a => \lam r p => rewrite (hm a idp) (hk a r p)
+  | rStuck => \lam r p => contradiction
+  | rOutOfFuel => \lam r p => contradiction
+
+-- ---------------------------------------------------------------------------
+-- The mutual cycle, one step of fuel.
+-- ---------------------------------------------------------------------------
+
+\func evalExprMono (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (e : JExpr)
+  : Mono (evalExpr rt cls n env e) (evalExpr rt cls (suc n) env e) \elim n, e
+  | 0, _ => monoFuel
+  | suc n, jLit l => monoRefl
+  | suc n, jBox => monoRefl
+  | suc n, jVar x => monoRefl
+  | suc n, jStatic q => monoRefl
+  | suc n, jClosure p body => monoRefl
+  | suc n, jQualThis q => monoRefl
+  | suc n, jField recv f => bindMono (evalExprMono rt cls n env recv) (\lam o => monoRefl)
+  | suc n, jCast t e => bindMono (evalExprMono rt cls n env e) (\lam o => monoRefl)
+  | suc n, jApply f a => bindMono (evalExprMono rt cls n env f) (\lam o => \case \elim o \with {
+    | eExc ev => monoRefl
+    -- `castOk tFn fv` reduces to a `\case` on `fv`, so split on `fv` itself:
+    -- the three `Rt.Fn` values take the call, every other value the CCE.
+    | eVal (vClos p body cenv) => bindMono (evalExprMono rt cls n env a) (\lam oa => \case \elim oa \with {
+      | eExc ev => monoRefl
+      | eVal av => applyValMono rt cls n (vClos p body cenv) av
+    })
+    | eVal (vBuiltin nm got) => bindMono (evalExprMono rt cls n env a) (\lam oa => \case \elim oa \with {
+      | eExc ev => monoRefl
+      | eVal av => applyValMono rt cls n (vBuiltin nm got) av
+    })
+    | eVal vBox => bindMono (evalExprMono rt cls n env a) (\lam oa => \case \elim oa \with {
+      | eExc ev => monoRefl
+      | eVal av => applyValMono rt cls n vBox av
+    })
+    | eVal (vData _ _) => monoRefl
+    | eVal (vObj _ _ _) => monoRefl
+    | eVal (vStaticRef _) => monoRefl
+    | eVal (vLong _) => monoRefl
+    | eVal (vStr _) => monoRefl
+    | eVal (vInt _) => monoRefl
+    | eVal (vBool _) => monoRefl
+    | eVal (vExcObj _ _) => monoRefl
+  })
+  | suc n, jInvoke recv m args => bindMono (evalExprMono rt cls n env recv) (\lam o => \case \elim o \with {
+    | eExc ev => monoRefl
+    | eVal rv => bindMono (evalArgsMono rt cls n env args) (\lam oas => \case \elim oas \with {
+      | aExc ev => monoRefl
+      | aVals vs => invokeMethodMono rt cls n rv m vs
+    })
+  })
+  | suc n, jCallStatic q args => bindMono (evalArgsMono rt cls n env args) (\lam oas => \case \elim oas \with {
+    | aExc ev => monoRefl
+    | aVals vs => callStaticMono rt cls n q vs
+  })
+  | suc n, jNew t args => bindMono (evalArgsMono rt cls n env args) (\lam oas => monoRefl)
+  | suc n, jDataNew tag args => bindMono (evalArgsMono rt cls n env args) (\lam oas => monoRefl)
+  | suc n, jTagEq d k => bindMono (evalExprMono rt cls n env d) (\lam o => monoRefl)
+  | suc n, jDataField d i => bindMono (evalExprMono rt cls n env d) (\lam o => monoRefl)
+  | suc n, jCond c a b => bindMono (evalExprMono rt cls n env c) (\lam o => \case \elim o \with {
+    | eExc ev => monoRefl
+    | eVal (vBool true) => evalExprMono rt cls n env a
+    | eVal (vBool false) => evalExprMono rt cls n env b
+    | eVal vBox => monoRefl
+    | eVal (vData _ _) => monoRefl
+    | eVal (vClos _ _ _) => monoRefl
+    | eVal (vObj _ _ _) => monoRefl
+    | eVal (vBuiltin _ _) => monoRefl
+    | eVal (vStaticRef _) => monoRefl
+    | eVal (vLong _) => monoRefl
+    | eVal (vStr _) => monoRefl
+    | eVal (vInt _) => monoRefl
+    | eVal (vExcObj _ _) => monoRefl
+  })
+
+\func evalArgsMono (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (es : Array JExpr)
+  : Mono (evalArgs rt cls n env es) (evalArgs rt cls (suc n) env es) \elim n, es
+  | 0, _ => monoFuel
+  | suc n, nil => monoRefl
+  | suc n, e :: es => bindMono (evalExprMono rt cls n env e) (\lam o => \case \elim o \with {
+    | eExc ev => monoRefl
+    | eVal v => bindMono (evalArgsMono rt cls n env es) (\lam os => monoRefl)
+  })
+
+\func applyValMono (rt : RtSpec) (cls : JClass) (n : Nat) (f a : Value)
+  : Mono (applyVal rt cls n f a) (applyVal rt cls (suc n) f a) \elim n, f
+  | 0, _ => monoFuel
+  | suc n, vClos p body cenv => bindMono (execStmtsMono rt cls n (bindVar cenv p a) body) (\lam o => monoRefl)
+  | suc n, vBuiltin nm got => monoRefl
+  | suc n, vBox => monoRefl
+  | suc n, vData _ _ => monoRefl
+  | suc n, vObj _ _ _ => monoRefl
+  | suc n, vStaticRef _ => monoRefl
+  | suc n, vLong _ => monoRefl
+  | suc n, vStr _ => monoRefl
+  | suc n, vInt _ => monoRefl
+  | suc n, vBool _ => monoRefl
+  | suc n, vExcObj _ _ => monoRefl
+
+\func invokeMethodMono (rt : RtSpec) (cls : JClass) (n : Nat) (recv : Value) (m : JIdent) (vs : Array Value)
+  : Mono (invokeMethod rt cls n recv m vs) (invokeMethod rt cls (suc n) recv m vs) \elim n, recv
+  | 0, _ => monoFuel
+  | suc n, vObj c ms cenv => cases (lookupClassMethod ms m) \with {
+    | nothing => monoRefl
+    | just pb => cases vs \with {
+      | a :: nil => bindMono (execStmtsMono rt cls n (bindVar (bindVar cenv c (vObj c ms cenv)) pb.1 a) pb.2)
+                             (\lam o => monoRefl)
+      | nil => monoRefl
+      | a :: b :: vs => monoRefl
+    }
+  }
+  | suc n, vBox => monoRefl
+  | suc n, vData _ _ => monoRefl
+  | suc n, vClos _ _ _ => monoRefl
+  | suc n, vBuiltin _ _ => monoRefl
+  | suc n, vStaticRef _ => monoRefl
+  | suc n, vLong _ => monoRefl
+  | suc n, vStr _ => monoRefl
+  | suc n, vInt _ => monoRefl
+  | suc n, vBool _ => monoRefl
+  | suc n, vExcObj _ _ => monoRefl
+
+\func callStaticMono (rt : RtSpec) (cls : JClass) (n : Nat) (q : JQIdent) (vs : Array Value)
+  : Mono (callStatic rt cls n q vs) (callStatic rt cls (suc n) q vs) \elim n
+  | 0 => monoFuel
+  | suc n => cases (lookupMethod cls q) \with {
+    | just mth => cases vs \with {
+      | nil => bindMono (execStmtsMono rt cls n nil (JMethod.mBody {mth})) (\lam o => monoRefl)
+      | _ :: _ => monoRefl
+    }
+    | nothing => monoRefl
+  }
+
+\func execStmtMono (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (s : JStmt)
+  : Mono (execStmt rt cls n env s) (execStmt rt cls (suc n) env s) \elim n, s
+  | 0, _ => monoFuel
+  | suc n, jComment _ => monoRefl
+  | suc n, jLocal _ x e => bindMono (evalExprMono rt cls n env e) (\lam o => monoRefl)
+  | suc n, jLocalClass c ms => monoRefl
+  | suc n, jThrow e => bindMono (evalExprMono rt cls n env e) (\lam o => monoRefl)
+  | suc n, jReturn e => bindMono (evalExprMono rt cls n env e) (\lam o => monoRefl)
+
+\func execStmtsMono (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (ss : Array JStmt)
+  : Mono (execStmts rt cls n env ss) (execStmts rt cls (suc n) env ss) \elim n, ss
+  | 0, _ => monoFuel
+  | suc n, nil => monoRefl
+  | suc n, s :: ss => bindMono (execStmtMono rt cls n env s) (\lam o => \case \elim o \with {
+    | oReturn v => monoRefl
+    | oExcS ev => monoRefl
+    | oNormal env' => execStmtsMono rt cls n env' ss
+  })
+
+-- ---------------------------------------------------------------------------
+-- Any amount of extra fuel, and the whole-program runner.
+--
+-- Stated as `n + k` rather than `n <= m`, because `+` recurses on its second
+-- argument: `n + suc k` IS `suc (n + k)`, so the step lemmas iterate with no
+-- arithmetic at all.
+-- ---------------------------------------------------------------------------
+
+\func evalExprMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (env : Env) (e : JExpr)
+  : Mono (evalExpr rt cls n env e) (evalExpr rt cls (n Nat.+ k) env e) \elim k
+  | 0 => monoRefl
+  | suc k => monoTrans (evalExprMonoPlus rt cls n k env e) (evalExprMono rt cls (n Nat.+ k) env e)
+
+\func execStmtsMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (env : Env) (ss : Array JStmt)
+  : Mono (execStmts rt cls n env ss) (execStmts rt cls (n Nat.+ k) env ss) \elim k
+  | 0 => monoRefl
+  | suc k => monoTrans (execStmtsMonoPlus rt cls n k env ss) (execStmtsMono rt cls (n Nat.+ k) env ss)
+
+\func runClassMono (rt : RtSpec) (cls : JClass) (entry : JIdent) (n : Nat)
+  : Mono (runClass rt cls entry n) (runClass rt cls entry (suc n)) =>
+  bindMono (callStaticMono rt cls n entry nil) (\lam o => monoRefl)
+
+\func runClassMonoPlus (rt : RtSpec) (cls : JClass) (entry : JIdent) (n k : Nat)
+  : Mono (runClass rt cls entry n) (runClass rt cls entry (n Nat.+ k)) \elim k
+  | 0 => monoRefl
+  | suc k => monoTrans (runClassMonoPlus rt cls entry n k) (runClassMono rt cls entry (n Nat.+ k))
+
+-- `JEval`'s clock can be raised to any bigger one. This is the form a proof by
+-- induction on a λ□ derivation consumes: the clocks of two sub-derivations are
+-- combined by raising both to their sum.
+\func jevalAtLeast {rt : RtSpec} {cls : JClass} {entry : JIdent} {v : Value}
+                   (j : JEval rt cls entry v) (k : Nat)
+  : runClass rt cls entry (j.1 Nat.+ k) = rOk (rvValue v) =>
+  runClassMonoPlus rt cls entry j.1 k (rvValue v) j.2
+
+\func fuelMono {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} {e : JExpr} {r : ExprOut}
+                (p : evalExpr rt cls n env e = rOk r) : evalExpr rt cls (suc n) env e = rOk r =>
+  evalExprMono rt cls n env e r p

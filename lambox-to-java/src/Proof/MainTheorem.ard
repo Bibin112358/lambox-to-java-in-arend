@@ -1,0 +1,58 @@
+\import Proof.BackendCorrect
+\import Proof.CSubst (LCf)
+\import Proof.ClassLookup
+\import Proof.CompileValue
+\import Proof.Statement (CorrectClosedFO, progClassName)
+\import Semantics.LambdaBoxEnv
+\import Proof.SubstToEnv (GlobClosed)
+\import Semantics.JavaEval
+\import Semantics.JavaValue
+\import Semantics.LambdaBoxEval
+\import Semantics.LambdaBoxAxioms (lbAxioms)
+\import Proof.OracleFOShipped (oracleFOShipped, oracleArgsFOShipped)
+\import Proof.OracleShipped (oracleShipped)
+\import Semantics.RtInt63 (rtInt63)
+\import Compiler.LambdaBox
+\import Compiler.ToJava
+
+-- =============================================================================
+-- THE MAIN THEOREM: `correctClosedFO : CorrectClosedFO` (stated in
+-- `Proof/Statement.ard`).
+--
+-- `Proof/BackendCorrect.ard` proves the backend correct for any runtime model
+-- and λ□ oracle satisfying `SimHyps`. Here every hypothesis is discharged for
+-- what is actually shipped (the runtime model `rtInt63`, the λ□ oracle
+-- `lbAxioms`):
+--
+--   * class facts, for every compiled program: `Proof/ClassLookup.ard`;
+--   * runtime facts and the axiom table's shape: same file;
+--   * the two oracles agree: `Proof/OracleShipped.ard`;
+--   * the λ□ oracle takes and returns first-order values: `Proof/OracleFOShipped.ard`.
+--
+-- `backendShipped` is the general form: for ANY result, including functions,
+-- Java returns the value the backend compiles it to (`CV`, `Proof/CompileValue.ard`).
+--
+-- Trusted, i.e. outside every statement: the printer (`Compiler/JavaPrint.ard`),
+-- the real JVM against `Semantics/JavaEval.ard`, and `runtime/Rt.java` against
+-- `Semantics/RtInt63.ard`.
+-- =============================================================================
+
+\func shippedHyps (p : LBProgram) : SimHyps lbAxioms rtInt63 (compileClass progClassName p) p.1 \cowith
+  | hConst => \lam kn cb body lk cbb => (classOK progClassName p).1 kn cb body lk cbb
+  | hAxiom => \lam kn cb impl lk cbn ai => (classOK progClassName p).2 kn cb impl lk cbn ai
+  | hValueOf => (classOK progClassName p).3
+  | hRtValueOf => \lam x => rtOKShipped.1 x
+  | hRtField => \lam nm k h => rtOKShipped.2 nm k h
+  | hImpl => \lam kn impl h => axImplShape kn impl h
+  | hAgree => oracleShipped
+  | hFO => oracleFOShipped
+  | hArgsFO => \lam kn xs r h => oracleArgsFOShipped kn xs r h
+
+\func backendShipped {p : LBProgram} {v : LBTerm} (gc : GlobClosed p.1) (ct : LCf 0 p.2) (d : EvalProgram lbAxioms p v)
+  : \Sigma (w : EV) (v = quote w) (jv : Value)
+           (JEval rtInt63 (compileClass progClassName p) bodyMethodName jv)
+           (CV rtInt63 (compileClass progClassName p) w jv) =>
+  backendCorrect {lbAxioms} {rtInt63} {p} {v} (shippedHyps p) (bodyLookup progClassName p) gc ct d
+
+\func correctClosedFO : CorrectClosedFO =>
+  \lam {p} {v} gc ct d fo => backendCorrectFO {lbAxioms} {rtInt63} {p} {v} (shippedHyps p) (bodyLookup progClassName p) gc ct d fo

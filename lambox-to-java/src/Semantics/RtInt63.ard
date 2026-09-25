@@ -1,0 +1,126 @@
+\import Arith.Nat
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Semantics.JavaValue
+\import Semantics.Res
+\import Semantics.RtLong (mkBool, rtStaticCallLong, builtinArityLong, builtinRunLong)
+\import Compiler.Int63
+\import Compiler.JavaAst
+\import Set
+\import Compiler.StringUtil (intEqB)
+
+-- =============================================================================
+-- The other instance of `RtSpec`: the `Rt.PRIM_*_INT63` family, i.e. λ□'s
+-- primitive int as the language actually defines it.
+--
+-- THE POINT OF THIS FILE is that it is not an independent specification. Where
+-- `Semantics/RtLong.ard` had to write `wrap64` from the JLS -- the JVM's rule,
+-- which λ□ never asked for -- this one normalizes with `Int63.wrap63`, THE SAME
+-- function `Semantics/LambdaBoxAxioms.ard` uses for λ□'s own `prim_*_int` oracle. That
+-- sharing is the claim: the backend computes what the source language says,
+-- rather than something that happens to agree on small values.
+--
+-- So the pair (`rtLong`, `rtInt63`) is a before/after, and what it fixed is not
+-- only the `prim_*_int` family: Lean's `Nat.add`/`Nat.mul` are i63 operations
+-- too (see the correction at the top of `Semantics/LambdaBoxAxioms.ard`) and
+-- `Compiler/JavaAxioms.ard` routes them here as well. `int63NowAgrees` and
+-- `natOverflowNowAgrees` in `ModelChecks/CorrectInstances.ard` are the two witnesses
+-- that used to fail.
+--
+-- `Proof/Statement.ard`'s runtime-agreement hypothesis `OracleAgree` is PROVED
+-- at this pair: `Proof/OracleShipped.ard`'s `oracleShipped`, once `rtLong`
+-- modelled every constant `javaAxioms` emits for a λ□-computable axiom.
+--
+-- ---------------------------------------------------------------------------
+-- WHY THIS COSTS NOTHING, which is what made it the default
+-- ---------------------------------------------------------------------------
+-- A `Uint63` is held in a `long` restricted to [0, 2^63) -- exactly the
+-- non-negative half of `long`'s range -- so it is boxed the same way `rtLong`'s
+-- values are and no `BigInteger` appears. Java's `+`, `-` and `*` on `long` are
+-- two's-complement, i.e. mod 2^64 (JLS 4.2.2), and masking with 2^63-1 turns
+-- that into mod 2^63: one AND per operation. `Rt.java`'s family does exactly
+-- that, and this file models exactly that family.
+--
+-- WHAT STAYS ON `_LONG`, and why that is not a deviation. `Nat.sub` (truncating
+-- at zero, Lean's convention rather than i63's), `Nat.div`/`mod`/`ble`/`blt`
+-- and the comparisons cannot leave [0, 2^63) on arguments already in it, so the
+-- `_LONG` constants compute the answers the i63 ones would -- `long` and i63
+-- arithmetic differ ONLY on overflow. They are modelled here by layering over
+-- `rtLong` rather than duplicated. The `INT_*` and `ARRAY_*` groups are
+-- unmodelled by either instance, which is a named gap.
+-- =============================================================================
+
+-- The four operations `Rt.PRIM_*_INT63` provides. Binary, like every other
+-- realization -- the arity contract `RtSpec.builtinArity` exists to state.
+\func builtinArityInt63 (f : JIdent) : Maybe Nat =>
+  \case f == "PRIM_ADD_INT63" \with { | true => just 2 | false =>
+  \case f == "PRIM_SUB_INT63" \with { | true => just 2 | false =>
+  \case f == "PRIM_MUL_INT63" \with { | true => just 2 | false =>
+  \case f == "PRIM_EQB_INT63" \with { | true => just 2 | false => nothing } } } }
+
+-- THE WHOLE RUNTIME, not just the new family. With `primRepr := int63Repr` the
+-- generator emits `PRIM_*_INT63` for λ□ primitive-int operations AND
+-- `PRIM_*_LONG`/`NAT_SUB_LONG` for the Lean machine families, because
+-- `JavaAxioms.leanOpSuffix` is a separate answer to a separate question. A
+-- model that covered only the first would be stuck on every Lean program, so
+-- this instance LAYERS: the int63 family, then everything `rtLong` provides.
+--
+-- The layering is also the honest reading of what changed. `rtLong` and
+-- `rtInt63` are not two disjoint runtimes but two CONFIGURATIONS of one, and
+-- the only difference between them is which family realizes the four λ□
+-- primitive-int operations.
+\func builtinArityShipped (f : JIdent) : Maybe Nat =>
+  \case builtinArityInt63 f \with {
+    | just k => just k
+    | nothing => builtinArityLong f
+  }
+
+\func builtinRunShipped (f : JIdent) (vs : Array Value) : Res Value =>
+  \case builtinArityInt63 f \with {
+    | just _ => builtinRunInt63 f vs
+    | nothing => builtinRunLong f vs
+  }
+
+\func rtFieldInt63 (f : JIdent) : Maybe Value =>
+  \case builtinArityShipped f \with {
+    | just _ => just (vBuiltin f nil)
+    | nothing => nothing
+  }
+
+-- Each operation normalizes its ARGUMENTS and its RESULT, mirroring `u63()` and
+-- the trailing mask in `Rt.java`. Normalizing on the way in is not redundant:
+-- it is what makes each constant correct in isolation, so a caller that hands
+-- in an un-normalized value (a literal the generator did not normalize, say)
+-- cannot change the answer.
+\func builtinRunInt63 (f : JIdent) (vs : Array Value) : Res Value =>
+  \case vs \with {
+    | vLong x :: vLong y :: nil =>
+      \let | a => wrap63 x
+           | b => wrap63 y
+      \in
+      \case f == "PRIM_ADD_INT63" \with {
+        | true => rOk (vLong (norm63 (pos (a Nat.+ b)))) | false =>
+      \case f == "PRIM_MUL_INT63" \with {
+        | true => rOk (vLong (norm63 (pos (a Nat.* b)))) | false =>
+      -- `Nat.-` lands in `Int`, and `norm63` maps a negative difference back
+      -- into range: 1 - 2 is 2^63-1, the unsigned wraparound that `rtLong` gets
+      -- wrong.
+      \case f == "PRIM_SUB_INT63" \with {
+        | true => rOk (vLong (norm63 (a Nat.- b))) | false =>
+      \case f == "PRIM_EQB_INT63" \with {
+        | true => rOk (mkBool (intEqB (pos a) (pos b))) | false => rStuck
+      } } } }
+    | _ => rStuck
+  }
+
+-- The static methods are the representation-independent half -- `Rt.unbound`,
+-- `Rt.freeVar`, `Rt.noBranch` and `Long.valueOf` mean the same thing here as
+-- they do under `rtLong`, so this reuses that definition rather than copying
+-- it. Only the arithmetic differs between the two instances, which is the
+-- difference worth having two instances for.
+\instance rtInt63 : RtSpec
+  | rtField => rtFieldInt63
+  | builtinArity => builtinArityShipped
+  | builtinRun => builtinRunShipped
+  | rtStaticCall => rtStaticCallLong

@@ -28,29 +28,14 @@ if [ ! -f "$AREND_JAR" ]; then
   exit "$MISSING_TOOL_EXIT"
 fi
 
-# The compiler project: the semantics of the Java fragment, λ□'s semantics and
-# its runner, the correctness statement, and the generated-names lemma.
-compiler_modules=(
-  Formal.JavaEval
-  Formal.LambdaBoxEval
-  Formal.LambdaBoxRun
-  Formal.LambdaBoxSound
-  Formal.LbAxioms
-  Formal.RtInt63
-  Formal.Correct
-  Formal.Int64RewriteSpec
-  Formal.RtLong
-  Formal.NodePathUnique
-)
-
-# The examples project: the semantics RUN on committed λ□ programs, the two
-# semantics agreeing on them, and the instances and refutation of the
-# correctness statement.
-example_modules=(
-  Formal.JavaEvalRuns
-  Formal.Agreement
-  Formal.CorrectInstances
-)
+# Every module of Compiler/, Semantics/ and Proof/, and the examples project's
+# ModelChecks/ -- listed from the directories, so a new file is never missed.
+modules_in() {  # <project> <dir>...
+  local project=$1; shift
+  (cd "$project/src" && for d in "$@"; do ls "$d"/*.ard; done) | sed 's/\.ard$//; s#/#.#g'
+}
+mapfile -t compiler_modules < <(modules_in "$AREND_PROJECT" Compiler Semantics Proof)
+mapfile -t example_modules < <(modules_in "$AREND_EXAMPLES_PROJECT" ModelChecks)
 
 fail=0
 

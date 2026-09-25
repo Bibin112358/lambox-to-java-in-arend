@@ -1,4 +1,4 @@
-\import LambdaBox
+\import Compiler.LambdaBox
 \import Data.Bool
 \import Data.Maybe
 \import Data.String

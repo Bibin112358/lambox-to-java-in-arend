@@ -1,0 +1,749 @@
+-- Formal semantics of lambda-box (λ□): the weak call-by-value evaluation
+-- relation, in Arend.
+--
+-- `Compiler/LambdaBox.ard` defines the SYNTAX only. This module adds the meaning of that
+-- syntax, i.e. the object every future correctness statement about this
+-- compiler is stated against ("the generated Java computes what λ□ says it
+-- computes"). It is the source-language counterpart of `Semantics/JavaEval.ard`,
+-- and like it, nothing in the compiler imports it: a specification, not a pass.
+-- Check it by naming it (`arend arend.yaml Formal.LambdaBoxEval`).
+--
+-- Sources / inspiration:
+--   * MetaRocq erasure/theories/EWcbvEval.v -- `eval`, the canonical big-step
+--     weak cbv relation for λ□ (this file is a transcription of it).
+--       https://metarocq.github.io/html/MetaRocq.Erasure.EWcbvEval.html
+--       https://github.com/MetaRocq/metarocq/blob/coq-8.20/erasure/theories/EWcbvEval.v
+--   * MetaRocq erasure/theories/ECSubst.v   -- `csubst`, `substl`
+--   * MetaRocq erasure/theories/EGlobalEnv.v -- `lookup_env`, `lookup_constructor`,
+--     `iota_red`, `fix_subst`, `cunfold_fix`
+--
+-- ONE DELIBERATE EXTENSION, the axiom oracle (`LBSpec` below), which upstream
+-- does NOT have. Every level of the reference pipeline was checked first:
+--   * MetaRocq `EWcbvEval.v` has no axiom rule at all. `eval_prim` (:275)
+--     evaluates primitive VALUES (int/float/string/array), never a primitive
+--     OPERATION, and `has_axioms` (:1695) is a wellformedness flag only -- an
+--     axiom is admitted into the environment and then cannot be evaluated.
+--   * CertiRocq `LambdaBoxMut/wcbvEval.v` is explicit about it: axioms are a
+--     "hack coding of axioms in environment" (:312) and evaluation RAISES on
+--     one. So being stuck on an axiom is upstream λ□'s actual behaviour, and
+--     was this file's until the oracle below.
+--   * CertiRocq `LambdaANF/eval.v` is where the pipeline solves it, one IR
+--     later, and is what `LBSpec` copies: `prims := M.t (list val -> option
+--     val)` (:24) as a section variable `Variable (pr : prims)` (:28), used by
+--     the relation's `BStep_prim` rule (:1331) with the premises in the order
+--     "collect the arguments, look the primitive up, let it compute".
+--   * peregrine `theories/EvalBox.v` -- the same oracle in the same shape on the
+--     functional side (`Variable (pr : prims)` :25, the three-step lookup
+--     :50-53), with `bstep_f_equiv` (:122) relating function to relation. That
+--     is this file plus `Semantics/LambdaBoxRun.ard` plus
+--     `Proof/LambdaBoxSound.ard`, so the triple below is theirs, not invented
+--     here.
+--   * CompCert `Events.v` `external_call` -- the reason to QUANTIFY over the
+--     oracle rather than define it, already cited by `RtSpec` in
+--     `Semantics/JavaValue.ard`. Both semantics take their runtime as a parameter,
+--     so an agreement between them is an agreement modulo one shared
+--     assumption, stated rather than hidden.
+--
+-- ---------------------------------------------------------------------------
+-- WHICH λ□ SEMANTICS? (the `WcbvFlags` choice, made once and baked in)
+-- ---------------------------------------------------------------------------
+-- Upstream, `eval` is parameterized by
+--   `Class WcbvFlags := { with_prop_case ; with_guarded_fix ; with_constructor_as_block }`
+-- and each flag switches whole rules on and off. This file does NOT carry the
+-- flags as a record parameter: all three are FIXED, because for each of them our
+-- setting is already determined by the AST we consume and by the backend we
+-- intend to prove correct. Instantiating instead of parameterizing removes the
+-- rules that could never fire (and the `flag = false` premise on every rule that
+-- could). The choices, with their justification:
+--
+--   * `with_constructor_as_block := true`. `Compiler/LambdaBox.ard`'s `construct` carries
+--     an `Array LBTerm` of ALL constructor fields, which is what Peregrine's
+--     `ast box` pass produces and what `Compiler/ToJava.ard` compiles (one `Rt.Data`
+--     allocation per `construct` node). So `eval_iota_block` / `eval_proj_block`
+--     / `eval_construct_block` are the rules that apply, and their higher-order
+--     counterparts (`eval_iota`, `eval_proj`, `eval_construct`, and the
+--     `tConstruct ind c []`-is-an-atom case of `atom`) are dropped.
+--     NOTE the asymmetry with `Compiler/Serialize.ard`: EXPORT un-blocks a `construct`
+--     into curried `tApp`s because Peregrine's wellformedness checker runs with
+--     `cstr_as_blocks = false`. That is a property of the serialized form, not
+--     of the terms we evaluate and compile.
+--
+--   * `with_prop_case := false`. The propositional rules (`eval_iota_sing`,
+--     `eval_proj_prop`) fire on inductives with `ind_propositional = true`,
+--     which erasure is supposed to have removed already -- see
+--     `OneInductiveBody.indPropositional` in `Compiler/LambdaBox.ard` ("Should always be
+--     false"). This is MetaRocq's own `opt_wcbv_flags`/`target_wcbv_flags`
+--     setting. The `= false` premise survives as an explicit side condition of
+--     `evalIota`/`evalProj` (via `constructorInfo`), so a propositional
+--     inductive does not evaluate rather than evaluating differently.
+--
+--   * `with_guarded_fix := false` (MetaRocq's `target_wcbv_flags`). This is the
+--     one genuine choice, and it is dictated by the backend. `Compiler/ToJava.ard`
+--     compiles `fix` to a local class with one method per definition, and a
+--     sibling is reached as a forwarding closure whose `apply` CALLS that
+--     method: so the body runs as soon as the closure is applied, with no
+--     inspection of any argument. (The justification is the same one the
+--     earlier mutable-`Rt.Fn[]`-knot encoding had, and it survived that
+--     encoding being replaced -- what matters is only that application
+--     triggers the unfolding.) That is `eval_fix'` (unguarded), not
+--     `eval_fix`/`eval_fix_value` (guarded).
+--     Consequently `FixDef.principalArgIdx` is read (it is the `narg` of
+--     `cunfold_fix`) but never constrains a reduction here, exactly as upstream
+--     under those flags. The guarded rules are also the ones that would force a
+--     `mkApps` spine analysis into every `app` rule.
+--
+-- Rules dropped because the corresponding SYNTAX is absent from `LBTerm`
+-- (see the header of `Compiler/LambdaBox.ard`): `eval_cofix_case`, `eval_cofix_proj`
+-- (no `tCoFix`), `eval_force` (no `tLazy`/`tForce`), and the `tEvar` case.
+--
+-- Two node kinds have NO rule at all, deliberately:
+--   * `bvar` -- a de Bruijn index under no binder is not a value and does not
+--     reduce; upstream `tRel` is likewise absent from `atom` and from every
+--     rule. Evaluation of a closed term never reaches one.
+--   * `fvar` -- a locally-nameless free variable, our addition to λ□; it is the
+--     analogue of `tVar`, which upstream is also stuck (`Compiler/Serialize.ard` prints
+--     it as `tVar_UNREACHABLE`, `Compiler/ToJava.ard` compiles it to a throwing call).
+-- So `Eval spec env (bvar n) v` and `Eval spec env (fvar x) v` are EMPTY types,
+-- which is the statement "this term does not evaluate".
+--
+-- ---------------------------------------------------------------------------
+-- SHAPE OF THE ARENDIFICATION
+-- ---------------------------------------------------------------------------
+-- Arend has no Coq-style indexed inductive families: a `\data`'s constructors
+-- cannot instantiate its parameters freely. The idiomatic replacement is to
+-- ELIMINATE the parameter that is determined syntactically -- here the term
+-- being evaluated -- so `Eval` is declared `\elim t`, one clause per `LBTerm`
+-- constructor. This costs nothing (every upstream rule is already keyed by the
+-- shape of its subject) and buys inversion for free: `\case` on an `Eval`
+-- automatically knows which rules could have produced it. The RESULT `v` stays a
+-- parameter, and the rules that determine it (the atoms, and the two congruence
+-- rules) say so with an explicit `v = ...` argument, the way arend-lib writes
+-- relations.
+--
+-- Everything else follows `Compiler/ToJava.ard`'s termination discipline: functions that
+-- recurse into an `Array LBTerm` child do it INLINE via `xs i` inside
+-- `mkArray`, never through a separate generic helper (see `csubst`).
+
+\import Compiler.LambdaBox
+\import Arith.Nat   -- the `DecSet Nat` instance behind `==`
+-- Only `mkArray`: importing Data.Array wholesale would shadow String's `++`.
+\import Data.Array (mkArray)
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Set
+\import Compiler.StringUtil (nthArr)
+
+
+-- ---------------------------------------------------------------------------
+-- Nat and Array helpers.
+--
+-- The few standard-library operations the transcription needs that are not
+-- borrowed: `Nat.compare` and `List.skipn`/`List.rev`. `List.nth_error` IS
+-- borrowed -- `StringUtil.nthArr`, shared with the Java fragment's semantics --
+-- and equality is `Set.==` throughout. arend-lib's `drop` is deliberately not
+-- used: its result type carries `ndrop n l.len`, which would put length
+-- arithmetic into `iotaRed` and into every rule that mentions it.
+-- ---------------------------------------------------------------------------
+
+-- Coq's `Nat.compare`, used by `csubst` exactly as upstream uses it.
+\data Comparison | cLt | cEq | cGt
+
+\func natCompare (k n : Nat) : Comparison \elim k, n
+  | 0, 0 => cEq
+  | 0, suc _ => cLt
+  | suc _, 0 => cGt
+  | suc k, suc n => natCompare k n
+
+\func natPred (n : Nat) : Nat \elim n
+  | 0 => 0
+  | suc n => n
+
+-- `List.skipn`.
+\func dropArr {A : \Type} (n : Nat) (xs : Array A) : Array A \elim n, xs
+  | 0, xs => xs
+  | suc _, nil => nil
+  | suc n, _ :: xs => dropArr n xs
+
+\func revAppendArr {A : \Type} (xs acc : Array A) : Array A \elim xs
+  | nil => acc
+  | x :: xs => revAppendArr xs (x :: acc)
+
+-- `List.rev`.
+\func revArr {A : \Type} (xs : Array A) : Array A => revAppendArr xs nil
+
+
+-- ---------------------------------------------------------------------------
+-- Substitution (ECSubst.v).
+--
+-- `csubst t k u` replaces de Bruijn index `k` by `t` inside `u`. This is the
+-- CLOSED substitution: it never lifts `t`, because in a weak cbv semantics
+-- everything substituted is a closed value. That is what makes it cheap enough
+-- to be the only substitution λ□ needs (upstream's general `lift`/`subst` from
+-- ELiftSubst.v are only used to relate `csubst` to PCUIC, which we do not do).
+-- Indices above `k` are decremented (`natPred`), i.e. the binder disappears.
+-- ---------------------------------------------------------------------------
+
+-- What `csubst` does at a `bvar n`, given how `k` compares with `n`. The
+-- comparison is a PARAMETER rather than a `\case` inside `csubst`, so that a
+-- proof holding `natCompare k n = c` can rewrite it (a `\case` does not reduce
+-- under a hypothesis about its scrutinee; see Proof/NodePathUnique.ard's header).
+-- `Proof/CSubstLam.ard` is the client.
+\func csubstVar (t : LBTerm) (n : Nat) (c : Comparison) : LBTerm \elim c
+  | cEq => t
+  | cGt => bvar n
+  | cLt => bvar (natPred n)
+
+\func csubst (t : LBTerm) (k : Nat) (u : LBTerm) : LBTerm \elim u
+  | box => box
+  | bvar n => csubstVar t n (natCompare k n)
+  | fvar x => fvar x
+  | lambda na m => lambda na (csubst t (suc k) m)
+  | letIn na b b' => letIn na (csubst t k b) (csubst t (suc k) b')
+  | app u v => app (csubst t k u) (csubst t k v)
+  | const kn => const kn
+  | construct ind c args =>
+    construct ind c (mkArray {LBTerm} {args.len} (\lam i => csubst t k (args i)))
+  | case ind npars discr brs =>
+    case ind npars (csubst t k discr)
+      (mkArray {\Sigma (Array BinderName) LBTerm} {brs.len}
+        (\lam i => ((brs i).1, csubst t ((brs i).1.len Nat.+ k) (brs i).2)))
+  | proj p discr => proj p (csubst t k discr)
+  | fix defs idx =>
+    fix (mkArray {FixDef LBTerm} {defs.len}
+          (\lam j => \new FixDef LBTerm (defs j).defName
+                                        (csubst t (defs.len Nat.+ k) (defs j).defBody)
+                                        (defs j).principalArgIdx))
+        idx
+  | prim pv => prim pv
+
+-- `substl defs body = fold_left (fun bod t => csubst t 0 bod) defs body`:
+-- substitute the whole array, LEFTMOST FIRST, each time for index 0. So the
+-- head of `defs` becomes index 0 of `body`.
+\func substl (defs : Array LBTerm) (body : LBTerm) : LBTerm \elim defs
+  | nil => body
+  | d :: ds => substl ds (csubst d 0 body)
+
+
+-- ---------------------------------------------------------------------------
+-- The global environment (EGlobalEnv.v).
+--
+-- Decidable equality of `Kername` is needed by `lookup_env`; `Kername` is a
+-- `ModPath` plus an `Ident`, and `ModPath` is recursive, so it gets its own
+-- Bool-valued equality. `Ident = String` uses `Set.==`; `Nat` uses `natEq`
+-- (spelled out rather than pulling in `Arith.Nat`'s instance).
+-- ---------------------------------------------------------------------------
+
+\func dirPathEq (a b : DirPath) : Bool \elim a, b
+  | nil, nil => true
+  | nil, _ :: _ => false
+  | _ :: _, nil => false
+  | x :: a, y :: b => (x == y) and dirPathEq a b
+
+\func modPathEq (a b : ModPath) : Bool \elim a, b
+  | mpFile p, mpFile q => dirPathEq p q
+  | mpFile _, mpBound _ _ _ => false
+  | mpFile _, mpDot _ _ => false
+  | mpBound _ _ _, mpFile _ => false
+  | mpBound p x m, mpBound q y n => dirPathEq p q and (x == y) and (m == n)
+  | mpBound _ _ _, mpDot _ _ => false
+  | mpDot _ _, mpFile _ => false
+  | mpDot _ _, mpBound _ _ _ => false
+  | mpDot p x, mpDot q y => modPathEq p q and (x == y)
+
+\func kernameEq (a b : Kername) : Bool =>
+  modPathEq a.kerModPath b.kerModPath and (a.kerName == b.kerName)
+
+-- `lookup_env`: scan from the HEAD, which is the declaration added LAST (see the
+-- ORDER note on `GlobalDeclarations` in `Compiler/LambdaBox.ard`).
+\func lookupEnv (env : GlobalDeclarations) (kn : Kername) : Maybe GlobalDecl \elim env
+  | nil => nothing
+  | e :: env => \case kernameEq e.1 kn \with {
+    | true => just e.2
+    | false => lookupEnv env kn
+  }
+
+\func lookupConstant (env : GlobalDeclarations) (kn : Kername) : Maybe ConstantBody =>
+  \case lookupEnv env kn \with {
+    | nothing => nothing
+    | just (constantDecl cb) => just cb
+    | just (inductiveDecl _) => nothing
+  }
+
+\func lookupInductive (env : GlobalDeclarations) (ind : InductiveId)
+  : Maybe (\Sigma MutualInductiveBody OneInductiveBody) =>
+  \case lookupEnv env ind.indMutualBlock \with {
+    | nothing => nothing
+    | just (constantDecl _) => nothing
+    | just (inductiveDecl mib) => \case nthArr ind.indIdx mib.indBodies \with {
+      | nothing => nothing
+      | just oib => just (mib, oib)
+    }
+  }
+
+\func lookupConstructor (env : GlobalDeclarations) (ind : InductiveId) (c : Nat)
+  : Maybe (\Sigma MutualInductiveBody OneInductiveBody ConstructorBody) =>
+  \case lookupInductive env ind \with {
+    | nothing => nothing
+    | just (mib, oib) => \case nthArr c oib.indCtors \with {
+      | nothing => nothing
+      | just cb => just (mib, oib, cb)
+    }
+  }
+
+-- `constructor_isprop_pars_decl`, with the constructor body replaced by the one
+-- number the rules read from it (`cstr_nargs`): is the inductive propositional,
+-- how many parameters does the block have, how many fields does constructor `c`
+-- have.
+\func constructorInfo (env : GlobalDeclarations) (ind : InductiveId) (c : Nat)
+  : Maybe (\Sigma Bool Nat Nat) =>
+  \case lookupConstructor env ind c \with {
+    | nothing => nothing
+    | just (mib, oib, cb) => just (oib.indPropositional, mib.indNpars, cb.cstrNargs)
+  }
+
+-- `cstr_arity mdecl cdecl = ind_npars + cstr_nargs`: in constructor-block form
+-- a `construct` node carries the parameters too, so this is the length its
+-- argument array must have.
+\func constructorArity (env : GlobalDeclarations) (ind : InductiveId) (c : Nat) : Maybe Nat =>
+  \case lookupConstructor env ind c \with {
+    | nothing => nothing
+    | just (mib, _, cb) => just (mib.indNpars Nat.+ cb.cstrNargs)
+  }
+
+
+-- ---------------------------------------------------------------------------
+-- Reduction helpers (EGlobalEnv.v).
+-- ---------------------------------------------------------------------------
+
+-- `iota_red npar args br = substl (rev (skipn npar args)) br.2`: drop the
+-- inductive parameters, then substitute the remaining fields for the branch's
+-- binders. The `rev` is what makes the LAST binder de Bruijn index 0 -- the
+-- convention `Compiler/ToJava.ard`'s `pushFields` implements by pushing left to right.
+\func iotaRed (npars : Nat) (args : Array LBTerm) (br : \Sigma (Array BinderName) LBTerm) : LBTerm =>
+  substl (revArr (dropArr npars args)) br.2
+
+-- `fix_subst mfix = [tFix mfix (n-1), ..., tFix mfix 0]` (n = #|mfix|), i.e. the
+-- knot: every mutually defined function, most recent index first, so that inside
+-- a body de Bruijn 0 is the LAST definition of the block. `Compiler/ToJava.ard`'s
+-- `pushFix` mirrors this ordering with its `Rt.Fn[]` slots.
+\func fixSubstAux (defs : Array (FixDef LBTerm)) (n : Nat) : Array LBTerm \elim n
+  | 0 => nil
+  | suc n => fix defs n :: fixSubstAux defs n
+
+\func fixSubst (defs : Array (FixDef LBTerm)) : Array LBTerm => fixSubstAux defs defs.len
+
+-- `cunfold_fix`: the body of definition `idx` with the whole block substituted
+-- for its recursive references, together with that definition's principal
+-- argument index (`rarg`). Under unguarded fix the `narg` is only carried, never
+-- compared -- see the flag discussion in the header.
+-- (`nthArr`'s element type is given explicitly: left to inference it is solved
+-- at the level variables of THIS definition, and the `defBody` read off the
+-- result then lands in a copy of `LBTerm` that is not the one `substl` expects.)
+--
+-- The lookup result is a PARAMETER of `cunfoldAt` rather than a `\case` inside
+-- `cunfoldFix`, so that a proof holding `nthArr idx defs = m` can rewrite it (the
+-- quirk Proof/NodePathUnique.ard's header describes). `Proof/SubstToEnv.ard`
+-- is the client; the function computed is unchanged.
+\func cunfoldAt (defs : Array (FixDef LBTerm)) (m : Maybe (FixDef LBTerm)) : Maybe (\Sigma Nat LBTerm) \elim m
+  | nothing => nothing
+  | just d => just (d.principalArgIdx, substl (fixSubst defs) d.defBody)
+
+\func cunfoldFix (defs : Array (FixDef LBTerm)) (idx : Nat) : Maybe (\Sigma Nat LBTerm) =>
+  cunfoldAt defs (nthArr {FixDef LBTerm} idx defs)
+
+
+-- ---------------------------------------------------------------------------
+-- THE AXIOM ORACLE.
+--
+-- An axiom is a constant with no body (`cstBody = nothing`): `Nat.add`,
+-- `prim_add_int`, everything `Compiler/JavaAxioms.ard`'s `javaAxioms` table realizes.
+-- λ□ says nothing about one, so before this the relation was STUCK on every
+-- program that did arithmetic -- while the backend compiled it to a `Rt.java`
+-- constant and the Java semantics happily computed. That asymmetry is what
+-- `LBSpec` removes, in the shape CertiRocq's `LambdaANF/eval.v` uses (see the
+-- header): a map from name to a partial function on values, taken as a
+-- parameter of the semantics rather than defined by it.
+--
+-- TWO FIELDS, NOT ONE, mirroring `RtSpec` (`Semantics/JavaValue.ard`) field for
+-- field. CertiRocq needs only `prims` because LambdaANF's `Eprim x f ys e`
+-- carries all arguments at once; λ□ applies an axiom CURRIED, one `app` node per
+-- argument, exactly as generated Java applies `Rt.Fn`. So both sides need to
+-- know when enough arguments have arrived, and an arity written down is the fix
+-- for the `Rt.curry` class of bug (`RtSpec.builtinArity` says the same).
+--
+-- Anything an instance leaves `nothing` is stuck: a named gap, not a wrong
+-- answer. `lbNone` below leaves everything `nothing` and so recovers the
+-- upstream transcription exactly.
+--
+-- WHAT AN INSTANCE OWES, in CompCert's `external_call` style -- properties
+-- assumed of the oracle, not proved here:
+--   * `axiomRun` returns a VALUE (`Eval spec env v v` for what it returns).
+--     `LBTerm` is terms and values in one type, so this cannot be stated as a
+--     signature the way CertiRocq's `list val -> option val` does.
+--   * it is a function, hence deterministic, which is what keeps `Eval`
+--     deterministic.
+-- Neither is enforced; an instance that violates them makes the relation say
+-- something false, the same way a wrong `Rt.java` would.
+\class LBSpec
+  -- How many arguments the axiom collects before it computes. A name with no
+  -- arity is not an axiom this oracle knows, and stays stuck.
+  | axiomArity : Kername -> Maybe Nat
+  -- What it computes, given exactly that many argument VALUES, left to right.
+  | axiomRun : Kername -> Array LBTerm -> Maybe LBTerm
+
+-- No oracle: every axiom stuck, i.e. λ□ as MetaRocq and CertiRocq have it.
+-- `ModelChecks/JavaEvalRuns.ard`'s `rtNone` is the same instance on the Java side.
+\func lbNone : LBSpec \cowith
+  | axiomArity _ => nothing
+  | axiomRun _ _ => nothing
+
+-- Walk an application spine to its head, gathering the arguments.
+--
+-- `acc` is built by PREPENDING while walking inward (right to left), which
+-- leaves the arguments in left-to-right order without a reverse or a snoc:
+-- `app (app (const kn) a1) a2` gives `(kn, a1 :: a2 :: nil)`.
+--
+-- `nothing` unless the head is a `const` -- that is the only head an axiom can
+-- have, and it is what makes this cheap to test on every application.
+\func axiomSpine (t : LBTerm) (acc : Array LBTerm) : Maybe (\Sigma Kername (Array LBTerm))
+  \elim t
+  | const kn => just (kn, acc)
+  | app f a => axiomSpine f (a :: acc)
+  | _ => nothing
+
+-- "This application is a saturated call to an axiom the oracle knows": the head
+-- is a `const` with a declared arity, and the spine carries exactly that many
+-- arguments.
+--
+-- Tested on the WHOLE application (`app fv av`), not on the function part, so
+-- the spine walk collects the final argument itself -- there is nothing to
+-- append, and the length test is exact, mirroring `applyVal`'s `got'.len == k`
+-- in `Semantics/JavaEval.ard` one for one.
+--
+-- UNDER-application is `nothing`, and then `evalAppCong` makes the partial
+-- application a value -- `app (const kn) a1` for a binary axiom, the λ□ twin of
+-- the Java side's `vBuiltin nm (a1 :: nil)`. No rule is needed for it: the
+-- congruence rule already covers it, since `appCongOk (const _)` is `true`.
+-- OVER-application is `nothing` too, and stays a stuck value, which is again
+-- what the Java side does (a `vBuiltin` whose collected arguments outgrow its
+-- arity never fires).
+--
+-- AN ARITY-0 AXIOM NEVER COMPUTES, because this is only ever consulted on an
+-- `app`. Deliberate, and the same gap the Java side has: `rtField` gives back
+-- `vBuiltin nm nil`, which also only fires when applied.
+\func axiomSat (spec : LBSpec) (t : LBTerm) : Maybe (\Sigma Kername (Array LBTerm)) =>
+  \case axiomSpine t nil \with {
+    | nothing => nothing
+    | just (kn, args) => \case axiomArity {spec} kn \with {
+      | nothing => nothing
+      | just arity => \case args.len == arity \with {
+        | false => nothing
+        | true => just (kn, args)
+      }
+    }
+  }
+
+
+-- ---------------------------------------------------------------------------
+-- The side condition of the application congruence rule.
+--
+-- Upstream (`eval_app_cong`), an application whose function part evaluated to
+-- `f'` is a VALUE only when `f'` cannot start a redex:
+--   ~~ (isLambda f' || isFix f' || isBox f' || isConstructApp f' || isPrimApp f')
+-- (with `isFix` rather than `isFixApp` because our fix is unguarded, and without
+-- `isLazyApp` because there is no `tLazy`). Note the asymmetry, which is
+-- reproduced exactly: `isLambda`/`isFix`/`isBox` look at `f'` ITSELF, whereas
+-- `isConstructApp`/`isPrimApp` look at the HEAD OF ITS APPLICATION SPINE.
+-- Hence two functions: `appCongOk` for `f'`, and `appCongOkSpine` for the head
+-- of an `app` chain.
+-- ---------------------------------------------------------------------------
+
+\func appCongOkSpine (g : LBTerm) : Bool \elim g
+  | app g' _ => appCongOkSpine g'
+  | construct _ _ _ => false
+  | prim _ => false
+  | box => true
+  | bvar _ => true
+  | fvar _ => true
+  | lambda _ _ => true
+  | letIn _ _ _ => true
+  | const _ => true
+  | case _ _ _ _ => true
+  | proj _ _ => true
+  | fix _ _ => true
+
+\func appCongOk (f : LBTerm) : Bool \elim f
+  | box => false
+  | lambda _ _ => false
+  | fix _ _ => false
+  | construct _ _ _ => false
+  | prim _ => false
+  | app g _ => appCongOkSpine g
+  | bvar _ => true
+  | fvar _ => true
+  | letIn _ _ _ => true
+  | const _ => true
+  | case _ _ _ _ => true
+  | proj _ _ => true
+
+
+-- ---------------------------------------------------------------------------
+-- The evaluation relation (EWcbvEval.v, `eval`).
+--
+-- `Eval env t v` : "in the global environment `env`, the closed term `t`
+-- evaluates to the value `v`" -- big-step, weak (no reduction under binders),
+-- call-by-value, deterministic-by-construction in the sense that at most one
+-- rule applies to a given `t` and premise set.
+--
+-- One clause per `LBTerm` constructor; the rule names are the upstream ones.
+-- ---------------------------------------------------------------------------
+
+\data Eval (spec : LBSpec) (env : GlobalDeclarations) (t v : LBTerm) \elim t
+  -- `atom`: box, abstractions and (unguarded) fixpoints are already values.
+  | box => evalAtomBox (v = box)
+  | lambda na b => evalAtomLambda (v = lambda na b)
+  | fix defs idx => evalAtomFix (v = fix defs idx)
+
+  -- `eval_prim` / `evalPrimInt`: a primitive integer evaluates to itself.
+  -- (Upstream's `primArray` case, which evaluates the payload, has no
+  -- counterpart: `PrimTag` has only `primInt63` -- see `Compiler/LambdaBox.ard`.)
+  | prim pv => evalPrim (v = prim pv)
+
+  | const kn => {
+    -- `eval_delta`: unfold a constant to its body.
+    | evalDelta {cb : ConstantBody} {body : LBTerm}
+        (lookupConstant env kn = just cb)
+        (cb.cstBody = just body)
+        (Eval spec env body v)
+
+    -- AN AXIOM IS A VALUE, if the oracle declares an arity for it. No upstream
+    -- counterpart: this is the extension the header names.
+    --
+    -- The premises are the three things that make it one, in the order the
+    -- runner checks them: the constant is DECLARED, it has NO body (which is
+    -- what "axiom" means, and what makes this rule disjoint from `evalDelta` --
+    -- so the relation stays deterministic), and the oracle knows it. A declared
+    -- bodyless constant the oracle does not know stays stuck: the gap stays a
+    -- gap rather than becoming a value.
+    --
+    -- Being a value is ALL this rule says; computing happens at the application
+    -- that saturates it (`evalAxiomApp`). That split is what lets a curried
+    -- axiom collect its arguments through the ordinary congruence rule, and it
+    -- is the same split the Java side makes between `rtField` (the runtime
+    -- constant is an `Fn`) and `builtinRun` (it computes when full).
+    | evalAxiom {cb : ConstantBody} {arity : Nat}
+        (lookupConstant env kn = just cb)
+        (cb.cstBody = nothing)
+        (axiomArity {spec} kn = just arity)
+        (v = const kn)
+  }
+
+  -- `eval_zeta`: let-binding, call-by-value.
+  | letIn _ b0 b1 => evalZeta {b0v : LBTerm}
+      (Eval spec env b0 b0v)
+      (Eval spec env (csubst b0v 0 b1) v)
+
+  | app f a => {
+    -- `eval_box`: applying a proof/erased value stays erased. The argument is
+    -- still evaluated (to some `av`), so `app` is strict in both positions.
+    | evalBox {av : LBTerm}
+        (v = box)
+        (Eval spec env f box)
+        (Eval spec env a av)
+
+    -- `eval_beta`
+    | evalBeta {na : BinderName} {b av : LBTerm}
+        (Eval spec env f (lambda na b))
+        (Eval spec env a av)
+        (Eval spec env (csubst av 0 b) v)
+
+    -- `eval_fix'` (unguarded): the fixpoint unfolds on application, without
+    -- inspecting the principal argument. `narg` is `cunfold_fix`'s first
+    -- component, carried and unused -- see the flag discussion in the header.
+    | evalFix {defs : Array (FixDef LBTerm)} {idx narg : Nat} {fn av : LBTerm}
+        (Eval spec env f (fix defs idx))
+        (cunfoldFix defs idx = just (narg, fn))
+        (Eval spec env a av)
+        (Eval spec env (app fn av) v)
+
+    -- THE ORACLE FIRES: a saturated call to an axiom it knows.
+    --
+    -- `BStep_prim` (CertiRocq `LambdaANF/eval.v:1331`) with the premises in its
+    -- order -- evaluate to get the arguments, look the primitive up, let it
+    -- compute -- differing only in that λ□ collects the arguments through a
+    -- curried spine, so `axiomSat` does the "look it up and check it is full"
+    -- step in one place shared with the runner.
+    --
+    -- The spine is tested on `app fv av`, i.e. AFTER both parts have values, so
+    -- `args` already ends with `av` and every argument in it is a value.
+    --
+    -- `kn` and `args` are EXPLICIT for the reason `evalArgsT-sound` in
+    -- `Proof/LambdaBoxSound.ard` gives for its arrays: left implicit, they are
+    -- solved out of `axiomSat`'s nested `\case`s, which the elaborator defers
+    -- and then reports as an unsolved metavariable at the NEXT premise.
+    | evalAxiomApp {fv av : LBTerm} (kn : Kername) (args : Array LBTerm)
+        (Eval spec env f fv)
+        (Eval spec env a av)
+        (axiomSat spec (app fv av) = just (kn, args))
+        (axiomRun {spec} kn args = just v)
+
+    -- `eval_app_cong`: everything else that is a value applied to a value is a
+    -- value (a stuck application: an axiom the oracle does not know applied to
+    -- arguments, or one still collecting them). `eval_construct` -- the
+    -- higher-order rule that lets a constructor accumulate arguments through
+    -- `tApp` -- is NOT here: in constructor-block form a `construct` node is
+    -- always saturated, and `appCongOk` rejects a construct-headed spine
+    -- accordingly.
+    --
+    -- THE SECOND PREMISE IS THE ORACLE'S EXCLUSION, and it is what keeps the
+    -- relation deterministic: without it, a saturated axiom call would both
+    -- compute (`evalAxiomApp`) and be a stuck value (here). It belongs with
+    -- `appCongOk`, whose whole meaning is "this cannot start a redex" -- with an
+    -- oracle, a saturated axiom spine CAN. It is a premise rather than a
+    -- conjunct inside `appCongOk` so that the runner and the soundness proof can
+    -- hand the equation straight across; a `\case` on `axiomSat` inside
+    -- `appCongOk` would not reduce under a hypothesis about it (the quirk
+    -- `Proof/NodePathUnique.ard`'s header describes).
+    -- It comes AFTER the argument's premise, so that `av` is already solved when
+    -- it is checked -- upstream's three premises keep their order, and the new
+    -- one is appended to them.
+    | evalAppCong {f' av : LBTerm}
+        (Eval spec env f f')
+        (appCongOk f' = true)
+        (Eval spec env a av)
+        (axiomSat spec (app f' av) = nothing)
+        (v = app f' av)
+  }
+
+  -- `eval_construct_block`: a constructor is saturated by construction, so it is
+  -- a congruence -- evaluate every field, left to right, and rebuild the node.
+  -- `vs` is indexed by `args.len`, which is how "same length, pointwise" is
+  -- said in Arend without a separate `All2` relation.
+  | construct ind c args => evalConstruct {arity : Nat} {vs : Array LBTerm args.len}
+      (constructorArity env ind c = just arity)
+      (args.len = arity)
+      (\Pi (i : Fin args.len) -> Eval spec env (args i) (vs i))
+      (v = construct ind c vs)
+
+  -- `eval_iota_block`: evaluate the scrutinee to a constructor of THIS inductive
+  -- (`ind` is shared with the pattern, which is upstream's way of stating it),
+  -- select the branch by constructor index, drop the parameters and substitute
+  -- the fields.
+  | case ind npars discr brs => evalIota
+      {c nargs : Nat} {args : Array LBTerm} {br : \Sigma (Array BinderName) LBTerm}
+      (Eval spec env discr (construct ind c args))
+      (constructorInfo env ind c = just (false, npars, nargs))
+      (nthArr c brs = just br)
+      (args.len = npars Nat.+ nargs)
+      ((dropArr npars args).len = (br.1).len)
+      (Eval spec env (iotaRed npars args br) v)
+
+  -- `eval_proj_block`: primitive projection out of a single-constructor
+  -- (constructor 0) block; the field index is offset by the parameters, the
+  -- same `npars + idx` `Compiler/ToJava.ard` computes.
+  | proj p discr => evalProj {nargs : Nat} {args : Array LBTerm} {a : LBTerm}
+      (Eval spec env discr (construct p.projIndType 0 args))
+      (constructorInfo env p.projIndType 0 = just (false, p.projParamCount, nargs))
+      (args.len = p.projParamCount Nat.+ nargs)
+      (nthArr (p.projParamCount Nat.+ p.projFieldIdx) args = just a)
+      (Eval spec env a v)
+
+
+-- ---------------------------------------------------------------------------
+-- Program evaluation.
+-- ---------------------------------------------------------------------------
+
+-- An `LBProgram` is its declarations plus a body; running it is evaluating the
+-- body in those declarations. This is the left-hand side of every future
+-- correctness statement ("... and the generated Java prints `v`").
+\func EvalProgram (spec : LBSpec) (p : LBProgram) (v : LBTerm) : \Type =>
+  Eval spec p.1 p.2 v
+
+
+-- ---------------------------------------------------------------------------
+-- Sanity checks: small closed programs, evaluated by exhibiting a derivation.
+-- These are the tests of this module -- they typecheck only if the rules fit
+-- together AND the helper functions (`csubst`, `fixSubst`, `substl`, `iotaRed`,
+-- the environment lookups) compute the values the rules ask for, since every
+-- side condition below is discharged by `idp`.
+-- ---------------------------------------------------------------------------
+
+\func idTerm : LBTerm => lambda anon (bvar 0)
+
+-- None of these four mentions an axiom, so each holds for ANY oracle and takes
+-- one as a parameter. That is not only more general: a parameter of class type
+-- is a LOCAL INSTANCE in Arend, which is what lets the nested constructors below
+-- find their `spec` (with `lbNone` written in instead, `evalIdFix`'s innermost
+-- `evalAtomLambda` has nothing to resolve it from and fails to infer).
+
+-- (\lam x => x) box ==> box
+\func evalId (spec : LBSpec) : Eval spec nil (app idTerm box) box =>
+  evalBeta (evalAtomLambda idp) (evalAtomBox idp) (evalAtomBox idp)
+
+-- \let x := box \in x ==> box
+\func evalLet (spec : LBSpec) : Eval spec nil (letIn anon box (bvar 0)) box =>
+  evalZeta (evalAtomBox idp) (evalAtomBox idp)
+
+-- A primitive integer is its own value.
+\func evalPrimSelf (spec : LBSpec)
+  : Eval spec nil (prim (primInt63, 7)) (prim (primInt63, 7)) => evalPrim idp
+
+-- The one-definition knot: `fix { f := \lam x => x } 0` applied to `box`.
+-- Exercises `fixSubst` (the knot array), `substl` and `csubst` at once:
+-- unfolding replaces the recursive reference inside `\lam x => x` -- there is
+-- none, but the index shifting still has to come out right -- and the result is
+-- applied by beta.
+\func idFixDefs : Array (FixDef LBTerm) => (\new FixDef LBTerm anon idTerm 0) :: nil
+
+\func evalIdFix (spec : LBSpec) : Eval spec nil (app (fix idFixDefs 0) box) box =>
+  evalFix (evalAtomFix idp) idp (evalAtomBox idp)
+          (evalBeta (evalAtomLambda idp) (evalAtomBox idp) (evalAtomBox idp))
+
+
+-- ---------------------------------------------------------------------------
+-- And the two oracle rules, against an oracle small enough to derive by hand.
+--
+-- `Semantics/LambdaBoxAxioms.ard` is the real instance, and `ModelChecks/Agreement.ard` runs it
+-- on real programs; what these two check is that the rules themselves fit
+-- together -- that `axiomSat`'s spine walk and length test agree with what
+-- `evalAxiom`/`evalAxiomApp` ask for, every side condition again by `idp`.
+-- ---------------------------------------------------------------------------
+
+\func sndKn : Kername => \new Kername (mpFile nil) "snd"
+
+-- One BINARY axiom, returning its second argument. Binary because that makes the
+-- partial application real (the inner `app` has to be a value, which only
+-- `evalAppCong` can make it), and "second argument" because it pins the ORDER
+-- `axiomSpine` collects in -- an axiom computing something symmetric would not.
+\func lbSnd : LBSpec \cowith
+  | axiomArity kn => \case kernameEq kn sndKn \with { | true => just 2 | false => nothing }
+  | axiomRun kn args => \case kernameEq kn sndKn, args \with {
+    | true, _ :: y :: nil => just y
+    | _, _ => nothing
+  }
+
+-- Declared and bodyless: what makes it an axiom rather than a missing name.
+\func sndEnv : GlobalDeclarations =>
+  (sndKn, constantDecl (\new ConstantBody nothing)) :: nil
+
+-- Unapplied, the axiom is a value -- `evalAxiom`, the rule with no upstream
+-- counterpart.
+\func evalAxiomIsValue : Eval lbSnd sndEnv (const sndKn) (const sndKn) =>
+  evalAxiom idp idp idp idp
+
+-- Applied to ONE of its two arguments it is a stuck value, by the ordinary
+-- congruence rule and with no new rule needed -- the λ□ twin of the Java side's
+-- `vBuiltin nm (a1 :: nil)`.
+\func evalAxiomPartial
+  : Eval lbSnd sndEnv (app (const sndKn) (prim (primInt63, 1)))
+                      (app (const sndKn) (prim (primInt63, 1))) =>
+  evalAppCong evalAxiomIsValue idp (evalPrim idp) idp idp
+
+-- Applied to both it saturates, so the oracle computes -- and the answer is the
+-- SECOND argument, so the spine really is in left-to-right order.
+\func evalAxiomFires
+  : Eval lbSnd sndEnv (app (app (const sndKn) (prim (primInt63, 1))) (prim (primInt63, 2)))
+                      (prim (primInt63, 2)) =>
+  evalAxiomApp sndKn (prim (primInt63, 1) :: prim (primInt63, 2) :: nil)
+               evalAxiomPartial (evalPrim idp) idp idp

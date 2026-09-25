@@ -1,0 +1,69 @@
+\import Data.Maybe
+\import Proof.CSubst (LCf)
+\import Proof.CompileValue
+\import Proof.CompileValueLemmas (cvValRel)
+\import Proof.Statement (ValRel, progClassName)
+\import Proof.EnvToJava
+\import Semantics.LambdaBoxEnv
+\import Proof.SubstToEnv (evalToEvalEnv, GlobClosed)
+\import Semantics.JavaEval
+\import Proof.JavaExec (execRetApp, bindOk)
+\import Semantics.JavaValue
+\import Semantics.LambdaBoxEval
+\import Semantics.Res
+\import Compiler.JavaAst
+\import Compiler.LambdaBox
+\import Paths
+\import Paths.Meta
+\import Compiler.ToJava
+
+-- =============================================================================
+-- THE BACKEND IS CORRECT ON CLOSED PROGRAMS: the two steps composed.
+--
+--   λ□ (substitution)  --evalToEvalEnv-->  λ□ (environments)  --simE-->  Java
+--   Formal/LambdaBoxEval    Formal/EvalEnvSound    Formal/EvalEnv    Formal/EnvToJava
+--
+-- `backendCorrect`: a program whose body is closed and whose constant bodies
+-- are closed, and which λ□ evaluates to `v`, compiles to a class whose
+-- `body()` RETURNS -- never throws, never gets stuck -- a Java value related to
+-- `v`: `v` is the read-back of an environment value `w`, and the Java value is
+-- `CV`-related to `w` (Proof/CompileValue.ard) -- for a function, the Java
+-- closure compiled from it. `backendCorrectFO`: on a first-order result,
+-- that value satisfies `Proof/Statement.ard`'s `ValRel`.
+--
+-- This is the repaired form of `Correct.ard`'s `CorrectGeneric`, which is false
+-- (Proof/CorrectRefuted.ard): closedness is assumed, and the value relation
+-- relates closures. The remaining hypotheses are `SimHyps` -- facts about the
+-- compiled class, the runtime and the two oracles, each discharged separately
+-- for the shipped backend -- and `hBody`, where `body()` is.
+--
+-- As upstream (MetaRocq's `verified_malfunction_pipeline_theorem`), the
+-- guarantee a Java CALLER can inspect is the first-order one.
+-- =============================================================================
+
+\func BodyAt (cls : JClass) (t : LBTerm) : \Type =>
+  \Sigma (m : JMethod) (lookupMethod cls bodyMethodName = just m) (JMethod.mBody {m} = constBody t)
+
+\func backendCorrect {spec : LBSpec} {rt : RtSpec} {p : LBProgram} {v : LBTerm}
+                     (H : SimHyps spec rt (compileClass progClassName p) p.1)
+                     (hBody : BodyAt (compileClass progClassName p) p.2)
+                     (gc : GlobClosed p.1) (ct : LCf 0 p.2) (d : EvalProgram spec p v)
+  : \Sigma (w : EV) (v = quote w) (jv : Value)
+           (JEval rt (compileClass progClassName p) bodyMethodName jv)
+           (CV rt (compileClass progClassName p) w jv) =>
+  \let | cls => compileClass progClassName p
+       | s1 => evalToEvalEnv {spec} {p.1} H.hFO gc ct d
+       | r => simE H s1.2 {nil} {nil} {nil} erNil
+       | vv => r.5 nil ()
+       | ex => execRetApp r.4 vv.3
+       | cs : callStatic rt cls (suc ex.1) bodyMethodName nil = rOk (eVal vv.1) =>
+         rewrite hBody.2 (bindOk (transport (\lam B => execStmts rt cls ex.1 nil B = rOk (oReturn vv.1)) (inv hBody.3) ex.2) idp)
+  \in (s1.1, s1.3, vv.1, (suc ex.1, bindOk cs idp), vv.4)
+
+\func backendCorrectFO {spec : LBSpec} {rt : RtSpec} {p : LBProgram} {v : LBTerm}
+                       (H : SimHyps spec rt (compileClass progClassName p) p.1)
+                       (hBody : BodyAt (compileClass progClassName p) p.2)
+                       (gc : GlobClosed p.1) (ct : LCf 0 p.2) (d : EvalProgram spec p v) (fo : FOVal v)
+  : \Sigma (jv : Value) (JEval rt (compileClass progClassName p) bodyMethodName jv) (ValRel v jv) =>
+  \let r => backendCorrect H hBody gc ct d
+  \in (r.3, r.4, transport (ValRel __ r.3) (inv r.2) (cvValRel r.1 r.5 (transport FOVal r.2 fo)))

@@ -4,8 +4,8 @@
 \import ExampleLetChain (letChainProgram)
 \import ExampleMatMul (matMulAttrsC, matMulAttrsOCaml, matMulProgram, matMulProgramOf)
 \import ExamplePeano (addProgram)
-\import Serialize
-\import ToJava
+\import Compiler.Serialize
+\import Compiler.ToJava
 
 -- =============================================================================
 -- Printing entry points for the example programs.

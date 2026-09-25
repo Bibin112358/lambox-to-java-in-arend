@@ -1,5 +1,5 @@
 \import Data.Bool
-\import LambdaBox
+\import Compiler.LambdaBox
 \import Data.Maybe
 \import Data.String
 

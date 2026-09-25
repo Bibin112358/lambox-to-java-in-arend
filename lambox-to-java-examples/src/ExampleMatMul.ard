@@ -1,4 +1,4 @@
-\import LambdaBox
+\import Compiler.LambdaBox
 \import Data.Bool
 \import Data.Maybe
 \import Data.String
@@ -39,7 +39,7 @@
 --   recurses structurally on the two lists, never touches `n` itself).
 --
 -- * Per the earlier discussion: InductiveId's Kername is never passed to
---   mangleKername (construct/case discard it via `_` in ToJava.ard), so it
+--   mangleKername (construct/case discard it via `_` in Compiler/ToJava.ard), so it
 --   is never rendered as text and can't hit the (still open) field-
 --   projection-doesn't-reduce bug. Shared named \funcs for InductiveId are
 --   fine. Every Kername that DOES get mangled (every function declaration's
@@ -77,7 +77,7 @@
 -- prim_int63_mul / prim_int63_sub / prim_int63_eqb (prim_int63.{h,c}); the
 -- Java backend realizes them as the curried constants
 -- Rt.PRIM_{ADD,MUL,SUB,EQB}_{INT,LONG} in runtime/Rt.java, wired up by the
--- `javaAxioms` table in ToJava.ard (INT = BigInteger, LONG = Java's built-in
+-- `javaAxioms` table in Compiler/ToJava.ard (INT = BigInteger, LONG = Java's built-in
 -- 64-bit int; the one representation ToJava emits).
 -- All four are ARITY-2 on purpose: the shipped C runtime has no arity-1 ops,
 -- so "sub1 x" is expressed as `sub x 1` and "isZero x" as `eqb x 0`.
@@ -86,7 +86,7 @@
 --
 -- NOTE (int63 mismatch): the C/OCaml realizations are genuine 63-bit ops and
 -- wrap mod 2^63 (MetaRocq's prim_model for primInt63 is PrimInt63.int, cf.
--- LambdaBox.ard's PrimModel comment), while ours are unbounded (BigInteger) or
+-- Compiler/LambdaBox.ard's PrimModel comment), while ours are unbounded (BigInteger) or
 -- 64-bit signed (Long). This example never comes close: the result is
 -- 130^3 = 2197000, so all backends agree. See notes/RESEARCH_AND_PLAN.md for
 -- the planned int63 mode.

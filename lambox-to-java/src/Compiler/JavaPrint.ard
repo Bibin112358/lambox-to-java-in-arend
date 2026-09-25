@@ -1,0 +1,129 @@
+-- Only `map`/`mkArray`: importing Data.Array wholesale would shadow String's
+-- `++` with the Array one.
+\import Data.Array (map, mkArray)
+\import Data.String
+\import Compiler.JavaAst
+\import Compiler.StringUtil
+
+-- =============================================================================
+-- The trusted printer: JavaAst -> Java source text.
+--
+-- The only place that knows how the fragment is SPELLED. The generator chooses
+-- CONSTRUCTS, and nothing it builds can be syntactically malformed, because every
+-- string literal is written once, here.
+--
+-- TRUSTED as CompCert's `printClight.ml` is, which CertiCoq's C backend reuses
+-- rather than verifies: a correctness theorem relates λ□ to the semantics of
+-- `JavaAst`, and the printer sits outside that statement. Keeping it total,
+-- syntax-directed and decision-free is what makes that acceptable.
+--
+-- Termination follows `Compiler/ToJava.ard`'s discipline: `printExpr`/`printStmt` recurse
+-- over `Array` children INLINE via `xs i` / `(ms i).3`, never through a
+-- `\case`-bound variable, and `Data.Array.map` is unusable inside the cycle (it
+-- hides the index behind a closure; verified). Outside it, `map` is fine.
+--
+-- LAYOUT is indentation only -- `ind` counts two-space levels. No line breaking
+-- and NO PRECEDENCE HANDLING, which holds because every node that is not already
+-- an atom brackets itself: `jCast`, `jCond` and `jTagEq`. So a node may be placed
+-- anywhere an expression is allowed without the printer having to know where. A
+-- `jCond` chain prints on one line, broken only where an arm contains a
+-- `jClosure`, whose body is a block.
+--
+-- NOT ESCAPED: `litStr` is emitted verbatim between quotes. Every string the
+-- generator puts there is a node path, a mangled identifier or a fixed message;
+-- if user-visible text ever reaches one, escaping belongs here.
+-- =============================================================================
+
+\func printType (t : JType) : String \elim t
+  | tObject => "Object"
+  -- The only types whose spelling is not in the node; see `runtimeClassName`.
+  | tFn => runtimeQual ++ "Fn"
+  | tData => runtimeQual ++ "Data"
+  | tClass q => q
+
+-- `ind` is the indentation of the line this expression is on; it matters only for
+-- `jClosure`, whose body occupies further lines.
+-- A literal's spelling: quoted for a string (NOT escaped, see above), decimal
+-- for an `int`, decimal with Java's `L` suffix for a `long`.
+\func printLit (l : JLit) : String
+  | litStr s => "\"" ++ s ++ "\""
+  | litInt n => natToStr n
+  | litLong i => intToStr i ++ "L"
+
+\func printExpr (ind : Nat) (e : JExpr) : String \elim e
+  | jVar x => x
+  | jStatic q => q
+  | jField e f => printExpr ind e ++ "." ++ f
+  -- Fully parenthesized: a cast binds LOOSER than `.f`/`.m(..)`, so
+  -- `(Rt.Fn)(x).apply(y)` would cast the call's result. This is what lets the
+  -- printer stay precedence-free.
+  | jCast t e => "((" ++ printType t ++ ")(" ++ printExpr ind e ++ "))"
+  | jInvoke e m args =>
+    printExpr ind e ++ "." ++ m ++ "("
+      ++ joinStr ", " (mkArray {String} {args.len} (\lam i => printExpr ind (args i))) ++ ")"
+  | jCallStatic m args =>
+    m ++ "(" ++ joinStr ", " (mkArray {String} {args.len} (\lam i => printExpr ind (args i))) ++ ")"
+  | jNew t args =>
+    "new " ++ printType t ++ "("
+      ++ joinStr ", " (mkArray {String} {args.len} (\lam i => printExpr ind (args i))) ++ ")"
+  -- The runtime ABI. The casts below are written out rather than printed by
+  -- recursing on a `jCast`-wrapped subterm: `printExpr ind (jCast tFn f)` would
+  -- recurse on a CONSTRUCTED term, which the termination checker rejects.
+  | jBox => runtimeQual ++ "BOX"
+  | jApply f x =>
+    "((" ++ printType tFn ++ ")(" ++ printExpr ind f ++ ")).apply(" ++ printExpr ind x ++ ")"
+  | jClosure p body =>
+    "new " ++ printType tFn ++ "(){ public Object apply(Object " ++ p ++ "){\n"
+      ++ concatStr (mkArray {String} {body.len} (\lam i => printStmt (suc ind) (body i)))
+      ++ indentStr ind ++ "} }"
+  | jDataNew tag fs =>
+    "new " ++ printType tData ++ "(" ++ natToStr tag ++ ", new " ++ printType tObject ++ "[]{ "
+      ++ joinStr ", " (mkArray {String} {fs.len} (\lam i => printExpr ind (fs i))) ++ " })"
+  -- Parenthesized so that it is an atom like everything else, rather than
+  -- depending on `?:` binding looser than `==` -- which is true, but would make
+  -- this node's correctness depend on where the generator puts it.
+  | jTagEq d n => "(" ++ printExpr ind d ++ ".tag == " ++ natToStr n ++ ")"
+  | jDataField d i => printExpr ind d ++ ".fields[" ++ natToStr i ++ "]"
+  -- Parenthesized, like `jCast`: `?:` binds looser than everything else the
+  -- fragment emits, so this is what keeps the printer precedence-free.
+  | jCond c a b =>
+    "(" ++ printExpr ind c ++ " ? " ++ printExpr ind a ++ " : " ++ printExpr ind b ++ ")"
+  | jQualThis c => c ++ ".this"
+  | jLit l => printLit l
+
+-- Every clause emits its own indentation and trailing newline, so a block is just
+-- the concatenation of its statements.
+\func printStmt (ind : Nat) (s : JStmt) : String \elim s
+  | jLocal t nm e =>
+    indentStr ind ++ "final " ++ printType t ++ " " ++ nm ++ " = " ++ printExpr ind e ++ ";\n"
+  | jLocalClass c ms =>
+    \let | ind1 => suc ind
+         | ind2 => suc ind1
+         | methods => mkArray {String} {ms.len} (\lam i =>
+             indentStr ind1 ++ "public Object " ++ (ms i).1 ++ "(Object " ++ (ms i).2 ++ "){\n"
+               ++ concatStr (mkArray {String} {((ms i).3).len} (\lam j => printStmt ind2 ((ms i).3 j)))
+               ++ indentStr ind1 ++ "}\n")
+    \in indentStr ind ++ "class " ++ c ++ " {\n" ++ concatStr methods ++ indentStr ind ++ "}\n"
+  | jThrow e => indentStr ind ++ "throw " ++ printExpr ind e ++ ";\n"
+  | jReturn e => indentStr ind ++ "return " ++ printExpr ind e ++ ";\n"
+  | jComment s => indentStr ind ++ "// " ++ s ++ "\n"
+
+-- Outside the printExpr/printStmt cycle, so `map` over the block is fine here.
+\func printStmts (ind : Nat) (ss : Array JStmt) : String => concatStr (map (printStmt ind) ss)
+
+-- Every generated method is `public static Object <name>()`; none of that is in
+-- the AST, having no other possible value (see `JMethod`).
+\func printMethod (ind : Nat) (m : JMethod) : String =>
+  indentStr ind ++ "public static " ++ printType tObject ++ " " ++ m.mName ++ "(){\n"
+    ++ printStmts (suc ind) m.mBody
+    ++ indentStr ind ++ "}\n"
+
+\func printMember (ind : Nat) (mem : JMember) : String \elim mem
+  | jMethod m => printMethod ind m
+  | jMemberComment s => indentStr ind ++ "// " ++ s ++ "\n"
+
+\func printMembers (ind : Nat) (ms : Array JMember) : String => concatStr (map (printMember ind) ms)
+
+-- Always `public final`: the AST carries no modifiers, having no use for them.
+\func printClass (c : JClass) : String =>
+  "public final class " ++ c.className ++ " {\n" ++ printMembers 1 c.classMembers ++ "}\n"

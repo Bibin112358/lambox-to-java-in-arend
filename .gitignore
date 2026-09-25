@@ -15,3 +15,6 @@ __pycache__/
 
 # Arend CLI daemon state (socket, lock, logs) -- created in the project dir
 lambox-to-java/.arend/
+
+# Scratch output of ad-hoc extraction runs
+/lambox-to-java/src/Generated.ard

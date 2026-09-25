@@ -1,0 +1,113 @@
+\import Arith.Nat
+\import Data.Bool
+\import Data.Maybe
+\import Data.String (String)
+\import Proof.CSubst (LCf)
+\import Proof.SubstToEnv (GlobClosed)
+\import Semantics.JavaEval
+\import Semantics.JavaValue
+\import Semantics.LambdaBoxAxioms (lbAxioms)
+\import Semantics.LambdaBoxEnv (FOVal)
+\import Semantics.LambdaBoxEval
+\import Semantics.Res
+\import Semantics.RtInt63 (rtInt63)
+\import Set
+\import Compiler.Int63 (signed64)
+\import Compiler.JavaAst
+\import Compiler.JavaAxioms
+\import Compiler.LambdaBox
+\import Compiler.StringUtil (intEqB)
+\import Compiler.ToJava
+
+-- =============================================================================
+-- WHAT IS PROVED: the correctness statement of the λ□ -> Java backend.
+--
+-- Read this file first. `CorrectClosedFO` at the bottom is the headline claim;
+-- `Proof/MainTheorem.ard` proves it (`correctClosedFO`). Everything it
+-- mentions is defined here or in `Semantics/`.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- When a λ□ value and a Java value "are the same" (first-order values only).
+--
+-- `box` is `Rt.BOX`, a literal is the `long` with that value (a 64-bit literal
+-- is stored as its bit pattern and read signed), and a constructor is an
+-- `Rt.Data` with the same tag and related fields. Functions are not related
+-- here: the full proof relates closures by the code they were compiled from
+-- (`Proof/CompileValue.ard`), and this relation is what that yields for data.
+--
+-- A `Bool` with fuel, so that concrete instances are decided by `idp`.
+-- ---------------------------------------------------------------------------
+
+\func agrees (n : Nat) (t : LBTerm) (v : Value) : Bool \elim n
+  | 0 => false
+  | suc n => \case t, v \with {
+    | box, vBox => true
+    | prim (primInt63, i), vLong j => intEqB (pos i) j
+    | prim (primInt64, i), vLong j => intEqB (signed64 i) j
+    | construct _ c args, vData tg fs => (c == tg) and agreesAll n args fs
+    | _, _ => false
+  }
+
+\func agreesAll (n : Nat) (ts : Array LBTerm) (vs : Array Value) : Bool \elim ts, vs
+  | nil, nil => true
+  | t :: ts, v :: vs => agrees n t v and agreesAll n ts vs
+  | _, _ => false
+
+\func ValRel (t : LBTerm) (v : Value) : \Type => \Sigma (n : Nat) (agrees n t v = true)
+
+-- ---------------------------------------------------------------------------
+-- The two axiom oracles agree.
+--
+-- Both semantics take their axioms as a parameter: λ□ an `LBSpec` keyed by
+-- `Kername`, Java an `RtSpec` keyed by the runtime constant's name. The
+-- backend links them through its axiom table (`axiomRtName`: `nothing` means
+-- the axiom compiles to a throwing stub). `OracleAgree` says that, through
+-- this link,
+--   1. arities match,
+--   2. on related arguments, both compute related results, and
+--   3. an axiom compiled to a stub is one λ□ cannot compute either.
+--
+-- Proved for the shipped pair in `Proof/OracleShipped.ard` (`oracleShipped`).
+-- ---------------------------------------------------------------------------
+
+\func axiomRtName (kn : Kername) : Maybe JIdent => \case axiomImpl kn \with {
+  | just (jField _ nm) => just nm
+  | _ => nothing
+}
+
+\func OracleAgree (spec : LBSpec) (rt : RtSpec) : \Type =>
+  \Sigma
+    (\Pi (kn : Kername) (nm : JIdent)
+      -> axiomRtName kn = just nm
+      -> axiomArity {spec} kn = builtinArity {rt} nm)
+    (\Pi (kn : Kername) (nm : JIdent) (args : Array LBTerm) (jargs : Array Value args.len)
+         (v : LBTerm)
+      -> axiomRtName kn = just nm
+      -> (\Pi (i : Fin args.len) -> ValRel (args i) (jargs i))
+      -> axiomRun {spec} kn args = just v
+      -> \Sigma (jv : Value) (builtinRun {rt} nm jargs = rOk jv) (ValRel v jv))
+    (\Pi (kn : Kername) -> axiomRtName kn = nothing -> axiomArity {spec} kn = nothing)
+
+-- ---------------------------------------------------------------------------
+-- THE THEOREM.
+--
+-- For a program `p` whose body and constant bodies are closed: if λ□ (with
+-- the shipped axioms `lbAxioms`) evaluates `p` to a first-order value `v`,
+-- then the compiled class's `body()`, run in the Java model with the shipped
+-- runtime model `rtInt63`, RETURNS (does not throw, does not get stuck) a
+-- value related to `v`.
+--
+-- `JEval` is "some amount of fuel suffices". Both closedness hypotheses are
+-- necessary: λ□'s substitution captures free variables, which no
+-- scope-respecting compiler can imitate. Results that are functions are
+-- covered too, by `backendShipped` in `Proof/MainTheorem.ard`.
+-- ---------------------------------------------------------------------------
+
+\func progClassName : JIdent => "Prog"
+
+\func CorrectClosedFO : \Type =>
+  \Pi {p : LBProgram} {v : LBTerm} -> GlobClosed p.1 -> LCf 0 p.2 -> EvalProgram lbAxioms p v -> FOVal v ->
+    \Sigma (jv : Value)
+           (JEval rtInt63 (compileClass progClassName p) bodyMethodName jv)
+           (ValRel v jv)

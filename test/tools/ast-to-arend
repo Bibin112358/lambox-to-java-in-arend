@@ -592,8 +592,8 @@ IMPORTS = """\
 \\import Data.Maybe
 \\import Data.String
 \\import Debug
-\\import LambdaBox
-\\import ToJava
+\\import Compiler.LambdaBox
+\\import Compiler.ToJava
 """
 
 FOOTER = """\

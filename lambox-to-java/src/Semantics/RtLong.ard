@@ -1,0 +1,269 @@
+\import Algebra.Group
+\import Algebra.Monoid
+\import Arith.Int
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Compiler.JavaAst
+\import Semantics.Res
+\import Semantics.JavaValue
+\import Set
+\import Compiler.StringUtil
+
+-- =============================================================================
+-- One instance of `RtSpec` (Semantics/JavaValue.ard): the `Long` runtime.
+--
+-- `Compiler/JavaAxioms.ard` fixes the representation of λ□ primitive ints to
+-- `java.lang.Long` (`intLit`, `primOpSuffix`), so this is the instance the
+-- harness's programs actually run against. It covers what the examples need and
+-- leaves everything else `nothing`, which is `rStuck` -- a named gap, not a
+-- wrong answer.
+--
+-- NAMED GAPS, all deliberate: the `ARRAY_*`, `DEC_*`, `INT_*` and `EQ_REC`
+-- families of `javaAxioms` are absent, so Lean programs using Array, decidable
+-- equality, machine `Int` or `Eq.rec` are outside what can be evaluated here.
+--
+-- WHAT CHANGED SINCE THE EARLIER VERSION (branch `lambox-formal-semantics`):
+-- `builtinRun` took and returned a store, because `Rt.TRUE`/`Rt.FALSE` are
+-- `Data(1, {})`/`Data(0, {})` and a `Data`'s fields lived in the heap -- an
+-- earlier store-less signature made every comparison primitive inexpressible.
+-- With `vData` holding values, `mkBool` allocates nothing and the signature is
+-- the natural one again.
+--
+-- ---------------------------------------------------------------------------
+-- 64-BIT WRAPAROUND
+--
+-- `Rt.java`'s `PRIM_*_LONG` family computes on Java `long`. Arend's `Int` is
+-- UNBOUNDED, so without this the model would silently disagree with the JVM on
+-- every overflowing program.
+--
+-- JLS 4.2.2 ("Integer Operations"): the integer operators `+`, `-` and `*` on
+-- `long` "do not indicate overflow or underflow in any way"; JLS 4.2.1 fixes
+-- `long`'s range at -2^63 .. 2^63-1. The specified result is the mathematical
+-- one taken modulo 2^64 and reinterpreted as a signed two's complement 64-bit
+-- value -- which is exactly `wrap64`.
+--
+-- This is the one arithmetic function written against the spec text rather than
+-- from memory, because it is the most likely place a hand model diverges
+-- silently: CertiCoq-Wasm (Meier et al., CPP 2025) found a real unsoundness in
+-- precisely this spot, in their primitive integer operations.
+--
+-- `Nat.divMod` is a bodyless Prelude builtin and Arend computes `Nat`'s `+`,
+-- `-` and `*` natively on big literals, so these may be used freely at 2^64
+-- scale. What must NOT be used is a comparison that peels `suc` one at a time,
+-- as a hand-rolled `natEq` would (and as this file's ancestor warned about):
+-- that needs 2^63 steps here. The sign test below goes through `Nat.-`, whose
+-- result is an `Int`, and `intEqB` compares decimal renderings.
+-- ---------------------------------------------------------------------------
+
+\func pow2_63 : Nat => 9223372036854775808
+
+\func pow2_64 : Nat => 18446744073709551616
+
+-- `x` reduced modulo 2^64 into [0, 2^64): the unsigned bit pattern.
+--
+-- The `neg` clause is `2^64 - (n mod 2^64)`, guarded on the zero case because
+-- `2^64 - 0` is `2^64`, not `0`. `neg 0` is DEFINITIONALLY `pos 0` (Prelude's
+-- constructor condition on `Int`), and the two clauses agree there.
+--
+-- The tested values are PARAMETERS of `negModU64`/`readS64` rather than `\case`
+-- scrutinees, so that a proof can rewrite them (`Proof/OracleArith.ard` does);
+-- the functions compute exactly what the inline `\case`s they replace did.
+\func modU64 (x : Int) : Nat \elim x
+  | pos n => n Nat.mod pow2_64
+  | neg n => negModU64 (n Nat.mod pow2_64)
+
+\func negModU64 (m : Nat) : Nat \elim m
+  | 0 => 0
+  | suc k => iabs (pow2_64 Nat.- suc k)
+
+-- The unsigned bit pattern read back as a signed `long`: the top half of the
+-- range denotes the negatives, so `r >= 2^63` becomes `r - 2^64`.
+\func wrap64 (x : Int) : Int => readS64 (modU64 x) (modU64 x Nat.- pow2_63)
+
+-- `d` is `r - 2^63`, whose sign says which half `r` is in.
+\func readS64 (r : Nat) (d : Int) : Int => readSigned pow2_64 r d
+
+-- The modulus is a PARAMETER so that a proof can reason about it abstractly:
+-- a symbolic `j + 2^63` normalized in full is 2^63 `suc`s.
+\func readSigned (m r : Nat) (d : Int) : Int \elim d
+  | pos _ => r Nat.- m      -- `pos _` is `r >= 2^63`, equality included
+  | neg (suc _) => pos r
+
+-- `Rt.FALSE`/`Rt.TRUE` are `Data(0, {})`/`Data(1, {})`: a tag and no fields.
+--
+-- They are absent from `rtField`, which is correct rather than a gap -- generated
+-- code never READS them (they are not in `javaAxioms`), it only receives them as
+-- the result of a comparison.
+\func mkBool (b : Bool) : Value =>
+  vData (\case b \with { | true => 1 | false => 0 }) nil
+
+-- ---------------------------------------------------------------------------
+-- DIVISION, REMAINDER AND COMPARISON ON `long`.
+--
+-- JLS 15.17.2: integer `/` rounds TOWARD ZERO, so `-7 / 2` is `-3`, and the
+-- one overflow is `Long.MIN_VALUE / -1`, which is `Long.MIN_VALUE` again --
+-- i.e. the mathematical 2^63, wrapped. JLS 15.17.3: `%` is the remainder of
+-- that division, so its sign is the DIVIDEND's (`-7 % 2` is `-1`) and it can
+-- never overflow (`|x % y| < |y| <= 2^63`). Both on magnitudes, then signed:
+-- that is sign-magnitude division, which Arend's `Nat.div`/`Nat.mod` do on the
+-- magnitudes directly, at 2^63 scale, without peeling.
+--
+-- Division BY ZERO throws in Java; `Rt.java` guards it with Lean's convention
+-- instead (`y == 0 ? 0 : x / y` and `y == 0 ? x : x % y`), and so does the
+-- model. The guard is a pattern match on the divisor, one constructor deep,
+-- not a comparison that walks it.
+--
+-- The small helpers each take the value they test as a PARAMETER, so that a
+-- proof holding an equation about it can rewrite (see Proof/NodePathUnique.ard
+-- on why a `\case` does not reduce under a hypothesis).
+-- ---------------------------------------------------------------------------
+
+-- Strictly negative. `neg 0` is `pos 0`, and the two clauses agree there.
+\func isNegL (x : Int) : Bool
+  | pos _ => false
+  | neg 0 => false
+  | neg (suc _) => true
+
+\func isZeroL (x : Int) : Bool
+  | pos 0 => true
+  | pos (suc _) => false
+  | neg 0 => true
+  | neg (suc _) => false
+
+-- A magnitude with a sign attached.
+\func signedL (negative : Bool) (n : Nat) : Int \elim negative
+  | true => neg n
+  | false => pos n
+
+-- The sign of a quotient: negative iff exactly one operand is.
+\func xorL (a b : Bool) : Bool \elim a, b
+  | true, true => false
+  | true, false => true
+  | false, b => b
+
+-- JLS 15.17.2 on mathematical integers; the caller wraps (for MIN / -1).
+\func javaDiv (x y : Int) : Int => signedL (xorL (isNegL x) (isNegL y)) (iabs x Nat.div iabs y)
+
+-- JLS 15.17.3: the dividend's sign, the magnitudes' remainder.
+\func javaRem (x y : Int) : Int => signedL (isNegL x) (iabs x Nat.mod iabs y)
+
+-- `Rt.java`'s zero guard: `y == 0 ? onZero : other`.
+\func ifZeroL (isZero : Bool) (onZero other : Int) : Int \elim isZero
+  | true => onZero
+  | false => other
+
+-- `0 <= d`, as the sign of an `Int`: after the `neg 0 = pos 0` identification
+-- the negatives are exactly `neg (suc _)`.
+\func nonNegL (d : Int) : Bool
+  | pos _ => true
+  | neg (suc _) => false
+
+-- Lean's truncating `Nat.sub` on a `long` difference: negatives become 0.
+\func clampL (d : Int) : Int
+  | pos k => pos k
+  | neg (suc _) => 0
+
+-- The arity contract. Every one of these is binary in `Rt.java`, reached as
+-- `Fn -> Fn -> result`. Writing it down IS the fix for the `Rt.curry` class of
+-- bug: that bug was a collector advertising an arity it did not need, and it was
+-- silent because no arity contract existed anywhere.
+\func builtinArityLong (f : JIdent) : Maybe Nat =>
+  \case f == "PRIM_ADD_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_SUB_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_MUL_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_EQB_LONG" \with { | true => just 2 | false =>
+  \case f == "NAT_SUB_LONG"  \with { | true => just 2 | false =>
+  \case f == "PRIM_DIV_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_MOD_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_BLE_LONG" \with { | true => just 2 | false =>
+  \case f == "PRIM_BLT_LONG" \with { | true => just 2 | false => nothing } } } } } } } } }
+
+-- Any name with a declared arity is an `Fn` constant, unapplied. There is no
+-- `BOX` case: `jBox` is a node of the AST now, so `Rt.BOX` is never read as a
+-- field.
+\func rtFieldLong (f : JIdent) : Maybe Value =>
+  \case builtinArityLong f \with {
+    | just _ => just (vBuiltin f nil)
+    | nothing => nothing
+  }
+
+\func builtinRunLong (f : JIdent) (vs : Array Value) : Res Value =>
+  \case vs \with {
+    | vLong x :: vLong y :: nil =>
+      -- Each of the three wraps, because `Rt.java` computes them on `long` and
+      -- JLS 4.2.2 makes that modulo 2^64.
+      \case f == "PRIM_ADD_LONG" \with { | true => rOk (vLong (wrap64 (x + y))) | false =>
+      \case f == "PRIM_SUB_LONG" \with { | true => rOk (vLong (wrap64 (x - y))) | false =>
+      \case f == "PRIM_MUL_LONG" \with { | true => rOk (vLong (wrap64 (x * y))) | false =>
+      -- `Rt.java`'s is `lng(x) == lng(y)`, a comparison of two `long`s with no
+      -- arithmetic, so nothing can overflow. The `wrap64`s are here for the
+      -- INVARIANT, not the result: they make the clause correct even if a caller
+      -- ever hands in an unwrapped `vLong`, and cost nothing when it does not.
+      \case f == "PRIM_EQB_LONG" \with {
+        | true => rOk (mkBool (intEqB (wrap64 x) (wrap64 y))) | false =>
+      -- Lean's `Nat.sub` truncates at zero (which is why `javaAxioms` maps it to
+      -- `NAT_SUB_LONG` and not to `PRIM_SUB`), so a negative difference is 0.
+      --
+      -- THE WRAP COMES FIRST, and this is not cosmetic. `Rt.java` is
+      --     long d = lng(x) - lng(y);  return d < 0L ? 0L : d;
+      -- so the subtraction wraps on `long` BEFORE the sign is tested. The two
+      -- orders genuinely disagree: at x = -2^63, y = 1 the mathematical
+      -- difference is -2^63-1 (negative, so truncating gives 0), while the JVM's
+      -- wrapped `d` is 2^63-1, which is not negative and is returned unchanged.
+      --
+      -- After `wrap64` the negatives are exactly `neg (suc _)`: `neg 0` is
+      -- DEFINITIONALLY `pos 0`, which `clampL`'s `pos k` clause already covers.
+      \case f == "NAT_SUB_LONG" \with {
+        | true => rOk (vLong (clampL (wrap64 (x - y)))) | false =>
+      -- The operands are read as `long`s first (`lng(x)`), hence the `wrap64`s
+      -- on the way IN; they are the identity on a well-formed `vLong`.
+      \let | a => wrap64 x
+           | b => wrap64 y
+      \in
+      -- `lng(y) == 0L ? 0L : lng(x) / lng(y)`. The quotient is wrapped because
+      -- of the one overflowing case, `Long.MIN_VALUE / -1`.
+      \case f == "PRIM_DIV_LONG" \with {
+        | true => rOk (vLong (ifZeroL (isZeroL b) 0 (wrap64 (javaDiv a b)))) | false =>
+      -- `lng(y) == 0L ? lng(x) : lng(x) % lng(y)`. No wrap: `%` cannot overflow.
+      \case f == "PRIM_MOD_LONG" \with {
+        | true => rOk (vLong (ifZeroL (isZeroL b) a (javaRem a b))) | false =>
+      -- `lng(x) <= lng(y)` and `lng(x) < lng(y)`: SIGNED comparisons, decided
+      -- by the sign of an exact `Int` difference (`x < y` iff `x + 1 <= y`).
+      \case f == "PRIM_BLE_LONG" \with {
+        | true => rOk (mkBool (nonNegL (b - a))) | false =>
+      \case f == "PRIM_BLT_LONG" \with {
+        | true => rOk (mkBool (nonNegL (b - (a + 1)))) | false => rStuck
+      } } } } } } } } }
+    | _ => rStuck
+  }
+
+-- The runtime's static methods, as `Compiler/JavaAxioms.ard` calls them.
+--
+-- `unbound`/`freeVar`/`noBranch` report ill-formed λ□ and throw by construction
+-- -- that is the whole point of them existing rather than a silent `null` -- so
+-- they are the only place a generated program throws on purpose.
+-- `Long.valueOf` is the identity on a boxed long.
+\func rtStaticCallLong (q : JQIdent) (vs : Array Value) : Maybe (Res ExprOut) =>
+  \case q == "Rt.unbound" \with {
+    | true => just (rOk (eExc (vExcObj "java.lang.IllegalStateException" "unbound de Bruijn index")))
+    | false => \case q == "Rt.freeVar" \with {
+      | true => just (rOk (eExc (vExcObj "java.lang.IllegalStateException" "free variable")))
+      | false => \case q == "Rt.noBranch" \with {
+        | true => just (rOk (eExc (vExcObj "java.lang.IllegalStateException" "matches no branch")))
+        | false => \case q == "Long.valueOf" \with {
+          | true => \case vs \with {
+            | vLong i :: nil => just (rOk (eVal (vLong i)))
+            | _ => just rStuck
+          }
+          | false => nothing
+        }
+      }
+    }
+  }
+
+\instance rtLong : RtSpec
+  | rtField => rtFieldLong
+  | builtinArity => builtinArityLong
+  | builtinRun => builtinRunLong
+  | rtStaticCall => rtStaticCallLong

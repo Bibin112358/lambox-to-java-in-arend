@@ -1,0 +1,385 @@
+\import Arith.Nat
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Semantics.LambdaBoxEval
+-- `wrap63` is SHARED with the backend (`Compiler/Int63.ard`), not re-derived here: that
+-- the two sides normalize with the same function is the whole content of the
+-- int63 representation.
+\import Compiler.Int63 (wrap63, wrap64u)
+\import Compiler.LambdaBox
+\import Set
+\import Compiler.StringUtil (intEqB)
+
+-- =============================================================================
+-- One instance of `LBSpec` (Semantics/LambdaBoxEval.ard): what λ□'s axioms MEAN.
+--
+-- The mirror image of `Compiler/JavaAxioms.ard`, which says what they COMPILE TO. Same
+-- table, read the other way: `javaAxioms` maps `c__Nat__add` to the runtime
+-- constant `Rt.PRIM_ADD_LONG`, and this module says that `Nat.add` denotes
+-- addition. Neither is derivable from the other -- that is the whole point of
+-- having both, because an agreement between them is a real check, and their
+-- DISAGREEMENTS are findings (see `int63` below).
+--
+-- ---------------------------------------------------------------------------
+-- THE SOURCE LANGUAGE'S ARITHMETIC, NOT THE JVM'S
+-- ---------------------------------------------------------------------------
+-- The temptation here is to define these the way `Semantics/RtLong.ard` does, on
+-- 64-bit wrapping arithmetic, which would make every agreement check pass. That
+-- would be worthless: it bakes the backend's behaviour into the specification
+-- the backend is checked against, and the one mismatch this project has
+-- documented from the start would become invisible.
+--
+-- ---------------------------------------------------------------------------
+-- CORRECTION, and it retracts limitation (L).
+--
+-- This module used to define the `Nat.*` family on UNBOUNDED naturals, on the
+-- grounds that "Lean's `Nat` is arbitrary-precision". That is true of LEAN and
+-- false of the λ□ that lean-to-lambdabox emits, which is what we compile. Its
+-- erasure (`LeanToLambdaBox/Erasure.lean`, `visitLiteral`) turns a `Nat`
+-- literal into `prim ⟨.primInt, n⟩` in `.machine` mode -- bounded by
+-- `BitVec.intMax 63`, and it PANICS rather than exceeding it -- with
+-- `PrimModel .primInt := BitVec 63` (`Basic.lean`). Its own summary says it:
+-- "Turn Nat literals into lambdabox primitive i63 (panic on overflow) ... the
+-- usual functions on `Nat` are treated as axioms".
+--
+-- So there is no unbounded integer anywhere in the λ□ we receive. THERE IS ONE
+-- INTEGER KIND, i63, and both families range over it. What made the old reading
+-- look defensible is that it is a true statement about the source language one
+-- step further back.
+--
+-- The consequences of the correction:
+--   * `natRun` wraps `add` and `mul` at 2^63 (they are the only operations that
+--     can leave the range), so it now agrees with `Rt.PRIM_*_INT63`.
+--   * `Compiler/JavaAxioms.ard` routes `Nat.add`/`Nat.mul` to that family accordingly.
+--   * limitation (L) in `Proof/Statement.ard` is WITHDRAWN, and with it the
+--     `Nat`-overflow refutation that rested on it. That refutation was a proof
+--     that this module disagreed with the backend, which was true -- and this
+--     module was the side that was wrong.
+--
+-- WHAT DOES NOT CHANGE is `Nat.sub`. Lean's subtraction truncates at zero,
+-- which is Lean's convention and not i63's, so it keeps its own runtime
+-- constant; `Rt.java` records that sharing the wrapping one produced a real
+-- wrong answer (`const_fold` returned 2048 instead of 4772). "One integer kind"
+-- is a statement about the VALUES, not about the operations.
+--
+--   * `prim_*_int` -- λ□'s primitive int is MetaRocq's `EPrimitive.v`
+--     `primIntModel (i : PrimInt63.int)`, i.e. `Uint63`: a 63-bit integer with
+--     cyclic arithmetic (mod 2^63), matching lean-to-lambdabox's
+--     `PrimModel .primInt := BitVec 63` and the Rocq refman's `Uint63`. Hence
+--     `wrap63`, which the BACKEND shares: with `primRepr := int63Repr` the
+--     generated code runs `Rt.PRIM_*_INT63`, normalized by that same function.
+--     So for this family the int63/int64 gap is CLOSED rather than merely
+--     documented -- it survives only under `longRepr`/`rtLong`.
+--
+-- WHAT IS SHARED AND WHAT IS NOT, and the difference is the whole design:
+--   * `wrap63` comes from `Compiler/Int63.ard` and is shared with the BACKEND, which
+--     normalizes its literals and its `Rt.PRIM_*_INT63` family with the very
+--     same function (`Semantics/RtInt63.ard` models it). Three copies that
+--     happened to agree would state the correspondence far more weakly than
+--     one definition used by both sides.
+--   * `wrap64` (`Semantics/RtLong.ard`) is NOT shared with it, though the two have
+--     the same shape. That one is the JVM's rule (JLS 4.2.1/4.2.2), a different
+--     specification which λ□ never asked for, and collapsing them would hide
+--     exactly the difference `oracleDisagrees` exists to expose.
+--   * `intEqB` is shared with everything, carrying no specification at all (see
+--     its comment in `Compiler/StringUtil.ard`).
+--
+-- ---------------------------------------------------------------------------
+-- NAMED GAPS, all deliberate and all `nothing`, hence `rStuck`
+-- ---------------------------------------------------------------------------
+--   * `Array.*` -- Lean's arrays are mutable and `@[extern]`; modelling them
+--     needs a store on this side, which λ□'s value domain (terms) has no room
+--     for. `Semantics/RtLong.ard` omits them too.
+--   * `Nat.decEq`/`decLe`/`decLt`, `Eq.rec`/`Eq.ndrec` -- these return
+--     `Decidable`, whose constructors carry erased PROOFS, so the value depends
+--     on an inductive declaration this module would have to invent.
+--   * `Int.*` -- Lean's machine `Int` erases to the same λ□ primitive int as
+--     `Nat`, so these are expressible, but each needs its own convention
+--     (`ediv`/`emod` are Euclidean). 8 occurrences in the corpus, all in
+--     `leanbench-deriv`.
+--   * `Nat.pow` -- expressible now that the family is i63 (the result wraps
+--     like `mul`), but left out until a program needs it. 2 occurrences.
+-- Each is a name `javaAxioms` DOES realize, so each is a place the backend
+-- compiles something this module cannot explain. The counts are the census in
+-- `ModelChecks/Agreement.ard`'s header, which also says which way each gap cuts --
+-- all of these are gaps in `Semantics/RtLong.ard` too. (`Nat.div`/`mod`/`ble`/
+-- `blt` used to be covered here and not there; `Semantics/RtLong.ard` now models
+-- their `PRIM_*_LONG` constants, and `Proof/OracleShipped.ard` proves the two
+-- sides agree on every name.)
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- The values this oracle produces and consumes.
+-- ---------------------------------------------------------------------------
+
+-- λ□ has no boolean primitive: Lean's `Bool` is an ordinary two-constructor
+-- inductive, and `Bool.false`/`Bool.true` are constructors 0 and 1 of it (see
+-- any `Imported/Leanbench*.ard`: `ConstructorBody "Bool.false" 0` first). The
+-- tags therefore agree with `Semantics/RtLong.ard`'s `mkBool`, which is why
+-- `agrees` can compare the two without knowing about either.
+--
+-- THE INDUCTIVE ID IS PART OF THE VALUE, and it has to be the program's own:
+-- `evalIota` checks that a scrutinee's constructor belongs to the inductive the
+-- `case` names, so a boolean built with the wrong id would compute and then be
+-- stuck at the `case` that reads it. This is the Lean frontend's root-module
+-- `Bool`; a program with a different one needs a different instance of `LBSpec`,
+-- which is what "the oracle is an assumption" means concretely.
+\func boolInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "Bool") 0
+
+\func lbBool (b : Bool) : LBTerm =>
+  construct boolInd (\case b \with { | true => 1 | false => 0 }) nil
+
+-- A primitive int, as both semantics' arguments and results are spelled.
+--
+-- NORMALIZATION IS NO LONGER A DISCIPLINE. `PrimModel primInt63` is
+-- `Fin int63Mod`, so building a payload goes through `wrap63` by construction
+-- and there is no way to produce an out-of-range λ□ integer -- the `norm63`
+-- calls the operations below used to make by hand are now the type's job. That
+-- is the difference between "every clause remembers to wrap" and "an
+-- un-wrapped value cannot be written down".
+\func lbInt (i : Int) : LBTerm => prim (primInt63, wrap63 i)
+
+-- One primitive of each kind, decoded; `nothing` on anything else.
+\func int63Of (t : LBTerm) : Maybe Int \elim t
+  | prim (primInt63, x) => just x
+  | _ => nothing
+
+\func int64Of (t : LBTerm) : Maybe Int \elim t
+  | prim (primInt64, x) => just x
+  | _ => nothing
+
+\func bothJust (m1 m2 : Maybe Int) : Maybe (\Sigma Int Int) \elim m1, m2
+  | just x, just y => just (x, y)
+  | just _, nothing => nothing
+  | nothing, _ => nothing
+
+-- Exactly two arguments, each decoded by `f`.
+--
+-- Split into these small functions, rather than one nested pattern, so that a
+-- proof inverting it (`Proof/OracleShipped.ard`) meets one constructor split
+-- at a time: the array's shape here, the term's kind in `int63Of`.
+\func twoOf (f : LBTerm -> Maybe Int) (args : Array LBTerm) : Maybe (\Sigma Int Int) \elim args
+  | x :: y :: nil => bothJust (f x) (f y)
+  | _ => nothing
+
+-- The two arguments every axiom here takes, decoded. `nothing` covers both "not
+-- two arguments" and "not primitive ints", which are the same kind of failure:
+-- the runtime was handed something it does not compute on.
+\func twoInts (args : Array LBTerm) : Maybe (\Sigma Int Int) => twoOf int63Of args
+
+-- The same for the other kind. Two extractors rather than one that accepts
+-- either: an i64 operation handed i63 operands is a MALFORMED program, not a
+-- conversion opportunity, and it should be stuck rather than silently
+-- reinterpreted. That is the whole reason the kind is in the term.
+\func twoInts64 (args : Array LBTerm) : Maybe (\Sigma Int Int) => twoOf int64Of args
+
+-- A 64-bit primitive, as a term. `wrap64u` normalizes into [0, 2^64), so as
+-- with `lbInt` the payload cannot be out of range.
+\func lbInt64 (i : Int) : LBTerm => prim (primInt64, wrap64u i)
+
+-- ---------------------------------------------------------------------------
+-- The table.
+--
+-- Keyed by `Kername`, as `javaAxioms` is too; the backend compares the two
+-- through `Compiler/Mangle.ard`'s injective `mangleKername`, which turns
+-- `Kername (mpDot (mpFile nil) "Nat") "add"` into `c_oNat_nadd`. Keeping the
+-- structured name here rather than its mangling is what makes this module
+-- independent of the backend's naming.
+--
+-- A walk over a list of names with `kernameEq` rather than `lookupKey`,
+-- because `lookupKey` wants a `DecSet` and `Kername` is a record of a
+-- `ModPath` and an `Ident`. It used to be a sixteen-deep `\case` chain, which
+-- said the same thing but could not be reasoned about uniformly: the list form
+-- is what lets `Proof/OracleShipped.ard` prove "every name with an arity
+-- here is realized by the backend" by one induction.
+-- ---------------------------------------------------------------------------
+
+\func natKn (name : String) : Kername => \new Kername (mpDot (mpFile nil) "Nat") name
+
+\func rootKn (name : String) : Kername => \new Kername (mpFile nil) name
+
+-- The axioms this oracle computes, in the order the table used to test them.
+\func lbAxiomNames : Array Kername =>
+  natKn "add" :: natKn "mul" :: natKn "sub" :: natKn "div" ::
+  natKn "mod" :: natKn "beq" :: natKn "ble" :: natKn "blt" ::
+  rootKn "prim_add_int" :: rootKn "prim_sub_int" ::
+  rootKn "prim_mul_int" :: rootKn "prim_eqb_int" ::
+  rootKn "prim_add_int64" :: rootKn "prim_sub_int64" ::
+  rootKn "prim_mul_int64" :: rootKn "prim_eqb_int64" :: nil
+
+-- One step of the walk. The test is a PARAMETER, so that a proof holding
+-- `kernameEq kn k = b` can rewrite it (`StringUtil.lookupStep`'s device).
+\func arityStep (hit : Bool) (rest : Maybe Nat) : Maybe Nat \elim hit
+  | true => just 2
+  | false => rest
+
+\func arityIn (kn : Kername) (ks : Array Kername) : Maybe Nat \elim ks
+  | nil => nothing
+  | k :: ks => arityStep (kernameEq kn k) (arityIn kn ks)
+
+-- Every axiom below is binary, as `javaAxioms` realizes them: `Rt.java`'s
+-- `PRIM_*` and `NAT_*` constants all collect two arguments before computing.
+-- Writing the arity down is the same contract `RtSpec.builtinArity` states, and
+-- it is what `axiomSat` tests against.
+\func axiomArityLb (kn : Kername) : Maybe Nat => arityIn kn lbAxiomNames
+
+-- `0 <= d` for an `Int`: after the `neg 0 = pos 0` identification the
+-- negatives are exactly `neg (suc _)`.
+\func nonNegLb (d : Int) : Bool
+  | pos _ => true
+  | neg (suc _) => false
+
+-- `x <= y`, without peeling. `Nat.-` on two `Nat`s is truncating subtraction
+-- landing in `Int`, so the sign of `y - x` decides it.
+\func natLeB (x y : Nat) : Bool => nonNegLb (y Nat.- x)
+
+-- Lean's truncated subtraction, from the `Int` difference: negatives are 0.
+\func truncLb (d : Int) : Int
+  | pos k => pos k
+  | neg (suc _) => 0
+
+-- Lean's `Nat.div` and `Nat.mod`, BY ZERO INCLUDED: `Nat.div_zero : n / 0 = 0`
+-- and `Nat.mod_zero : n % 0 = n` (Lean core, `Nat.div`/`Nat.modCore` are
+-- defined with an `if 0 < y` guard whose else-branch is `0` resp. `x`).
+--
+-- The guard is explicit because Arend's builtins do NOT share the first
+-- convention: `Nat.divMod n 0` is `(n, n)`, so `n Nat.div 0` is `n`, checked by
+-- `idp`. Only the `mod` half happens to agree. One constructor deep on the
+-- divisor, so nothing is peeled.
+\func leanDiv (x y : Nat) : Nat \elim y
+  | 0 => 0
+  | suc y => x Nat.div suc y
+
+\func leanMod (x y : Nat) : Nat \elim y
+  | 0 => x
+  | suc y => x Nat.mod suc y
+
+-- Lean's `Nat` operations, ON i63 VALUES -- see the header's correction of (L).
+--
+-- `add` and `mul` WRAP at 2^63, because the values they compute on are i63 and
+-- the reference realization of these axioms is CertiRocq's `prim_int63_*`.
+-- They are the only two that can leave the range: `sub` truncates downwards,
+-- `div`/`mod` shrink, and the comparisons return a `Bool`.
+--
+-- `sub` TRUNCATES AT ZERO, and that is Lean's convention rather than i63's.
+-- This is the one place the two families genuinely differ, which is why
+-- `javaAxioms` sends it to `NAT_SUB_*` and not to a wrapping `PRIM_SUB_*`;
+-- `Rt.java` records that sharing the wrapping one produced a real wrong answer
+-- (`const_fold` returned 2048 instead of 4772). Arend's `Nat.-` truncates into
+-- `Int`, so the negative case is clamped here, and no wrap is needed: both
+-- arguments are in [0, 2^63) and so is the result.
+--
+-- CORRECTION: this comment used to say that "`div`/`mod` by zero are zero in
+-- Lean ... and Arend's `Nat.div`/`Nat.mod` agree", and used them unguarded.
+-- Both halves were wrong. Lean's `n % 0` is `n`, not zero (`Nat.mod_zero`);
+-- and Arend's `n Nat.div 0` is `n`, not zero. So `div` by zero computed `x`
+-- where Lean -- and `Rt.PRIM_DIV_LONG` -- give `0`, a wrong answer on this side;
+-- `mod` was right only because the two mistakes cancelled. `leanDiv`/`leanMod`
+-- state Lean's conventions explicitly. Their results cannot leave the range.
+\func natRun (op : String) (x y : Nat) : Maybe LBTerm =>
+  \case op == "add" \with { | true => just (lbInt (pos (x Nat.+ y))) | false =>
+  \case op == "mul" \with { | true => just (lbInt (pos (x Nat.* y))) | false =>
+  \case op == "sub" \with { | true => just (lbInt (truncLb (x Nat.- y))) | false =>
+  \case op == "div" \with { | true => just (lbInt (pos (leanDiv x y))) | false =>
+  \case op == "mod" \with { | true => just (lbInt (pos (leanMod x y))) | false =>
+  \case op == "beq" \with { | true => just (lbBool (intEqB (pos x) (pos y))) | false =>
+  \case op == "ble" \with { | true => just (lbBool (natLeB x y)) | false =>
+  \case op == "blt" \with { | true => just (lbBool (natLeB (suc x) y)) | false =>
+    nothing } } } } } } } }
+
+-- The int63 family: cyclic mod 2^63, per `primIntModel`/`Uint63`.
+--
+-- Each operation normalizes its RESULT, and `prim_eqb_int` normalizes its
+-- arguments before comparing -- the same invariant discipline `builtinRunLong`
+-- keeps for `PRIM_EQB_LONG`, and for the same reason: a caller handing in an
+-- un-normalized literal must not change the answer.
+\func int63Run (op : String) (x y : Int) : Maybe LBTerm =>
+  \let | a => wrap63 x
+       | b => wrap63 y
+  \in
+  \case op == "prim_add_int" \with {
+    | true => just (lbInt (pos (a Nat.+ b))) | false =>
+  \case op == "prim_mul_int" \with {
+    | true => just (lbInt (pos (a Nat.* b))) | false =>
+  -- Subtraction is where UNSIGNED wrapping is visible: `1 - 2` is `2^63 - 1`,
+  -- not `-1`. `Nat.-` lands in `Int`, which `wrap63` takes directly.
+  \case op == "prim_sub_int" \with {
+    | true => just (lbInt (a Nat.- b)) | false =>
+  \case op == "prim_eqb_int" \with {
+    | true => just (lbBool (intEqB (pos a) (pos b))) | false =>
+    nothing } } } }
+
+-- The i64 family: two's-complement 64-bit, i.e. exactly what a JVM `long`
+-- does. Operands and results are BIT PATTERNS in [0, 2^64); `wrap64u`
+-- normalizes, and `lbInt64` applies it so nothing here can produce an
+-- out-of-range payload.
+--
+-- These names are not in any imported program. They exist because the kind of
+-- a value cannot reach the operation that consumes it (a `const` is compiled
+-- before its operands), so choosing 64-bit arithmetic means choosing different
+-- OPERATIONS as well as different values -- which is what `Compiler/Int64Rewrite.ard`
+-- does, and what makes the choice something a semantics can talk about.
+\func int64Run (op : String) (x y : Int) : Maybe LBTerm =>
+  \let | a => wrap64u x
+       | b => wrap64u y
+  \in
+  \case op == "prim_add_int64" \with {
+    | true => just (lbInt64 (pos (a Nat.+ b))) | false =>
+  \case op == "prim_mul_int64" \with {
+    | true => just (lbInt64 (pos (a Nat.* b))) | false =>
+  \case op == "prim_sub_int64" \with {
+    | true => just (lbInt64 (a Nat.- b)) | false =>
+  -- Bit patterns are already normalized, so this is plain equality -- the same
+  -- comparison `Rt.PRIM_EQB_LONG` performs on two `long`s.
+  \case op == "prim_eqb_int64" \with {
+    | true => just (lbBool (intEqB (pos a) (pos b))) | false =>
+    nothing } } } }
+
+-- Dispatch: a `Nat.*` name goes to `natRun` on the two arguments read as
+-- naturals, a `prim_*_int` name to `int63Run`. Both require their arguments to
+-- be primitive ints ALREADY EVALUATED, which `evalAxiomApp` guarantees: it tests
+-- the spine only after both parts of the application have values.
+--
+-- Anything else is `nothing`, i.e. `rStuck` -- including a `Nat.*` operation
+-- handed a non-integer, which is the twin of `builtinRunLong`'s `rStuck` on
+-- non-`vLong` arguments.
+--
+-- The decoded arguments are handed to `natAt`/`rootAt` as PARAMETERS rather
+-- than scrutinized by a `\case` here, for the usual reason: a proof can then
+-- rewrite them.
+\func axiomRunLb (kn : Kername) (args : Array LBTerm) : Maybe LBTerm =>
+  \case modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") \with {
+    -- Lean's machine operations, on i63 values with Lean's conventions.
+    | true => natAt kn.kerName (twoInts args)
+    | false => \case modPathEq kn.kerModPath (mpFile nil) \with {
+      -- The root module holds both primitive families, told apart by NAME --
+      -- and each accepts only its own kind of operand. An i64 operation handed
+      -- i63 values is stuck, not converted: the term would be malformed, and
+      -- silently reinterpreting it is exactly what having the kind in the term
+      -- is meant to prevent.
+      | true => rootAt kn.kerName (twoInts args) (twoInts64 args)
+      | false => nothing
+    }
+  }
+
+\func natAt (op : String) (m : Maybe (\Sigma Int Int)) : Maybe LBTerm \elim m
+  | just (x, y) => natRun op (wrap63 x) (wrap63 y)
+  | nothing => nothing
+
+\func rootAt (op : String) (m63 m64 : Maybe (\Sigma Int Int)) : Maybe LBTerm \elim m63
+  | just (x, y) => int63Run op x y
+  | nothing => int64At op m64
+
+\func int64At (op : String) (m : Maybe (\Sigma Int Int)) : Maybe LBTerm \elim m
+  | just (x, y) => int64Run op x y
+  | nothing => nothing
+
+-- The instance the agreement checks run against.
+--
+-- `lbNone` (Semantics/LambdaBoxEval.ard) is the other one: no axiom at all, i.e.
+-- λ□ as MetaRocq and CertiRocq have it. The pair is the λ□-side counterpart of
+-- `rtLong`/`rtNone`.
+\func lbAxioms : LBSpec \cowith
+  | axiomArity => axiomArityLb
+  | axiomRun => axiomRunLb

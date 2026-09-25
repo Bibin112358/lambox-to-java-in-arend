@@ -1,0 +1,961 @@
+\import Arith.Nat
+\import Data.Array (++, mkArray)
+\import Data.Bool
+\import Data.Maybe
+\import Proof.CSubst
+\import Proof.CSubstLam (substK)
+\import Semantics.LambdaBoxEnv
+\import Semantics.LambdaBoxEval
+\import Compiler.LambdaBox
+\import Logic
+\import Logic.Meta
+\import Paths
+\import Paths.Meta
+\import Compiler.StringUtil (nthArr)
+
+-- =============================================================================
+-- λ□ BY SUBSTITUTION => λ□ BY ENVIRONMENTS: the first half of the two-step
+-- correctness proof (MetaRocq's `eval_to_eval_named`, `EWcbvEvalNamed.v`).
+--
+-- THE STATEMENT (`sim1`): if λ□ evaluates `substK 0 (quoteEnv rho) b` -- the
+-- source term `b` with the read-back of the environment `rho` substituted --
+-- to `v`, then `EvalE` evaluates `b` in `rho` to some `w` that reads back to
+-- `v` (`v = quote w`), and `w` is again well-formed.
+--
+-- THE HYPOTHESES are exactly MetaRocq's, in our terms:
+--   * closedness -- `b` is in scope of `rho` (`LCf rho.len b`), every constant
+--     body is closed (`GlobClosed`), and every value of `rho` is well-formed
+--     (`WfV`: closure bodies in scope, axioms still collecting arguments).
+--     Upstream: `wellformed Σ 0 s`, `wf_glob Σ`, `sunny`.
+--   * the oracle returns first-order values (`OracleFO`). Upstream there is no
+--     oracle at all (the pipeline theorem assumes no axioms).
+--
+-- THE KEY FACT, besides the substitution algebra of `Proof/CSubst.ard`:
+-- `valueSelf` -- a read-back value evaluates to itself, and to nothing else.
+-- λ□ re-evaluates values (the argument in `eval_fix'`'s last premise, a
+-- projected field, a variable's substituted value); this is what lets the
+-- environment side NOT do so.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- Well-formed environment values.
+-- ---------------------------------------------------------------------------
+
+-- An axiom still collecting arguments (NEWEST FIRST): declared, bodyless and
+-- known to the oracle, and no prefix of the spine was already saturated.
+\func AxOK (spec : LBSpec) (genv : GlobalDeclarations) (kn : Kername) (args : Array EV) : \Set0 \elim args
+  | nil => \Sigma (cb : ConstantBody) (lookupConstant genv kn = just cb) (cb.cstBody = nothing)
+                  (ar : Nat) (axiomArity {spec} kn = just ar)
+  | x :: xs => \Sigma (AxOK spec genv kn xs) (axiomSat spec (app (quoteAx kn (quoteEnv xs)) (quote x)) = nothing)
+
+\func WfV (spec : LBSpec) (genv : GlobalDeclarations) (w : EV) : \Set0 \elim w
+  | evBox => \Sigma
+  | evClos _ b rho => \Sigma (LCf (suc rho.len) b) (\Pi (i : Fin rho.len) -> WfV spec genv (rho i))
+  | evFix defs idx rho => \Sigma (LCf rho.len (fix defs idx)) (\Pi (i : Fin rho.len) -> WfV spec genv (rho i))
+  | evCon ind c args => \Pi (i : Fin args.len) -> WfV spec genv (args i)
+  | evPrim _ => \Sigma
+  | evAx kn args => \Sigma (\Pi (i : Fin args.len) -> WfV spec genv (args i)) (AxOK spec genv kn args)
+
+\func WfEnv (spec : LBSpec) (genv : GlobalDeclarations) (rho : Array EV) : \Set0 =>
+  \Pi (i : Fin rho.len) -> WfV spec genv (rho i)
+
+-- ---------------------------------------------------------------------------
+-- A well-formed value reads back to a CLOSED term.
+-- ---------------------------------------------------------------------------
+
+\func quoteAxClosed (kn : Kername) (qs : Array LBTerm) (c : AllCf qs) : LCf 0 (quoteAx kn qs) \elim qs
+  | nil => ()
+  | q :: qs => (quoteAxClosed kn qs c.2, c.1)
+
+\func quoteClosed {spec : LBSpec} {genv : GlobalDeclarations} (w : EV) (wf : WfV spec genv w) : LCf 0 (quote w) \elim w
+  | evBox => ()
+  | evClos na b rho =>
+    skScopeF 0 (quoteEnv rho) (allCfOf {quoteEnv rho} (\lam i => quoteClosed (rho i) (wf.2 i))) (lambda na b)
+             (transport (\lam D => LCf D (lambda na b)) (inv (natPlus0L rho.len)) wf.1)
+  | evFix defs idx rho =>
+    skScopeF 0 (quoteEnv rho) (allCfOf {quoteEnv rho} (\lam i => quoteClosed (rho i) (wf.2 i))) (fix defs idx)
+             (transport (\lam D => LCf D (fix defs idx)) (inv (natPlus0L rho.len)) wf.1)
+  | evCon ind c args => \lam i => quoteClosed (args i) (wf i)
+  | evPrim _ => ()
+  | evAx kn args => quoteAxClosed kn (quoteEnv args) (allCfOf {quoteEnv args} (\lam i => quoteClosed (args i) (wf.1 i)))
+
+\func quoteEnvClosed {spec : LBSpec} {genv : GlobalDeclarations} {rho : Array EV} (wfr : WfEnv spec genv rho)
+  : AllCf (quoteEnv rho) => allCfOf {quoteEnv rho} (\lam i => quoteClosed (rho i) (wfr i))
+
+-- ---------------------------------------------------------------------------
+-- Small inversions.
+-- ---------------------------------------------------------------------------
+
+\func justInj {A : \Type} {x y : A} (e : just x = just y) : x = y =>
+  pmap (\lam (m : Maybe A) => \case m \with { | just z => z | nothing => x }) e
+
+\func isAtomT (t : LBTerm) : Bool \elim t
+  | box => true
+  | lambda _ _ => true
+  | fix _ _ => true
+  | prim _ => true
+  | _ => false
+
+-- The head of an axiom spine.
+\func isAxHead (t : LBTerm) : Bool \elim t
+  | const _ => true
+  | app _ _ => true
+  | _ => false
+
+\func quoteAxHead (kn : Kername) (qs : Array LBTerm) : isAxHead (quoteAx kn qs) = true \elim qs
+  | nil => idp
+  | q :: qs => idp
+
+\func notAxHead {t : LBTerm} (h : isAxHead t = false) {kn : Kername} {qs : Array LBTerm} (e : t = quoteAx kn qs) : Empty =>
+  \case inv h *> pmap isAxHead e *> quoteAxHead kn qs \with {}
+
+-- An atom evaluates to itself.
+\func atomSelf {spec : LBSpec} {genv : GlobalDeclarations} {t v : LBTerm} (d : Eval spec genv t v) (h : isAtomT t = true)
+  : v = t \elim t, d
+  | box, evalAtomBox p => p
+  | lambda _ _, evalAtomLambda p => p
+  | fix _ _, evalAtomFix p => p
+  | prim _, evalPrim p => p
+  | bvar _, _ => contradiction
+  | fvar _, _ => contradiction
+  | letIn _ _ _, _ => contradiction
+  | app _ _, _ => contradiction
+  | const _, _ => contradiction
+  | construct _ _ _, _ => contradiction
+  | case _ _ _ _, _ => contradiction
+  | proj _ _, _ => contradiction
+
+-- ---------------------------------------------------------------------------
+-- A read-back value evaluates to itself.
+-- ---------------------------------------------------------------------------
+
+\func quoteEnvNil : quoteEnv nil = nil => idp
+
+\func constAxSelf {spec : LBSpec} {genv : GlobalDeclarations} {kn : Kername} (ok : AxOK spec genv kn nil)
+                  {v : LBTerm} (d : Eval spec genv (const kn) v) : v = const kn \elim d
+  | evalDelta lk bd _ =>
+    \let e : nothing = just _ => inv ok.3 *> pmap (\lam (c : ConstantBody) => c.cstBody) (justInj (inv ok.2 *> lk)) *> bd
+    \in \case e \with {}
+  | evalAxiom _ _ _ p => p
+
+\func axSelf {spec : LBSpec} {genv : GlobalDeclarations} (kn : Kername) (args : Array EV)
+             (selfs : \Pi (i : Fin args.len) {v : LBTerm} -> Eval spec genv (quote (args i)) v -> v = quote (args i))
+             (ok : AxOK spec genv kn args) {v : LBTerm} (d : Eval spec genv (quoteAx kn (quoteEnv args)) v)
+  : v = quoteAx kn (quoteEnv args) \elim args
+  | nil => constAxSelf ok (transport (\lam q => Eval spec genv (quoteAx kn q) v) quoteEnvNil d)
+  | x :: xs =>
+    \let | IH {v' : LBTerm} (d' : Eval spec genv (quoteAx kn (quoteEnv xs)) v') : v' = quoteAx kn (quoteEnv xs) =>
+           axSelf kn xs (\lam i => selfs (suc i)) ok.1 d'
+         | d1 : Eval spec genv (app (quoteAx kn (quoteEnv xs)) (quote x)) v =>
+           transport (\lam q => Eval spec genv (quoteAx kn q) v) (quoteEnvCons x xs) d
+    \in \case \elim v, d1 \with {
+      | v, evalBox _ df _ => absurd (notAxHead idp (IH df))
+      | v, evalBeta df _ _ => absurd (notAxHead idp (IH df))
+      | v, evalFix df _ _ _ => absurd (notAxHead idp (IH df))
+      | v, evalAxiomApp kn' xs' df da sat _ =>
+        \let e : nothing = just (kn', xs') =>
+          inv ok.2 *> path (\lam i => axiomSat spec (app (inv (IH df) @ i) (inv (selfs 0 da) @ i))) *> sat
+        \in \case e \with {}
+      | v, evalAppCong df _ da _ p =>
+        p *> path (\lam i => app (IH df @ i) (selfs 0 da @ i)) *> pmap (quoteAx kn) (inv (quoteEnvCons x xs))
+    }
+
+\func valueSelf {spec : LBSpec} {genv : GlobalDeclarations} (w : EV) (wf : WfV spec genv w)
+                {v : LBTerm} (d : Eval spec genv (quote w) v) : v = quote w \elim w
+  | evBox => atomSelf d idp
+  | evClos na b rho => atomSelf d (transport (\lam x => isAtomT x = true) (inv (skLamF 0 (quoteEnv rho) na b)) idp)
+  | evFix defs idx rho => atomSelf d (transport (\lam x => isAtomT x = true) (inv (skFixF 0 (quoteEnv rho) defs idx)) idp)
+  | evPrim pv => atomSelf d idp
+  | evCon ind c args => \case \elim v, d \with {
+    | v, evalConstruct {_} {vs} _ _ ds p =>
+      p *> pmap (construct ind c)
+             (inv (extArr vs (\lam i => quote (args i)) (\lam j => inv (valueSelf (args j) (wf j) (ds j)))))
+  }
+  | evAx kn args => axSelf kn args (\lam i d' => valueSelf (args i) (wf.1 i) d') wf.2 d
+
+-- ---------------------------------------------------------------------------
+-- Environments.
+-- ---------------------------------------------------------------------------
+
+\func wfNil {spec : LBSpec} {genv : GlobalDeclarations} : WfEnv spec genv nil => \lam (i : Fin 0) => \case i \with {}
+
+\func wfCons {spec : LBSpec} {genv : GlobalDeclarations} {w : EV} {rho : Array EV}
+             (wf : WfV spec genv w) (wfr : WfEnv spec genv rho) : WfEnv spec genv (w :: rho) =>
+  \lam (i : Fin (suc rho.len)) => \case \elim i \with {
+    | 0 => wf
+    | suc j => wfr j
+  }
+
+\func nc0NotGt {i : Nat} (e : natCompare 0 i = cGt) : Empty \elim i
+  | 0 => contradiction
+  | suc i => contradiction
+
+-- Index `i` of the read-back environment is the read-back of `rho i`.
+\func skVarE {spec : LBSpec} {genv : GlobalDeclarations} (rho : Array EV) (wfr : WfEnv spec genv rho)
+             (i : Nat) (lc : natCompare rho.len i = cGt)
+  : \Sigma (j : Fin rho.len) (nthArr i rho = just (rho j)) (substK 0 (quoteEnv rho) (bvar i) = quote (rho j)) \elim rho, i
+  | nil, i => absurd (nc0NotGt lc)
+  | w :: rho, 0 => (0, idp, skClosedF 0 (quoteEnv rho) (quoteClosed w (wfr 0)))
+  | w :: rho, suc i => \let r => skVarE rho (\lam j => wfr (suc j)) i lc \in (suc r.1, r.2, r.3)
+
+-- ---------------------------------------------------------------------------
+-- The shape of the conclusion.
+-- ---------------------------------------------------------------------------
+
+\func Out1 (spec : LBSpec) (genv : GlobalDeclarations) (rho : Array EV) (b v : LBTerm) : \Type =>
+  \Sigma (w : EV) (EvalE spec genv rho b w) (v = quote w) (WfV spec genv w)
+
+-- A variable: λ□ evaluated the substituted value, which is `rho j` read back.
+\func varSim {spec : LBSpec} {genv : GlobalDeclarations} {t v : LBTerm} (d : Eval spec genv t v)
+             {rho : Array EV} (wfr : WfEnv spec genv rho) (i : Nat) (lc : natCompare rho.len i = cGt)
+             (et : t = substK 0 (quoteEnv rho) (bvar i)) : Out1 spec genv rho (bvar i) v =>
+  \let r => skVarE rho wfr i lc
+  \in (rho r.1, eeVar r.2, valueSelf (rho r.1) (wfr r.1) (transport (Eval spec genv __ v) (et *> r.3) d), wfr r.1)
+
+-- ---------------------------------------------------------------------------
+-- Inverting the read-back.
+-- ---------------------------------------------------------------------------
+
+\func lamName (t : LBTerm) : BinderName \elim t
+  | lambda na _ => na
+  | _ => anon
+
+\func lamBodyT (t : LBTerm) : LBTerm \elim t
+  | lambda _ b => b
+  | _ => box
+
+\func fixDefsT (t : LBTerm) : Array (FixDef LBTerm) \elim t
+  | fix defs _ => defs
+  | _ => nil
+
+\func fixIdxT (t : LBTerm) : Nat \elim t
+  | fix _ idx => idx
+  | _ => 0
+
+-- The block of a fix closure, its environment substituted (`skFixF`'s right side).
+\func defsSub (defs : Array (FixDef LBTerm)) (sg : Array LBTerm) : Array (FixDef LBTerm) =>
+  mkArray {FixDef LBTerm} {defs.len}
+    (\lam j => \new FixDef LBTerm (defs j).defName (substK (defs.len Nat.+ 0) sg (defs j).defBody) (defs j).principalArgIdx)
+
+\func quoteBoxInv (w : EV) (e : box = quote w) : w = evBox \elim w
+  | evBox => idp
+  | evClos na b rho => \let e' : box = lambda na _ => e *> skLamF 0 (quoteEnv rho) na b \in contradiction
+  | evFix defs idx rho => \let e' : box = fix _ idx => e *> skFixF 0 (quoteEnv rho) defs idx \in contradiction
+  | evCon _ _ _ => contradiction
+  | evPrim _ => contradiction
+  | evAx kn args => absurd (notAxHead idp e)
+
+\func quoteLamInv (w : EV) {na : BinderName} {b' : LBTerm} (e : lambda na b' = quote w)
+  : \Sigma (b0 : LBTerm) (rho : Array EV) (w = evClos na b0 rho) (b' = substK 1 (quoteEnv rho) b0) \elim w
+  | evBox => contradiction
+  | evClos na0 b0 rho =>
+    \let e' : lambda na b' = lambda na0 (substK 1 (quoteEnv rho) b0) => e *> skLamF 0 (quoteEnv rho) na0 b0
+    \in (b0, rho, pmap (\lam n => evClos n b0 rho) (inv (pmap lamName e')), pmap lamBodyT e')
+  | evFix defs idx rho => \let e' : lambda na b' = fix _ idx => e *> skFixF 0 (quoteEnv rho) defs idx \in contradiction
+  | evCon _ _ _ => contradiction
+  | evPrim _ => contradiction
+  | evAx kn args => absurd (notAxHead idp e)
+
+\func quoteFixInv (w : EV) {defs' : Array (FixDef LBTerm)} {idx : Nat} (e : fix defs' idx = quote w)
+  : \Sigma (defs : Array (FixDef LBTerm)) (rho : Array EV) (w = evFix defs idx rho) (defs' = defsSub defs (quoteEnv rho)) \elim w
+  | evBox => contradiction
+  | evClos na b rho => \let e' : fix defs' idx = lambda na _ => e *> skLamF 0 (quoteEnv rho) na b \in contradiction
+  | evFix defs idx0 rho =>
+    \let e' : fix defs' idx = fix (defsSub defs (quoteEnv rho)) idx0 => e *> skFixF 0 (quoteEnv rho) defs idx0
+    \in (defs, rho, pmap (\lam n => evFix defs n rho) (inv (pmap fixIdxT e')), pmap fixDefsT e')
+  | evCon _ _ _ => contradiction
+  | evPrim _ => contradiction
+  | evAx kn args => absurd (notAxHead idp e)
+
+-- Only an axiom spine can saturate, or be a stuck application.
+\func axSatView {spec : LBSpec} {genv : GlobalDeclarations} (w : EV) {a : LBTerm} {x : \Sigma Kername (Array LBTerm)}
+                (sat : axiomSat spec (app (quote w) a) = just x)
+  : \Sigma (kn : Kername) (args : Array EV) (w = evAx kn args) \elim w
+  | evBox => contradiction
+  | evClos na b rho =>
+    \let s : axiomSat spec (app (lambda na (substK 1 (quoteEnv rho) b)) a) = just x =>
+      transport (\lam t => axiomSat spec (app t a) = just x) (skLamF 0 (quoteEnv rho) na b) sat
+    \in contradiction
+  | evFix defs idx rho =>
+    \let s : axiomSat spec (app (fix (defsSub defs (quoteEnv rho)) idx) a) = just x =>
+      transport (\lam t => axiomSat spec (app t a) = just x) (skFixF 0 (quoteEnv rho) defs idx) sat
+    \in contradiction
+  | evCon _ _ _ => contradiction
+  | evPrim _ => contradiction
+  | evAx kn args => (kn, args, idp)
+
+\func congView (w : EV) (ok : appCongOk (quote w) = true)
+  : \Sigma (kn : Kername) (args : Array EV) (w = evAx kn args) \elim w
+  | evBox => contradiction
+  | evClos na b rho =>
+    \let s : appCongOk (lambda na (substK 1 (quoteEnv rho) b)) = true => transport (\lam t => appCongOk t = true) (skLamF 0 (quoteEnv rho) na b) ok
+    \in contradiction
+  | evFix defs idx rho =>
+    \let s : appCongOk (fix (defsSub defs (quoteEnv rho)) idx) = true => transport (\lam t => appCongOk t = true) (skFixF 0 (quoteEnv rho) defs idx) ok
+    \in contradiction
+  | evCon _ _ _ => contradiction
+  | evPrim _ => contradiction
+  | evAx kn args => (kn, args, idp)
+
+-- ---------------------------------------------------------------------------
+-- What the oracle returns.
+-- ---------------------------------------------------------------------------
+
+\func OracleFO (spec : LBSpec) : \Type =>
+  \Pi (kn : Kername) (xs : Array LBTerm) (r : LBTerm) -> axiomRun {spec} kn xs = just r -> FOVal r
+
+\func foQuote (t : LBTerm) (fo : FOVal t) : quote (ofFO t) = t \elim t
+  | box => idp
+  | prim _ => idp
+  | construct ind c args =>
+    pmap (construct ind c) (extArr args (\lam i => quote (ofFO (args i))) (\lam j => foQuote (args j) (fo j)))
+  | bvar _ => \case fo \with {}
+  | fvar _ => \case fo \with {}
+  | lambda _ _ => \case fo \with {}
+  | letIn _ _ _ => \case fo \with {}
+  | app _ _ => \case fo \with {}
+  | const _ => \case fo \with {}
+  | case _ _ _ _ => \case fo \with {}
+  | proj _ _ => \case fo \with {}
+  | fix _ _ => \case fo \with {}
+
+\func wfFO {spec : LBSpec} {genv : GlobalDeclarations} (t : LBTerm) : WfV spec genv (ofFO t) \elim t
+  | box => ()
+  | prim _ => ()
+  | construct ind c args => \lam i => wfFO (args i)
+  | bvar _ => ()
+  | fvar _ => ()
+  | lambda _ _ => ()
+  | letIn _ _ _ => ()
+  | app _ _ => ()
+  | const _ => ()
+  | case _ _ _ _ => ()
+  | proj _ _ => ()
+  | fix _ _ => ()
+
+
+-- ---------------------------------------------------------------------------
+-- Arrays.
+-- ---------------------------------------------------------------------------
+
+\func mapM {A B : \Type} (g : A -> B) (m : Maybe A) : Maybe B \elim m
+  | nothing => nothing
+  | just x => just (g x)
+
+\func mapArr {A B : \Type} (g : A -> B) (xs : Array A) : Array B => mkArray {B} {xs.len} (\lam j => g (xs j))
+
+\func nthMap {A B : \Type} (g : A -> B) (n : Nat) (xs : Array A) : nthArr {B} n (mapArr g xs) = mapM g (nthArr {A} n xs) \elim n, xs
+  | 0, nil => idp
+  | suc n, nil => idp
+  | 0, x :: xs => idp
+  | suc n, x :: xs => nthMap g n xs
+
+\func mapMInv {A B : \Type} (g : A -> B) (m : Maybe A) {y : B} (e : mapM g m = just y)
+  : \Sigma (x : A) (m = just x) (y = g x) \elim m
+  | nothing => contradiction
+  | just x => (x, idp, inv (justInj e))
+
+\func nthMapInv {A B : \Type} (g : A -> B) (n : Nat) (xs : Array A) {y : B} (e : nthArr {B} n (mapArr g xs) = just y)
+  : \Sigma (x : A) (nthArr {A} n xs = just x) (y = g x) =>
+  mapMInv g (nthArr {A} n xs) (inv (nthMap g n xs) *> e)
+
+\func nthArrAt {A : \Type} (n : Nat) (xs : Array A) {x : A} (e : nthArr {A} n xs = just x) : \Sigma (j : Fin xs.len) (xs j = x) \elim n, xs
+  | 0, nil => contradiction
+  | suc n, nil => contradiction
+  | 0, y :: ys => (0, justInj e)
+  | suc n, y :: ys => \let r => nthArrAt n ys e \in (suc r.1, r.2)
+
+\func lenApp {A : \Type} (xs ys : Array A) : (xs ++ ys).len = xs.len Nat.+ ys.len \elim xs
+  | nil => inv (natPlus0L ys.len)
+  | x :: xs => pmap suc (lenApp xs ys) *> inv (natPlusSucL xs.len ys.len)
+
+\func castFin {n m : Nat} (e : n = m) (j : Fin n) : Fin m => transport (\lam k => Fin k) e j
+
+-- Reading an array off an equation of arrays, index by index.
+\func arrAtEq {A : \Type} {l l' : Array A} (e : l = l') (j : Fin l'.len)
+  : l (castFin (inv (pmap (\lam (x : Array A) => x.len) e)) j) = l' j \elim l', e
+  | _, idp => idp
+
+-- Two arrays whose lengths agree, and which agree index by index, are equal.
+\func arrEqCast {A : \Type} (l l' : Array A) (el : l.len = l'.len)
+                (h : \Pi (j : Fin l'.len) -> l (castFin (inv el) j) = l' j) : l = l' =>
+  Jl (\lam n (el' : l.len = n) => \Pi (g : Fin n -> A) -> (\Pi (j : Fin n) -> l (castFin (inv el') j) = g j)
+                                    -> l = mkArray {A} {n} g)
+     (\lam g h' => inv (extArr l g (\lam j => inv (h' j))))
+     el (\lam j => l' j) h
+
+-- The read-back commutes with the array operations `EvalE` and `Eval` use.
+\func quoteEnvApp (xs ys : Array EV) : quoteEnv (xs ++ ys) = quoteEnv xs ++ quoteEnv ys \elim xs
+  | nil => idp
+  | x :: xs => pmap (\lam (l : Array LBTerm) => quote x :: l) (quoteEnvApp xs ys)
+
+\func quoteRevApp (xs acc : Array EV) : quoteEnv (revAppendArr xs acc) = revAppendArr (quoteEnv xs) (quoteEnv acc) \elim xs
+  | nil => idp
+  | x :: xs => quoteRevApp xs (x :: acc)
+
+\func quoteDrop (n : Nat) (xs : Array EV) : quoteEnv (dropArr n xs) = dropArr n (quoteEnv xs) \elim n, xs
+  | 0, xs => idp
+  | suc n, nil => idp
+  | suc n, x :: xs => quoteDrop n xs
+
+\func wfApp {spec : LBSpec} {genv : GlobalDeclarations} {xs ys : Array EV}
+            (wx : WfEnv spec genv xs) (wy : WfEnv spec genv ys) : WfEnv spec genv (xs ++ ys) \elim xs
+  | nil => wy
+  | x :: xs => wfCons (wx 0) (wfApp (\lam j => wx (suc j)) wy)
+
+\func wfRevApp {spec : LBSpec} {genv : GlobalDeclarations} {xs acc : Array EV}
+               (wx : WfEnv spec genv xs) (wa : WfEnv spec genv acc) : WfEnv spec genv (revAppendArr xs acc) \elim xs
+  | nil => wa
+  | x :: xs => wfRevApp (\lam j => wx (suc j)) (wfCons (wx 0) wa)
+
+\func wfDrop {spec : LBSpec} {genv : GlobalDeclarations} (n : Nat) {xs : Array EV}
+             (wx : WfEnv spec genv xs) : WfEnv spec genv (dropArr n xs) \elim n, xs
+  | 0, xs => wx
+  | suc n, nil => wx
+  | suc n, x :: xs => wfDrop n (\lam j => wx (suc j))
+
+-- ---------------------------------------------------------------------------
+-- The fix environment, read back, is `fixSubst` of the substituted block.
+-- ---------------------------------------------------------------------------
+
+\func subDef (L : Nat) (sg : Array LBTerm) (d : FixDef LBTerm) : FixDef LBTerm =>
+  \new FixDef LBTerm d.defName (substK (L Nat.+ 0) sg d.defBody) d.principalArgIdx
+
+\func fixEnvQuote (defs : Array (FixDef LBTerm)) (rho : Array EV) (n : Nat)
+  : quoteEnv (fixEnvAux defs rho n) = fixSubstAux (defsSub defs (quoteEnv rho)) n \elim n
+  | 0 => idp
+  | suc n => path (\lam i => (skFixF 0 (quoteEnv rho) defs n @ i) :: (fixEnvQuote defs rho n @ i))
+
+\func lenFixEnvAux (defs : Array (FixDef LBTerm)) (rho : Array EV) (n : Nat) : (fixEnvAux defs rho n).len = n \elim n
+  | 0 => idp
+  | suc n => pmap suc (lenFixEnvAux defs rho n)
+
+\func wfFixEnvAux {spec : LBSpec} {genv : GlobalDeclarations} (defs : Array (FixDef LBTerm)) (rho : Array EV)
+                  (lcf : LCf rho.len (fix defs 0)) (wfr : WfEnv spec genv rho) (n : Nat)
+  : WfEnv spec genv (fixEnvAux defs rho n) \elim n
+  | 0 => wfNil
+  | suc n => wfCons {spec} {genv} {evFix defs n rho} (lcf, wfr) (wfFixEnvAux defs rho lcf wfr n)
+
+\func fixBodyEq {spec : LBSpec} {genv : GlobalDeclarations} (defs : Array (FixDef LBTerm)) (rho : Array EV)
+                (wfr : WfEnv spec genv rho) (lcf : LCf rho.len (fix defs 0)) (b : LBTerm) (lcb : LCf (defs.len Nat.+ rho.len) b)
+  : substl (fixSubst (defsSub defs (quoteEnv rho))) (substK defs.len (quoteEnv rho) b)
+  = substK 0 (quoteEnv (fixEnv defs rho ++ rho)) b =>
+  \let | tau => quoteEnv (fixEnv defs rho)
+       | lt : tau.len = defs.len => lenFixEnvAux defs rho defs.len
+       | ctau : AllCf tau => quoteEnvClosed (wfFixEnvAux defs rho lcf wfr defs.len)
+  \in substlK _ _
+      *> pmap (\lam s => substK 0 s (substK defs.len (quoteEnv rho) b)) (inv (fixEnvQuote defs rho defs.len))
+      *> pmap (\lam L => substK 0 tau (substK L (quoteEnv rho) b)) (inv lt)
+      *> substKAppend tau (quoteEnv rho) ctau (quoteEnvClosed wfr) b
+           (transport (\lam L => LCf (L Nat.+ rho.len) b) (inv lt) lcb)
+      *> pmap (\lam s => substK 0 s b) (inv (quoteEnvApp (fixEnv defs rho) rho))
+
+\func cunfoldAtInv (D : Array (FixDef LBTerm)) (m : Maybe (FixDef LBTerm)) {narg : Nat} {fn : LBTerm}
+                   (e : cunfoldAt D m = just (narg, fn))
+  : \Sigma (d : FixDef LBTerm) (m = just d) (fn = substl (fixSubst D) d.defBody) \elim m
+  | nothing => contradiction
+  | just d => (d, idp, inv (pmap (\lam (p : \Sigma Nat LBTerm) => p.2) (justInj e)))
+
+\func cunfoldInv (defs : Array (FixDef LBTerm)) (sg : Array LBTerm) (idx : Nat) {narg : Nat} {fn : LBTerm}
+                 (e : cunfoldFix (defsSub defs sg) idx = just (narg, fn))
+  : \Sigma (d0 : FixDef LBTerm) (nthArr {FixDef LBTerm} idx defs = just d0)
+           (fn = substl (fixSubst (defsSub defs sg)) (substK defs.len sg d0.defBody)) =>
+  \let | a => cunfoldAtInv (defsSub defs sg) (nthArr {FixDef LBTerm} idx (defsSub defs sg)) e
+       | b => nthMapInv (subDef defs.len sg) idx defs a.2
+  \in (b.1, b.2, a.3 *> pmap (\lam (d : FixDef LBTerm) => substl (fixSubst (defsSub defs sg)) d.defBody) b.3)
+
+-- ---------------------------------------------------------------------------
+-- A constructor value read back.
+-- ---------------------------------------------------------------------------
+
+\func tagOf (t : LBTerm) : Nat \elim t
+  | box => 0
+  | bvar _ => 1
+  | fvar _ => 2
+  | lambda _ _ => 3
+  | letIn _ _ _ => 4
+  | app _ _ => 5
+  | const _ => 6
+  | construct _ _ _ => 7
+  | case _ _ _ _ => 8
+  | proj _ _ => 9
+  | fix _ _ => 10
+  | prim _ => 11
+
+\func nEq (a b : Nat) : Bool \elim a, b
+  | 0, 0 => true
+  | 0, suc _ => false
+  | suc _, 0 => false
+  | suc a, suc b => nEq a b
+
+\func nEqRefl (a : Nat) : nEq a a = true \elim a
+  | 0 => idp
+  | suc a => nEqRefl a
+
+-- Two terms with different head constructors are different.
+\func tagNe {t u : LBTerm} (e : t = u) (ne : nEq (tagOf t) (tagOf u) = false) : Empty =>
+  \case inv ne *> transport (\lam x => nEq (tagOf t) (tagOf x) = true) e (nEqRefl (tagOf t)) \with {}
+
+\func quoteConInv (w : EV) {ind : InductiveId} {c : Nat} {args : Array LBTerm} (e : construct ind c args = quote w)
+  : \Sigma (wargs : Array EV) (w = evCon ind c wargs) (args = quoteEnv wargs) \elim w
+  | evBox => contradiction
+  | evClos na b rho => absurd (tagNe (e *> skLamF 0 (quoteEnv rho) na b) idp)
+  | evFix defs idx rho => absurd (tagNe (e *> skFixF 0 (quoteEnv rho) defs idx) idp)
+  | evCon ind0 c0 wargs =>
+    (wargs,
+     path (\lam i => evCon (inv (pmap (\lam t => \case t \with { | construct i' _ _ => i' | _ => ind }) e) @ i)
+                           (inv (pmap (\lam t => \case t \with { | construct _ c' _ => c' | _ => c }) e) @ i) wargs),
+     pmap (\lam t => \case t \with { | construct _ _ a => a | _ => args }) e)
+  | evPrim _ => contradiction
+  | evAx kn args' => absurd (notAxHead idp e)
+
+-- ---------------------------------------------------------------------------
+-- The application rules, given what the two premises evaluated to.
+-- ---------------------------------------------------------------------------
+
+\func AppOut (spec : LBSpec) (genv : GlobalDeclarations) (wf wa : EV) (v : LBTerm) : \Type =>
+  \Sigma (w : EV) (ApplyE spec genv wf wa w) (v = quote w) (WfV spec genv w)
+
+\func TailOut (spec : LBSpec) (genv : GlobalDeclarations) (rho : Array EV) (body : LBTerm) (wa : EV) (v : LBTerm) : \Type =>
+  \Sigma (wfn : EV) (EvalE spec genv rho body wfn) (AppOut spec genv wfn wa v)
+
+\func boxCase {spec : LBSpec} {genv : GlobalDeclarations} {wf wa : EV} {v : LBTerm}
+              (efv : box = quote wf) (pv : v = box) : AppOut spec genv wf wa v =>
+  (evBox, transport (\lam x => ApplyE spec genv x wa evBox) (inv (quoteBoxInv wf efv)) (apBox idp), pv, ())
+
+\func betaCase {spec : LBSpec} {genv : GlobalDeclarations} {na : BinderName} {b' av v : LBTerm} {wf wa : EV}
+               (wff : WfV spec genv wf) (efv : lambda na b' = quote wf) (eav : av = quote wa) (wfa : WfV spec genv wa)
+               (ih : \Pi {rho' : Array EV} (wfr' : WfEnv spec genv rho') (b0 : LBTerm)
+                         (csubst av 0 b' = substK 0 (quoteEnv rho') b0) (LCf rho'.len b0) -> Out1 spec genv rho' b0 v)
+  : AppOut spec genv wf wa v =>
+  \let | r => quoteLamInv wf efv
+       | wfc : WfV spec genv (evClos na r.1 r.2) => transport (WfV spec genv) r.3 wff
+       | et : csubst av 0 b' = substK 0 (quoteEnv (wa :: r.2)) r.1 =>
+         path (\lam i => csubst (eav @ i) 0 (r.4 @ i))
+           *> substCommuteF (quoteClosed wa wfa) (quoteEnv r.2) (quoteEnvClosed wfc.2) r.1 wfc.1
+       | o => ih (wfCons wfa wfc.2) r.1 et wfc.1
+  \in (o.1, transport (\lam x => ApplyE spec genv x wa o.1) (inv r.3) (apBeta o.2), o.3, o.4)
+
+\func fixCase {spec : LBSpec} {genv : GlobalDeclarations} {defs' : Array (FixDef LBTerm)} {idx narg : Nat} {fn v : LBTerm}
+              {wf wa : EV} (wff : WfV spec genv wf) (efv : fix defs' idx = quote wf) (ecu : cunfoldFix defs' idx = just (narg, fn))
+              (tl : \Pi {rho'' : Array EV} (wfr'' : WfEnv spec genv rho'') (body : LBTerm)
+                        (fn = substK 0 (quoteEnv rho'') body) (LCf rho''.len body) -> TailOut spec genv rho'' body wa v)
+  : AppOut spec genv wf wa v =>
+  \let | r => quoteFixInv wf efv
+       | wfc : WfV spec genv (evFix r.1 idx r.2) => transport (WfV spec genv) r.3 wff
+       | ecu' : cunfoldFix (defsSub r.1 (quoteEnv r.2)) idx = just (narg, fn) =>
+         transport (\lam D => cunfoldFix D idx = just (narg, fn)) r.4 ecu
+       | ci => cunfoldInv r.1 (quoteEnv r.2) idx ecu'
+       | jj => nthArrAt idx r.1 ci.2
+       | lcb0 : LCf (r.1.len Nat.+ r.2.len) ci.1.defBody =>
+         transport (\lam (d : FixDef LBTerm) => LCf (r.1.len Nat.+ r.2.len) d.defBody) jj.2 (wfc.1 jj.1)
+       | lcb : LCf (fixEnv r.1 r.2 ++ r.2).len ci.1.defBody =>
+         transport (\lam L => LCf L ci.1.defBody)
+                   (inv (lenApp (fixEnv r.1 r.2) r.2 *> pmap (\lam L => L Nat.+ r.2.len) (lenFixEnvAux r.1 r.2 r.1.len))) lcb0
+       | efn : fn = substK 0 (quoteEnv (fixEnv r.1 r.2 ++ r.2)) ci.1.defBody =>
+         ci.3 *> fixBodyEq r.1 r.2 wfc.2 wfc.1 ci.1.defBody lcb0
+       | o => tl (wfApp (wfFixEnvAux r.1 r.2 wfc.1 wfc.2 r.1.len) wfc.2) ci.1.defBody efn lcb
+  \in (o.3.1, transport (\lam x => ApplyE spec genv x wa o.3.1) (inv r.3) (apFix ci.2 o.2 o.3.2), o.3.3, o.3.4)
+
+\func axCase {spec : LBSpec} {genv : GlobalDeclarations} (ofo : OracleFO spec) {fv av v : LBTerm} {wf wa : EV}
+             (efv : fv = quote wf) (eav : av = quote wa) (kn' : Kername) (xs' : Array LBTerm)
+             (sat : axiomSat spec (app fv av) = just (kn', xs')) (run : axiomRun {spec} kn' xs' = just v)
+  : AppOut spec genv wf wa v =>
+  \let | sat' : axiomSat spec (app (quote wf) (quote wa)) = just (kn', xs') =>
+         inv (path (\lam i => axiomSat spec (app (efv @ i) (eav @ i)))) *> sat
+       | vw => axSatView {spec} {genv} wf sat'
+       | sat'' : axiomSat spec (app (quote (evAx vw.1 vw.2)) (quote wa)) = just (kn', xs') =>
+         transport (\lam x => axiomSat spec (app (quote x) (quote wa)) = just (kn', xs')) vw.3 sat'
+  \in (ofFO v, transport (\lam x => ApplyE spec genv x wa (ofFO v)) (inv vw.3) (apAxRun kn' xs' sat'' run idp),
+       inv (foQuote v (ofo kn' xs' v run)), wfFO v)
+
+\func congCase {spec : LBSpec} {genv : GlobalDeclarations} {f' av v : LBTerm} {wf wa : EV}
+               (efv : f' = quote wf) (eav : av = quote wa) (wff : WfV spec genv wf) (wfa : WfV spec genv wa)
+               (ok : appCongOk f' = true) (sat : axiomSat spec (app f' av) = nothing) (p : v = app f' av)
+  : AppOut spec genv wf wa v =>
+  \let | cv => congView wf (transport (\lam x => appCongOk x = true) efv ok)
+       | sat' : axiomSat spec (app (quote wf) (quote wa)) = nothing =>
+         inv (path (\lam i => axiomSat spec (app (efv @ i) (eav @ i)))) *> sat
+       | sat'' : axiomSat spec (app (quote (evAx cv.1 cv.2)) (quote wa)) = nothing =>
+         transport (\lam x => axiomSat spec (app (quote x) (quote wa)) = nothing) cv.3 sat'
+       | wfx : WfV spec genv (evAx cv.1 cv.2) => transport (WfV spec genv) cv.3 wff
+  \in (evAx cv.1 (wa :: cv.2),
+       transport (\lam x => ApplyE spec genv x wa (evAx cv.1 (wa :: cv.2))) (inv cv.3) (apAxPart sat'' idp),
+       p *> path (\lam i => app (efv @ i) (eav @ i)) *> pmap (\lam x => app (quote x) (quote wa)) cv.3
+         *> pmap (quoteAx cv.1) (inv (quoteEnvCons wa cv.2)),
+       (wfCons wfa wfx.1, (wfx.2, sat'')))
+
+-- ---------------------------------------------------------------------------
+-- Which source term a substituted term came from: a variable (whose value is
+-- then handled by `varSim`), or the same head.
+-- ---------------------------------------------------------------------------
+
+\data Split (A B : \Type) | sL A | sR B
+
+\func VarCase (rho : Array EV) (b : LBTerm) : \Type => \Sigma (i : Nat) (b = bvar i) (natCompare rho.len i = cGt)
+
+\func prepConst {rho : Array EV} (b : LBTerm) {kn : Kername} (et : const kn = substK 0 (quoteEnv rho) b) (lc : LCf rho.len b)
+  : Split (VarCase rho b) (b = const kn) \elim b
+  | bvar i => sL (i, idp, lc)
+  | const kn' => sR (pmap const (inv (pmap (\lam t => \case t \with { | const k => k | _ => kn }) (et *> skConstF 0 (quoteEnv rho) kn'))))
+  | box => absurd (tagNe (et *> skBoxF 0 (quoteEnv rho)) idp)
+  | lambda na b0 => absurd (tagNe (et *> skLamF 0 (quoteEnv rho) na b0) idp)
+  | letIn na b0 b1 => absurd (tagNe (et *> skLetF 0 (quoteEnv rho) na b0 b1) idp)
+  | app f a => absurd (tagNe (et *> skAppF 0 (quoteEnv rho) f a) idp)
+  | construct ind c args => absurd (tagNe (et *> skConstructF 0 (quoteEnv rho) ind c args) idp)
+  | case ind np discr brs => absurd (tagNe (et *> skCaseF 0 (quoteEnv rho) ind np discr brs) idp)
+  | proj p discr => absurd (tagNe (et *> skProjF 0 (quoteEnv rho) p discr) idp)
+  | fix defs idx => absurd (tagNe (et *> skFixF 0 (quoteEnv rho) defs idx) idp)
+  | prim pv => absurd (tagNe (et *> skPrimF 0 (quoteEnv rho) pv) idp)
+  | fvar _ => \case lc
+
+\func appFunT (t : LBTerm) : LBTerm \elim t
+  | app f _ => f
+  | _ => box
+
+\func appArgT (t : LBTerm) : LBTerm \elim t
+  | app _ a => a
+  | _ => box
+
+\func prepApp {rho : Array EV} (b : LBTerm) {f' a' : LBTerm} (et : app f' a' = substK 0 (quoteEnv rho) b) (lc : LCf rho.len b)
+  : Split (VarCase rho b)
+          (\Sigma (f a : LBTerm) (b = app f a) (f' = substK 0 (quoteEnv rho) f) (a' = substK 0 (quoteEnv rho) a)
+                  (LCf rho.len f) (LCf rho.len a)) \elim b
+  | bvar i => sL (i, idp, lc)
+  | app f a => \let e => et *> skAppF 0 (quoteEnv rho) f a \in sR (f, a, idp, pmap appFunT e, pmap appArgT e, lc.1, lc.2)
+  | box => absurd (tagNe (et *> skBoxF 0 (quoteEnv rho)) idp)
+  | lambda na b0 => absurd (tagNe (et *> skLamF 0 (quoteEnv rho) na b0) idp)
+  | letIn na b0 b1 => absurd (tagNe (et *> skLetF 0 (quoteEnv rho) na b0 b1) idp)
+  | const kn => absurd (tagNe (et *> skConstF 0 (quoteEnv rho) kn) idp)
+  | construct ind c args => absurd (tagNe (et *> skConstructF 0 (quoteEnv rho) ind c args) idp)
+  | case ind np discr brs => absurd (tagNe (et *> skCaseF 0 (quoteEnv rho) ind np discr brs) idp)
+  | proj p discr => absurd (tagNe (et *> skProjF 0 (quoteEnv rho) p discr) idp)
+  | fix defs idx => absurd (tagNe (et *> skFixF 0 (quoteEnv rho) defs idx) idp)
+  | prim pv => absurd (tagNe (et *> skPrimF 0 (quoteEnv rho) pv) idp)
+  | fvar _ => \case lc
+
+\func letValT (t : LBTerm) : LBTerm \elim t
+  | letIn _ b _ => b
+  | _ => box
+
+\func letBodyT (t : LBTerm) : LBTerm \elim t
+  | letIn _ _ b => b
+  | _ => box
+
+\func prepLet {rho : Array EV} (b : LBTerm) {na : BinderName} {b0' b1' : LBTerm}
+              (et : letIn na b0' b1' = substK 0 (quoteEnv rho) b) (lc : LCf rho.len b)
+  : Split (VarCase rho b)
+          (\Sigma (na0 : BinderName) (b0 b1 : LBTerm) (b = letIn na0 b0 b1) (b0' = substK 0 (quoteEnv rho) b0)
+                  (b1' = substK 1 (quoteEnv rho) b1) (LCf rho.len b0) (LCf (suc rho.len) b1)) \elim b
+  | bvar i => sL (i, idp, lc)
+  | letIn na0 b0 b1 => \let e => et *> skLetF 0 (quoteEnv rho) na0 b0 b1
+                       \in sR (na0, b0, b1, idp, pmap letValT e, pmap letBodyT e, lc.1, lc.2)
+  | box => absurd (tagNe (et *> skBoxF 0 (quoteEnv rho)) idp)
+  | lambda na b0 => absurd (tagNe (et *> skLamF 0 (quoteEnv rho) na b0) idp)
+  | app f a => absurd (tagNe (et *> skAppF 0 (quoteEnv rho) f a) idp)
+  | const kn => absurd (tagNe (et *> skConstF 0 (quoteEnv rho) kn) idp)
+  | construct ind c args => absurd (tagNe (et *> skConstructF 0 (quoteEnv rho) ind c args) idp)
+  | case ind np discr brs => absurd (tagNe (et *> skCaseF 0 (quoteEnv rho) ind np discr brs) idp)
+  | proj p discr => absurd (tagNe (et *> skProjF 0 (quoteEnv rho) p discr) idp)
+  | fix defs idx => absurd (tagNe (et *> skFixF 0 (quoteEnv rho) defs idx) idp)
+  | prim pv => absurd (tagNe (et *> skPrimF 0 (quoteEnv rho) pv) idp)
+  | fvar _ => \case lc
+
+\func prepCon {rho : Array EV} (b : LBTerm) {ind : InductiveId} {c : Nat} {args' : Array LBTerm}
+              (et : construct ind c args' = substK 0 (quoteEnv rho) b) (lc : LCf rho.len b)
+  : Split (VarCase rho b)
+          (\Sigma (args0 : Array LBTerm) (b = construct ind c args0)
+                  (args' = mkArray {LBTerm} {args0.len} (\lam i => substK 0 (quoteEnv rho) (args0 i)))
+                  (\Pi (i : Fin args0.len) -> LCf rho.len (args0 i))) \elim b
+  | bvar i => sL (i, idp, lc)
+  | construct ind0 c0 args0 =>
+    \let e => et *> skConstructF 0 (quoteEnv rho) ind0 c0 args0
+    \in sR (args0,
+            path (\lam i => construct (inv (pmap (\lam t => \case t \with { | construct i' _ _ => i' | _ => ind }) e) @ i)
+                                      (inv (pmap (\lam t => \case t \with { | construct _ c' _ => c' | _ => c }) e) @ i) args0),
+            pmap (\lam t => \case t \with { | construct _ _ a => a | _ => args' }) e,
+            lc)
+  | box => absurd (tagNe (et *> skBoxF 0 (quoteEnv rho)) idp)
+  | lambda na b0 => absurd (tagNe (et *> skLamF 0 (quoteEnv rho) na b0) idp)
+  | letIn na b0 b1 => absurd (tagNe (et *> skLetF 0 (quoteEnv rho) na b0 b1) idp)
+  | app f a => absurd (tagNe (et *> skAppF 0 (quoteEnv rho) f a) idp)
+  | const kn => absurd (tagNe (et *> skConstF 0 (quoteEnv rho) kn) idp)
+  | case ind np discr brs => absurd (tagNe (et *> skCaseF 0 (quoteEnv rho) ind np discr brs) idp)
+  | proj p discr => absurd (tagNe (et *> skProjF 0 (quoteEnv rho) p discr) idp)
+  | fix defs idx => absurd (tagNe (et *> skFixF 0 (quoteEnv rho) defs idx) idp)
+  | prim pv => absurd (tagNe (et *> skPrimF 0 (quoteEnv rho) pv) idp)
+  | fvar _ => \case lc
+
+\func brSub (sg : Array LBTerm) (br : \Sigma (Array BinderName) LBTerm) : \Sigma (Array BinderName) LBTerm =>
+  (br.1, substK (br.1.len Nat.+ 0) sg br.2)
+
+\func prepCase {rho : Array EV} (b : LBTerm) {ind : InductiveId} {np : Nat} {discr' : LBTerm}
+               {brs' : Array (\Sigma (Array BinderName) LBTerm)}
+               (et : case ind np discr' brs' = substK 0 (quoteEnv rho) b) (lc : LCf rho.len b)
+  : Split (VarCase rho b)
+          (\Sigma (discr0 : LBTerm) (brs0 : Array (\Sigma (Array BinderName) LBTerm)) (b = case ind np discr0 brs0)
+                  (discr' = substK 0 (quoteEnv rho) discr0) (brs' = mapArr (brSub (quoteEnv rho)) brs0)
+                  (LCf rho.len discr0) (\Pi (i : Fin brs0.len) -> LCf ((brs0 i).1.len Nat.+ rho.len) (brs0 i).2)) \elim b
+  | bvar i => sL (i, idp, lc)
+  | case ind0 np0 discr0 brs0 =>
+    \let e => et *> skCaseF 0 (quoteEnv rho) ind0 np0 discr0 brs0
+    \in sR (discr0, brs0,
+            path (\lam i => case (inv (pmap (\lam t => \case t \with { | case i' _ _ _ => i' | _ => ind }) e) @ i)
+                                 (inv (pmap (\lam t => \case t \with { | case _ n' _ _ => n' | _ => np }) e) @ i) discr0 brs0),
+            pmap (\lam t => \case t \with { | case _ _ d _ => d | _ => discr' }) e,
+            pmap (\lam t => \case t \with { | case _ _ _ bs => bs | _ => brs' }) e,
+            lc.1, lc.2)
+  | box => absurd (tagNe (et *> skBoxF 0 (quoteEnv rho)) idp)
+  | lambda na b0 => absurd (tagNe (et *> skLamF 0 (quoteEnv rho) na b0) idp)
+  | letIn na b0 b1 => absurd (tagNe (et *> skLetF 0 (quoteEnv rho) na b0 b1) idp)
+  | app f a => absurd (tagNe (et *> skAppF 0 (quoteEnv rho) f a) idp)
+  | const kn => absurd (tagNe (et *> skConstF 0 (quoteEnv rho) kn) idp)
+  | construct ind c args => absurd (tagNe (et *> skConstructF 0 (quoteEnv rho) ind c args) idp)
+  | proj p discr => absurd (tagNe (et *> skProjF 0 (quoteEnv rho) p discr) idp)
+  | fix defs idx => absurd (tagNe (et *> skFixF 0 (quoteEnv rho) defs idx) idp)
+  | prim pv => absurd (tagNe (et *> skPrimF 0 (quoteEnv rho) pv) idp)
+  | fvar _ => \case lc
+
+\func prepProj {rho : Array EV} (b : LBTerm) {p : ProjectionInfo} {discr' : LBTerm}
+               (et : proj p discr' = substK 0 (quoteEnv rho) b) (lc : LCf rho.len b)
+  : Split (VarCase rho b)
+          (\Sigma (discr0 : LBTerm) (b = proj p discr0) (discr' = substK 0 (quoteEnv rho) discr0) (LCf rho.len discr0)) \elim b
+  | bvar i => sL (i, idp, lc)
+  | proj p0 discr0 =>
+    \let e => et *> skProjF 0 (quoteEnv rho) p0 discr0
+    \in sR (discr0,
+            pmap (\lam q => proj q discr0) (inv (pmap (\lam t => \case t \with { | proj q _ => q | _ => p }) e)),
+            pmap (\lam t => \case t \with { | proj _ d => d | _ => discr' }) e,
+            lc)
+  | box => absurd (tagNe (et *> skBoxF 0 (quoteEnv rho)) idp)
+  | lambda na b0 => absurd (tagNe (et *> skLamF 0 (quoteEnv rho) na b0) idp)
+  | letIn na b0 b1 => absurd (tagNe (et *> skLetF 0 (quoteEnv rho) na b0 b1) idp)
+  | app f a => absurd (tagNe (et *> skAppF 0 (quoteEnv rho) f a) idp)
+  | const kn => absurd (tagNe (et *> skConstF 0 (quoteEnv rho) kn) idp)
+  | construct ind c args => absurd (tagNe (et *> skConstructF 0 (quoteEnv rho) ind c args) idp)
+  | case ind np discr brs => absurd (tagNe (et *> skCaseF 0 (quoteEnv rho) ind np discr brs) idp)
+  | fix defs idx => absurd (tagNe (et *> skFixF 0 (quoteEnv rho) defs idx) idp)
+  | prim pv => absurd (tagNe (et *> skPrimF 0 (quoteEnv rho) pv) idp)
+  | fvar _ => \case lc
+
+-- The atoms: `box`, `lambda`, `fix`, `prim` evaluate to themselves.
+\func ftA (e : false = true) : Empty => contradiction
+
+\func atomSim {spec : LBSpec} {genv : GlobalDeclarations} {t v : LBTerm} (d : Eval spec genv t v) (h : isAtomT t = true)
+              {rho : Array EV} (wfr : WfEnv spec genv rho) (b : LBTerm) (et : t = substK 0 (quoteEnv rho) b) (lc : LCf rho.len b)
+  : Out1 spec genv rho b v \elim b
+  | bvar i => varSim d wfr i lc et
+  | box => (evBox, eeBox idp, atomSelf d h *> et *> skBoxF 0 (quoteEnv rho), ())
+  | lambda na b0 => (evClos na b0 rho, eeLam idp, atomSelf d h *> et, (lc, wfr))
+  | fix defs idx => (evFix defs idx rho, eeFix idp, atomSelf d h *> et, (lc, wfr))
+  | prim pv => (evPrim pv, eePrim idp, atomSelf d h *> et *> skPrimF 0 (quoteEnv rho) pv, ())
+  | const kn => absurd (ftA (inv (pmap isAtomT (et *> skConstF 0 (quoteEnv rho) kn)) *> h))
+  | app f a => absurd (ftA (inv (pmap isAtomT (et *> skAppF 0 (quoteEnv rho) f a)) *> h))
+  | letIn na b0 b1 => absurd (ftA (inv (pmap isAtomT (et *> skLetF 0 (quoteEnv rho) na b0 b1)) *> h))
+  | construct ind c args => absurd (ftA (inv (pmap isAtomT (et *> skConstructF 0 (quoteEnv rho) ind c args)) *> h))
+  | case ind np discr brs => absurd (ftA (inv (pmap isAtomT (et *> skCaseF 0 (quoteEnv rho) ind np discr brs)) *> h))
+  | proj p discr => absurd (ftA (inv (pmap isAtomT (et *> skProjF 0 (quoteEnv rho) p discr)) *> h))
+  | fvar _ => \case lc
+
+-- ---------------------------------------------------------------------------
+-- THE SIMULATION.
+-- ---------------------------------------------------------------------------
+
+-- Every constant body is closed (MetaRocq: part of `wf_glob`).
+\func GlobClosed (genv : GlobalDeclarations) : \Type =>
+  \Pi (kn : Kername) (cb : ConstantBody) (body : LBTerm) -> lookupConstant genv kn = just cb -> cb.cstBody = just body -> LCf 0 body
+
+\func varOut {spec : LBSpec} {genv : GlobalDeclarations} {rho : Array EV} {b v : LBTerm} {i : Nat}
+             (eb : b = bvar i) (o : Out1 spec genv rho (bvar i) v) : Out1 spec genv rho b v =>
+  transport (\lam x => Out1 spec genv rho x v) (inv eb) o
+
+\func mkApp {spec : LBSpec} {genv : GlobalDeclarations} {rho : Array EV} {b f a fv av v : LBTerm}
+            (eb : b = app f a) (of : Out1 spec genv rho f fv) (oa : Out1 spec genv rho a av) (r : AppOut spec genv of.1 oa.1 v)
+  : Out1 spec genv rho b v =>
+  transport (\lam x => Out1 spec genv rho x v) (inv eb) (r.1, eeApp of.2 oa.2 r.2, r.3, r.4)
+
+\func sim1 {spec : LBSpec} {genv : GlobalDeclarations} (ofo : OracleFO spec) (gc : GlobClosed genv)
+           {t v : LBTerm} (d : Eval spec genv t v) {rho : Array EV} (wfr : WfEnv spec genv rho)
+           (b : LBTerm) (et : t = substK 0 (quoteEnv rho) b) (lc : LCf rho.len b)
+  : Out1 spec genv rho b v \elim t, d
+  | box, evalAtomBox p => atomSim (evalAtomBox p) idp wfr b et lc
+  | lambda _ _, evalAtomLambda p => atomSim (evalAtomLambda p) idp wfr b et lc
+  | fix _ _, evalAtomFix p => atomSim (evalAtomFix p) idp wfr b et lc
+  | prim _, evalPrim p => atomSim (evalPrim p) idp wfr b et lc
+
+  | const kn, evalDelta {cb} {body} lk bd db => \case prepConst b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalDelta lk bd db) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR eb =>
+      \let o => sim1 ofo gc db wfNil body idp (gc kn cb body lk bd)
+      \in transport (\lam x => Out1 spec genv rho x v) (inv eb) (o.1, eeDelta lk bd o.2, o.3, o.4)
+  }
+  | const kn, evalAxiom {cb} {ar} lk bn aa p => \case prepConst b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalAxiom lk bn aa p) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR eb =>
+      transport (\lam x => Out1 spec genv rho x v) (inv eb)
+        (evAx kn nil, eeAxiom lk bn aa idp, p *> pmap (quoteAx kn) (inv quoteEnvNil),
+         (\lam (i : Fin 0) => \case i \with {}, (cb, lk, bn, ar, aa)))
+  }
+
+  | letIn _ _ _, evalZeta d0 d1 => \case prepLet b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalZeta d0 d1) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR (na0, b0, b1, eb, e0, e1, lc0, lc1) =>
+      \let | o0 => sim1 ofo gc d0 wfr b0 e0 lc0
+           | o1 => sim1 ofo gc d1 (wfCons o0.4 wfr) b1
+                     (path (\lam i => csubst (o0.3 @ i) 0 (e1 @ i))
+                       *> substCommuteF (quoteClosed o0.1 o0.4) (quoteEnv rho) (quoteEnvClosed wfr) b1 lc1)
+                     lc1
+      \in transport (\lam x => Out1 spec genv rho x v) (inv eb) (o1.1, eeLet o0.2 o1.2, o1.3, o1.4)
+  }
+
+  | app _ _, evalBox pv df da => \case prepApp b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalBox pv df da) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR (f, a, eb, ef, ea, lcf, lca) =>
+      \let | of => sim1 ofo gc df wfr f ef lcf
+           | oa => sim1 ofo gc da wfr a ea lca
+      \in mkApp eb of oa (boxCase of.3 pv)
+  }
+  | app _ _, evalBeta df da db => \case prepApp b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalBeta df da db) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR (f, a, eb, ef, ea, lcf, lca) =>
+      \let | of => sim1 ofo gc df wfr f ef lcf
+           | oa => sim1 ofo gc da wfr a ea lca
+      \in mkApp eb of oa (betaCase of.4 of.3 oa.3 oa.4 (\lam wfr' b0 et' lc' => sim1 ofo gc db wfr' b0 et' lc'))
+  }
+  | app _ _, evalFix df ecu da dt => \case prepApp b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalFix df ecu da dt) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR (f, a, eb, ef, ea, lcf, lca) =>
+      \let | of => sim1 ofo gc df wfr f ef lcf
+           | oa => sim1 ofo gc da wfr a ea lca
+      \in mkApp eb of oa
+            (fixCase of.4 of.3 ecu (\lam wfr'' body efn lcb =>
+               simTail ofo gc dt wfr'' body oa.1 oa.4 (path (\lam i => app (efn @ i) (oa.3 @ i))) lcb))
+  }
+  | app _ _, evalAxiomApp kn' xs' df da sat run => \case prepApp b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalAxiomApp kn' xs' df da sat run) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR (f, a, eb, ef, ea, lcf, lca) =>
+      \let | of => sim1 ofo gc df wfr f ef lcf
+           | oa => sim1 ofo gc da wfr a ea lca
+      \in mkApp eb of oa (axCase ofo of.3 oa.3 kn' xs' sat run)
+  }
+  | app _ _, evalAppCong df ok da sat p => \case prepApp b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalAppCong df ok da sat p) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR (f, a, eb, ef, ea, lcf, lca) =>
+      \let | of => sim1 ofo gc df wfr f ef lcf
+           | oa => sim1 ofo gc da wfr a ea lca
+      \in mkApp eb of oa (congCase of.3 oa.3 of.4 oa.4 ok sat p)
+  }
+
+  | construct ind c args', evalConstruct {arity} {vs} ea el ds p => \case prepCon b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalConstruct ea el ds p) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR (args0, eb, eargs, lcs) =>
+      \let | el0 : args'.len = args0.len => pmap (\lam (l : Array LBTerm) => l.len) eargs
+           | ih (j : Fin args0.len) : Out1 spec genv rho (args0 j) (vs (castFin (inv el0) j)) =>
+             sim1 ofo gc (ds (castFin (inv el0) j)) wfr (args0 j) (arrAtEq eargs j) (lcs j)
+           | ws : Array EV args0.len => mkArray (\lam j => (ih j).1)
+      \in transport (\lam x => Out1 spec genv rho x v) (inv eb)
+            (evCon ind c ws, eeCon ea (inv el0 *> el) (\lam j => (ih j).2) idp,
+             p *> pmap (construct ind c) (arrEqCast vs (quoteEnv ws) el0 (\lam j => (ih j).3)),
+             \lam j => (ih j).4)
+  }
+
+  | case ind np _ _, evalIota {c} {nargs} {args} {br} dd ci nb el eb' dbr => \case prepCase b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalIota dd ci nb el eb' dbr) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR (discr0, brs0, eb, ed, ebr, lcd, lcbs) =>
+      \let | od => sim1 ofo gc dd wfr discr0 ed lcd
+           | cq => quoteConInv od.1 od.3
+           | wfw : WfEnv spec genv cq.1 => transport (WfV spec genv) cq.2 od.4
+           | bi => nthMapInv (brSub (quoteEnv rho)) c brs0 (transport (\lam B => nthArr c B = just br) ebr nb)
+           | jj => nthArrAt c brs0 bi.2
+           | fields => revArr (dropArr np cq.1)
+           | ld : (dropArr np cq.1).len = bi.1.1.len =>
+             pmap (\lam (l : Array LBTerm) => l.len) (quoteDrop np cq.1 *> pmap (dropArr np) (inv cq.3))
+               *> eb' *> pmap (\lam (x : \Sigma (Array BinderName) LBTerm) => x.1.len) bi.3
+           | lf : (quoteEnv fields).len = bi.1.1.len => lenRev (dropArr np cq.1) *> ld
+           | lcb0 : LCf (bi.1.1.len Nat.+ rho.len) bi.1.2 =>
+             transport (\lam (x : \Sigma (Array BinderName) LBTerm) => LCf (x.1.len Nat.+ rho.len) x.2) jj.2 (lcbs jj.1)
+           | etb : iotaRed np args br = substK 0 (quoteEnv (fields ++ rho)) bi.1.2 =>
+             pmap (\lam (x : \Sigma (Array LBTerm) (\Sigma (Array BinderName) LBTerm)) => substl (revArr (dropArr np x.1)) x.2.2)
+                  (path (\lam i => (cq.3 @ i, bi.3 @ i)))
+               *> pmap (\lam s => substl s (substK (bi.1.1.len Nat.+ 0) (quoteEnv rho) bi.1.2))
+                       (inv (quoteRevApp (dropArr np cq.1) nil *> pmap revArr (quoteDrop np cq.1)))
+               *> substlK _ _
+               *> pmap (\lam L => substK 0 (quoteEnv fields) (substK L (quoteEnv rho) bi.1.2)) (inv lf)
+               *> substKAppend (quoteEnv fields) (quoteEnv rho) (quoteEnvClosed (wfRevApp (wfDrop np wfw) wfNil))
+                               (quoteEnvClosed wfr) bi.1.2
+                               (transport (\lam L => LCf (L Nat.+ rho.len) bi.1.2) (inv lf) lcb0)
+               *> pmap (\lam s => substK 0 s bi.1.2) (inv (quoteEnvApp fields rho))
+           | lcb : LCf (fields ++ rho).len bi.1.2 =>
+             transport (\lam L => LCf L bi.1.2) (inv (lenApp fields rho *> pmap (\lam L => L Nat.+ rho.len) lf)) lcb0
+           | ob => sim1 ofo gc dbr (wfApp (wfRevApp (wfDrop np wfw) wfNil) wfr) bi.1.2 etb lcb
+      \in transport (\lam x => Out1 spec genv rho x v) (inv eb)
+            (ob.1,
+             eeCase (transport (\lam x => EvalE spec genv rho discr0 x) cq.2 od.2) ci bi.2
+                    (inv (pmap (\lam (l : Array LBTerm) => l.len) cq.3) *> el) ld ob.2,
+             ob.3, ob.4)
+  }
+
+  | proj p _, evalProj {nargs} {args} {a} dd ci el na da => \case prepProj b et lc \with {
+    | sL (i, eb, lci) => varOut eb (varSim (evalProj dd ci el na da) wfr i lci (et *> pmap (substK 0 (quoteEnv rho)) eb))
+    | sR (discr0, eb, ed, lcd) =>
+      \let | od => sim1 ofo gc dd wfr discr0 ed lcd
+           | cq => quoteConInv od.1 od.3
+           | wfw : WfEnv spec genv cq.1 => transport (WfV spec genv) cq.2 od.4
+           | ni => nthMapInv quote (p.projParamCount Nat.+ p.projFieldIdx) cq.1
+                     (transport (\lam A => nthArr (p.projParamCount Nat.+ p.projFieldIdx) A = just a) cq.3 na)
+           | jj => nthArrAt (p.projParamCount Nat.+ p.projFieldIdx) cq.1 ni.2
+           | wfa : WfV spec genv ni.1 => transport (WfV spec genv) jj.2 (wfw jj.1)
+      \in transport (\lam x => Out1 spec genv rho x v) (inv eb)
+            (ni.1,
+             eeProj (transport (\lam x => EvalE spec genv rho discr0 x) cq.2 od.2) ci
+                    (inv (pmap (\lam (l : Array LBTerm) => l.len) cq.3) *> el) ni.2,
+             valueSelf ni.1 wfa (transport (\lam x => Eval spec genv x v) ni.3 da),
+             wfa)
+  }
+
+-- The last premise of `eval_fix'`: `app fn av`, with `fn` the unfolded body and
+-- `av` an already evaluated argument (re-evaluated by λ□, hence `valueSelf`).
+\func simTail {spec : LBSpec} {genv : GlobalDeclarations} (ofo : OracleFO spec) (gc : GlobClosed genv)
+              {t v : LBTerm} (d : Eval spec genv t v) {rho : Array EV} (wfr : WfEnv spec genv rho)
+              (body : LBTerm) (wa : EV) (wfa : WfV spec genv wa)
+              (et : t = app (substK 0 (quoteEnv rho) body) (quote wa)) (lcb : LCf rho.len body)
+  : TailOut spec genv rho body wa v \elim t, d
+  | app _ _, evalBox pv df da =>
+    \let | ox => sim1 ofo gc df wfr body (pmap appFunT et) lcb
+    \in (ox.1, ox.2, boxCase ox.3 pv)
+  | app _ _, evalBeta df da db =>
+    \let | ox => sim1 ofo gc df wfr body (pmap appFunT et) lcb
+         | eav => valueSelf wa wfa (transport (\lam x => Eval spec genv x _) (pmap appArgT et) da)
+    \in (ox.1, ox.2, betaCase ox.4 ox.3 eav wfa (\lam wfr' b0 et' lc' => sim1 ofo gc db wfr' b0 et' lc'))
+  | app _ _, evalFix df ecu da dt =>
+    \let | ox => sim1 ofo gc df wfr body (pmap appFunT et) lcb
+         | eav => valueSelf wa wfa (transport (\lam x => Eval spec genv x _) (pmap appArgT et) da)
+    \in (ox.1, ox.2,
+         fixCase ox.4 ox.3 ecu (\lam wfr'' body' efn lcb' =>
+           simTail ofo gc dt wfr'' body' wa wfa (path (\lam i => app (efn @ i) (eav @ i))) lcb'))
+  | app _ _, evalAxiomApp kn' xs' df da sat run =>
+    \let | ox => sim1 ofo gc df wfr body (pmap appFunT et) lcb
+         | eav => valueSelf wa wfa (transport (\lam x => Eval spec genv x _) (pmap appArgT et) da)
+    \in (ox.1, ox.2, axCase ofo ox.3 eav kn' xs' sat run)
+  | app _ _, evalAppCong df ok da sat p =>
+    \let | ox => sim1 ofo gc df wfr body (pmap appFunT et) lcb
+         | eav => valueSelf wa wfa (transport (\lam x => Eval spec genv x _) (pmap appArgT et) da)
+    \in (ox.1, ox.2, congCase ox.3 eav ox.4 wfa ok sat p)
+  | box, _ => contradiction
+  | lambda _ _, _ => contradiction
+  | fix _ _, _ => contradiction
+  | prim _, _ => contradiction
+  | const _, _ => contradiction
+  | letIn _ _ _, _ => contradiction
+  | construct _ _ _, _ => contradiction
+  | case _ _ _ _, _ => contradiction
+  | proj _ _, _ => contradiction
+
+-- ---------------------------------------------------------------------------
+-- THE THEOREM, for a closed program.
+-- ---------------------------------------------------------------------------
+
+\func evalToEvalEnv {spec : LBSpec} {genv : GlobalDeclarations} (ofo : OracleFO spec) (gc : GlobClosed genv)
+                    {t v : LBTerm} (ct : LCf 0 t) (d : Eval spec genv t v)
+  : \Sigma (w : EV) (EvalE spec genv nil t w) (v = quote w) (WfV spec genv w) =>
+  sim1 ofo gc d wfNil t idp ct

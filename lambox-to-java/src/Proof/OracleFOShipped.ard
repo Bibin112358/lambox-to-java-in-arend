@@ -1,0 +1,239 @@
+\import Arith.Nat
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Semantics.LambdaBoxEnv (FOVal)
+\import Proof.SubstToEnv (OracleFO)
+\import Semantics.LambdaBoxEval
+\import Semantics.LambdaBoxAxioms
+\import Compiler.Int63 (wrap63, wrap64u)
+\import Compiler.LambdaBox
+\import Logic
+\import Meta
+\import Paths
+\import Paths.Meta
+\import Set
+\import Compiler.StringUtil (intEqB)
+
+-- =============================================================================
+-- THE SHIPPED ORACLE IS FIRST-ORDER, BOTH WAYS: `OracleFO lbAxioms`
+-- (`oracleFOShipped`) and `OracleArgsFO lbAxioms` (`oracleArgsFOShipped`).
+--
+-- `Proof/SubstToEnv.ard` assumes of the oracle it is given that whatever it
+-- returns is a first-order value (`FOVal`), because the environment semantics
+-- embeds the result back with `ofFO`, which is faithful only on those. This
+-- file discharges that assumption for the oracle the compiler actually ships,
+-- `Semantics/LambdaBoxAxioms.ard`'s `lbAxioms`, and proves the dual fact too: the oracle
+-- only ever COMPUTES on first-order arguments.
+--
+-- Both are shallow facts about the SHAPE of `axiomRunLb`, not about its
+-- arithmetic:
+--   * RESULTS: every `just` it produces is `lbInt`/`lbInt64` (a `prim`) or
+--     `lbBool` (a `construct` with no arguments). Which operation ran, and on
+--     what numbers, never matters -- in particular nothing here ever computes
+--     with an i63/i64 payload (`wrap63`/`wrap64u` stay abstract).
+--   * ARGUMENTS: every `just` goes through `twoOf int63Of` or `twoOf int64Of`,
+--     which succeed only on exactly two `prim` literals. (Stronger than stated:
+--     the arguments are PRIMITIVES, not merely first-order.)
+--
+-- THE DEVICE, as in `Proof/OracleShipped.ard`'s `rtNone`: the operation name
+-- is arbitrary here (it is `kn.kerName`), so the `\case op == ...` chains of
+-- `natRun`/`int63Run`/`int64Run` and the `modPathEq` tests of `axiomRunLb` do
+-- not reduce. Each is split by `\case e \as b, idp : e = b` and the GOAL -- the
+-- unfolded body -- is rewritten with the equation, never a hypothesis. The
+-- argument half is therefore stated as an implication `IsJ (...) -> ...` so the
+-- oracle call sits in the goal.
+--
+-- Self-contained on purpose: `Proof/OracleShipped.ard` has the same decoding
+-- lemmas (`inv63`/`invBoth`), but importing it would pull in the whole
+-- backend-agreement development for four small facts about `Maybe`.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- Predicates on `Maybe`.
+-- ---------------------------------------------------------------------------
+
+-- "If this is `just r`, then `r` is first-order."
+\func MFO (m : Maybe LBTerm) : \Prop \elim m
+  | nothing => \Sigma
+  | just r => FOVal r
+
+-- "This is a `just`."
+\func IsJ {A : \Type} (m : Maybe A) : \Prop \elim m
+  | nothing => Empty
+  | just _ => \Sigma
+
+\func ArgsFO (xs : Array LBTerm) : \Prop => \Pi (i : Fin xs.len) -> FOVal (xs i)
+
+-- ---------------------------------------------------------------------------
+-- RESULTS: what each helper returns is first-order.
+-- ---------------------------------------------------------------------------
+
+-- `lbBool` is a constructor with no arguments.
+\lemma lbBoolFO (b : Bool) : FOVal (lbBool b) => \lam (i : Fin 0) => \case i \with {}
+
+\lemma natRunFO (op : String) (x y : Nat) : MFO (natRun op x y) =>
+  unfold natRun (\case op == "add" \as b1, idp : op == "add" = b1 \with {
+    | true, p1 => rewrite p1 ()
+    | false, p1 => rewrite p1 (\case op == "mul" \as b2, idp : op == "mul" = b2 \with {
+      | true, p2 => rewrite p2 ()
+      | false, p2 => rewrite p2 (\case op == "sub" \as b3, idp : op == "sub" = b3 \with {
+        | true, p3 => rewrite p3 ()
+        | false, p3 => rewrite p3 (\case op == "div" \as b4, idp : op == "div" = b4 \with {
+          | true, p4 => rewrite p4 ()
+          | false, p4 => rewrite p4 (\case op == "mod" \as b5, idp : op == "mod" = b5 \with {
+            | true, p5 => rewrite p5 ()
+            | false, p5 => rewrite p5 (\case op == "beq" \as b6, idp : op == "beq" = b6 \with {
+              | true, p6 => rewrite p6 (lbBoolFO (intEqB (pos x) (pos y)))
+              | false, p6 => rewrite p6 (\case op == "ble" \as b7, idp : op == "ble" = b7 \with {
+                | true, p7 => rewrite p7 (lbBoolFO (natLeB x y))
+                | false, p7 => rewrite p7 (\case op == "blt" \as b8, idp : op == "blt" = b8 \with {
+                  | true, p8 => rewrite p8 (lbBoolFO (natLeB (suc x) y))
+                  | false, p8 => rewrite p8 ()
+                })
+              })
+            })
+          })
+        })
+      })
+    })
+  })
+
+\lemma int63RunFO (op : String) (x y : Int) : MFO (int63Run op x y) =>
+  unfold int63Run (\case op == "prim_add_int" \as b1, idp : op == "prim_add_int" = b1 \with {
+    | true, p1 => rewrite p1 ()
+    | false, p1 => rewrite p1 (\case op == "prim_mul_int" \as b2, idp : op == "prim_mul_int" = b2 \with {
+      | true, p2 => rewrite p2 ()
+      | false, p2 => rewrite p2 (\case op == "prim_sub_int" \as b3, idp : op == "prim_sub_int" = b3 \with {
+        | true, p3 => rewrite p3 ()
+        | false, p3 => rewrite p3 (\case op == "prim_eqb_int" \as b4, idp : op == "prim_eqb_int" = b4 \with {
+          | true, p4 => rewrite p4 (lbBoolFO (intEqB (pos (wrap63 x)) (pos (wrap63 y))))
+          | false, p4 => rewrite p4 ()
+        })
+      })
+    })
+  })
+
+\lemma int64RunFO (op : String) (x y : Int) : MFO (int64Run op x y) =>
+  unfold int64Run (\case op == "prim_add_int64" \as b1, idp : op == "prim_add_int64" = b1 \with {
+    | true, p1 => rewrite p1 ()
+    | false, p1 => rewrite p1 (\case op == "prim_mul_int64" \as b2, idp : op == "prim_mul_int64" = b2 \with {
+      | true, p2 => rewrite p2 ()
+      | false, p2 => rewrite p2 (\case op == "prim_sub_int64" \as b3, idp : op == "prim_sub_int64" = b3 \with {
+        | true, p3 => rewrite p3 ()
+        | false, p3 => rewrite p3 (\case op == "prim_eqb_int64" \as b4, idp : op == "prim_eqb_int64" = b4 \with {
+          | true, p4 => rewrite p4 (lbBoolFO (intEqB (pos (wrap64u x)) (pos (wrap64u y))))
+          | false, p4 => rewrite p4 ()
+        })
+      })
+    })
+  })
+
+\lemma natAtFO (op : String) (m : Maybe (\Sigma Int Int)) : MFO (natAt op m) \elim m
+  | nothing => ()
+  | just (x, y) => natRunFO op (wrap63 x) (wrap63 y)
+
+\lemma int64AtFO (op : String) (m : Maybe (\Sigma Int Int)) : MFO (int64At op m) \elim m
+  | nothing => ()
+  | just (x, y) => int64RunFO op x y
+
+\lemma rootAtFO (op : String) (m63 m64 : Maybe (\Sigma Int Int)) : MFO (rootAt op m63 m64) \elim m63
+  | just (x, y) => int63RunFO op x y
+  | nothing => int64AtFO op m64
+
+\lemma axiomRunFO (kn : Kername) (xs : Array LBTerm) : MFO (axiomRunLb kn xs) =>
+  unfold axiomRunLb (\case modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") \as b, idp : modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") = b \with {
+    | true, p => rewrite p (natAtFO kn.kerName (twoInts xs))
+    | false, p => rewrite p (\case modPathEq kn.kerModPath (mpFile nil) \as c, idp : modPathEq kn.kerModPath (mpFile nil) = c \with {
+      | true, q => rewrite q (rootAtFO kn.kerName (twoInts xs) (twoInts64 xs))
+      | false, q => rewrite q ()
+    })
+  })
+
+-- ---------------------------------------------------------------------------
+-- ARGUMENTS: a `just` means two `prim` literals went in.
+-- ---------------------------------------------------------------------------
+
+\lemma int63OfFO {t : LBTerm} (h : IsJ (int63Of t)) : FOVal t \elim t
+  | prim _ => ()
+  | box => ()
+  | bvar _ => absurd h
+  | fvar _ => absurd h
+  | lambda _ _ => absurd h
+  | letIn _ _ _ => absurd h
+  | app _ _ => absurd h
+  | const _ => absurd h
+  | construct _ _ _ => absurd h
+  | case _ _ _ _ => absurd h
+  | proj _ _ => absurd h
+  | fix _ _ => absurd h
+
+\lemma int64OfFO {t : LBTerm} (h : IsJ (int64Of t)) : FOVal t \elim t
+  | prim _ => ()
+  | box => ()
+  | bvar _ => absurd h
+  | fvar _ => absurd h
+  | lambda _ _ => absurd h
+  | letIn _ _ _ => absurd h
+  | app _ _ => absurd h
+  | const _ => absurd h
+  | construct _ _ _ => absurd h
+  | case _ _ _ _ => absurd h
+  | proj _ _ => absurd h
+  | fix _ _ => absurd h
+
+\lemma bothL {m1 m2 : Maybe Int} (h : IsJ (bothJust m1 m2)) : IsJ m1 \elim m1, m2
+  | just _, _ => ()
+  | nothing, _ => absurd h
+
+\lemma bothR {m1 m2 : Maybe Int} (h : IsJ (bothJust m1 m2)) : IsJ m2 \elim m1, m2
+  | _, just _ => ()
+  | just _, nothing => absurd h
+  | nothing, nothing => absurd h
+
+\lemma pairFO {t u : LBTerm} (ft : FOVal t) (fu : FOVal u) : ArgsFO (t :: u :: nil) =>
+  \lam (i : Fin 2) => \case \elim i \with {
+    | 0 => ft
+    | 1 => fu
+  }
+
+\lemma twoOfFO (f : LBTerm -> Maybe Int) (hf : \Pi {t : LBTerm} -> IsJ (f t) -> FOVal t)
+               (xs : Array LBTerm) (h : IsJ (twoOf f xs)) : ArgsFO xs \elim xs
+  | nil => absurd h
+  | _ :: nil => absurd h
+  | _ :: _ :: _ :: _ => absurd h
+  | t :: u :: nil => pairFO (hf (bothL h)) (hf (bothR h))
+
+\lemma natAtArgs (op : String) (xs : Array LBTerm) (m : Maybe (\Sigma Int Int)) (em : twoInts xs = m)
+  : IsJ (natAt op m) -> ArgsFO xs \elim m
+  | nothing => \lam h => absurd h
+  | just _ => \lam _ => twoOfFO int63Of int63OfFO xs (transportInv IsJ em ())
+
+\lemma rootAtArgs (op : String) (xs : Array LBTerm) (m63 m64 : Maybe (\Sigma Int Int))
+                  (e63 : twoInts xs = m63) (e64 : twoInts64 xs = m64)
+  : IsJ (rootAt op m63 m64) -> ArgsFO xs \elim m63, m64
+  | just _, _ => \lam _ => twoOfFO int63Of int63OfFO xs (transportInv IsJ e63 ())
+  | nothing, just _ => \lam _ => twoOfFO int64Of int64OfFO xs (transportInv IsJ e64 ())
+  | nothing, nothing => \lam h => absurd h
+
+\lemma axiomRunArgs (kn : Kername) (xs : Array LBTerm) : IsJ (axiomRunLb kn xs) -> ArgsFO xs =>
+  unfold axiomRunLb (\case modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") \as b, idp : modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") = b \with {
+    | true, p => rewrite p (natAtArgs kn.kerName xs (twoInts xs) idp)
+    | false, p => rewrite p (\case modPathEq kn.kerModPath (mpFile nil) \as c, idp : modPathEq kn.kerModPath (mpFile nil) = c \with {
+      | true, q => rewrite q (rootAtArgs kn.kerName xs (twoInts xs) (twoInts64 xs) idp idp)
+      | false, q => rewrite q (\lam h => absurd h)
+    })
+  })
+
+-- ---------------------------------------------------------------------------
+-- THE THEOREMS.
+-- ---------------------------------------------------------------------------
+
+\func oracleFOShipped : OracleFO lbAxioms =>
+  \lam kn xs r h => transport MFO h (axiomRunFO kn xs)
+
+\func OracleArgsFO (spec : LBSpec) : \Type =>
+  \Pi (kn : Kername) (xs : Array LBTerm) (r : LBTerm) -> axiomRun {spec} kn xs = just r -> \Pi (i : Fin xs.len) -> FOVal (xs i)
+
+\func oracleArgsFOShipped : OracleArgsFO lbAxioms =>
+  \lam kn xs r h => axiomRunArgs kn xs (transportInv IsJ h ())
