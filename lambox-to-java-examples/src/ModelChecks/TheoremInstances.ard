@@ -1,0 +1,63 @@
+\import Data.Bool
+\import Data.Maybe
+\import ExamplePeano
+\import ModelChecks.Agreement
+\import ModelChecks.CorrectInstances
+\import Proof.Corollary
+\import Proof.LambdaBoxSound (evalT-sound)
+\import Proof.Statement (progClassName)
+\import Semantics.JavaEval
+\import Semantics.JavaValue
+\import Semantics.LambdaBoxAxioms (lbAxioms)
+\import Semantics.LambdaBoxEval (EvalProgram)
+\import Semantics.RtInt63 (rtInt63)
+\import Compiler.LambdaBox
+\import Compiler.ToJava
+
+-- The main theorem, applied to concrete programs.
+--
+-- Each instance below is `correctChecked` (`Proof/Corollary.ard`, a form of
+-- `correctClosedFO`) with its hypotheses discharged: closedness and
+-- first-orderness by `idp`, the λ□ derivation by hand or by the runner's
+-- soundness (`evalT-sound`). The conclusion is a proof, not a test run, that
+-- the compiled `body()` returns the stated Java value. This shows the
+-- theorem's hypotheses can be met, so it is not vacuous.
+--
+-- `ModelChecks/CorrectInstances.ard` checks the same programs by running both
+-- models. Here the Java result comes from the theorem.
+
+\func Returns (p : LBProgram) (jv : Value) : \Type =>
+  JEval rtInt63 (compileClass progClassName p) bodyMethodName jv
+
+-- `(\x. x) box` returns `Rt.BOX`.
+\func betaReturns : Returns betaProgram vBox => correctChecked idp (lbBeta lbAxioms) idp
+
+-- `prim_add_int 2 3` returns `5L`: the axiom oracle and `Rt.PRIM_ADD_INT63`.
+\func addAxiomReturns : Returns addAxiomProgram (vLong 5) => correctChecked idp lbAxiom idp
+
+-- `Nat.sub 3 5` returns `0L`: Lean's truncating subtraction, `Rt.NAT_SUB_LONG`.
+\func natSubReturns : Returns natSubProgram (vLong 0) =>
+  correctChecked idp (evalT-sound lbAxioms 200 idp : EvalProgram lbAxioms natSubProgram (prim (primInt63, 0))) idp
+
+-- `Nat.add (2^63-1) 1` returns `0L`: both sides wrap at 2^63.
+\func natOverflowReturns : Returns natOverflowProgram (vLong 0) => correctChecked idp lbNatOverflow idp
+
+-- Projection of field 1 of a pair returns `21L`.
+\func projReturns : Returns projProgram (vLong 21) => correctChecked idp (lbProj lbAxioms) idp
+
+-- A two-definition `fix` block, selecting definition 1 (the identity), returns `5L`.
+\func fix2Returns : Returns fix2Program (vLong 5) => correctChecked idp (lbFix2 lbAxioms) idp
+
+-- Peano `add 1 3`: a constant whose body is a `fix` with a `case`. The result
+-- is the `Rt.Data` encoding of the numeral 4.
+\func peanoReturns : Returns addProgram (foJava (suc' (suc' (suc' (suc' zero'))))) =>
+  correctChecked idp lbPeano idp
+
+-- The checks are not trivially true: an open program is rejected, and so is a
+-- function result (for those, `backendShipped` in `Proof/MainTheorem.ard`).
+\func openRejected : checkProgram (nil, bvar 0) = false => idp
+
+\func openConstRejected
+  : checkProgram ((axiomKn, constantDecl (\new ConstantBody (just (bvar 0)))) :: nil, box) = false => idp
+
+\func functionRejected : foB idTerm = false => idp

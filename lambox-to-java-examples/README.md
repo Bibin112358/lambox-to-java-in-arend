@@ -16,7 +16,9 @@ Sample input for the `lambox-to-java` compiler, kept in its own Arend project
   - `Agreement.ard`: λ□ programs run by the λ□ runner and, compiled, by the
     Java-fragment evaluator, with the results compared;
   - `CorrectInstances.ard`: concrete instances of the correctness statement,
-    plus negative checks;
+    checked by running both models, plus negative checks;
+  - `TheoremInstances.ard`: the proved theorem itself applied to concrete
+    programs (`Proof/Corollary.ard`), giving the Java value `body()` returns;
   - `JavaEvalRuns.ard`: the Java-fragment evaluator on generated programs;
   - `DiffRuns.ard`: differential tests, the Arend models against a real JVM.
 

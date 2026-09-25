@@ -1,0 +1,238 @@
+\import Arith.Nat
+\import Data.Array (mkArray)
+\import Data.Bool
+\import Data.Maybe
+\import Proof.CSubst (LCf, extArr)
+\import Proof.CompileValueLemmas (boxInv, p63Inv, p64Inv, conInv)
+\import Proof.MainTheorem (correctClosedFO)
+\import Proof.OracleShipped (noJust)
+\import Proof.Statement (agrees, agreesAll, ValRel, progClassName)
+\import Proof.SubstToEnv (GlobClosed)
+\import Semantics.JavaEval
+\import Semantics.JavaValue
+\import Semantics.LambdaBoxAxioms (lbAxioms)
+\import Semantics.LambdaBoxEnv (FOVal)
+\import Semantics.LambdaBoxEval
+\import Semantics.RtInt63 (rtInt63)
+\import Compiler.Int63 (signed64)
+\import Compiler.LambdaBox
+\import Compiler.ToJava
+\import Logic
+\import Meta
+\import Paths
+\import Paths.Meta
+
+-- =============================================================================
+-- The main theorem in a form that can be applied to a concrete program.
+--
+--   correctChecked : checkProgram p = true -> EvalProgram lbAxioms p v -> foB v = true
+--                 -> JEval rtInt63 (compileClass progClassName p) bodyMethodName (foJava v)
+--
+-- Two differences from `CorrectClosedFO` (`Proof/Statement.ard`):
+--   * its hypotheses are Booleans, so for a concrete program they hold by
+--     `idp`: `checkProgram` decides closedness (`LCf 0` of the body,
+--     `GlobClosed` of the declarations) and `foB` decides `FOVal`;
+--   * its conclusion names the Java value: `body()` returns exactly
+--     `foJava v`, the `Rt` encoding of `v`, since for first-order data `ValRel`
+--     determines the Java value (`agreesFun`).
+--
+-- Instances on concrete programs: `ModelChecks/TheoremInstances.ard` in the
+-- examples project.
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- Deciding the hypotheses.
+-- ---------------------------------------------------------------------------
+
+\func allFin (n : Nat) (f : Fin n -> Bool) : Bool \elim n
+  | 0 => true
+  | suc n => f 0 and allFin n (\lam i => f (suc i))
+
+\func allFin-sound {n : Nat} {f : Fin n -> Bool} (h : allFin n f = true) (i : Fin n) : f i = true \elim n, i
+  | suc n, 0 => (and.toSigma h).1
+  | suc n, suc i => allFin-sound {n} {\lam j => f (suc j)} (and.toSigma h).2 i
+
+\func isGt (c : Comparison) : Bool
+  | cGt => true
+  | cEq => false
+  | cLt => false
+
+\func isGt-sound {c : Comparison} (h : isGt c = true) : c = cGt \elim c
+  | cGt => idp
+  | cEq => \case h
+  | cLt => \case h
+
+-- `closedB k t`: every free de Bruijn index of `t` is below `k` (`LCf`).
+\func closedB (k : Nat) (t : LBTerm) : Bool \elim t
+  | box => true
+  | bvar n => isGt (natCompare k n)
+  | fvar _ => false
+  | lambda _ b => closedB (suc k) b
+  | letIn _ b0 b1 => closedB k b0 and closedB (suc k) b1
+  | app f a => closedB k f and closedB k a
+  | const _ => true
+  | construct _ _ args => allFin args.len (\lam i => closedB k (args i))
+  | case _ _ discr brs =>
+    closedB k discr and allFin brs.len (\lam i => closedB ((brs i).1.len Nat.+ k) (brs i).2)
+  | proj _ discr => closedB k discr
+  | fix defs _ => allFin defs.len (\lam j => closedB (defs.len Nat.+ k) (defs j).defBody)
+  | prim _ => true
+
+\func closedB-sound (k : Nat) (t : LBTerm) (h : closedB k t = true) : LCf k t \elim t
+  | box => ()
+  | bvar n => isGt-sound h
+  | fvar _ => \case h
+  | lambda _ b => closedB-sound (suc k) b h
+  | letIn _ b0 b1 => (closedB-sound k b0 (and.toSigma h).1, closedB-sound (suc k) b1 (and.toSigma h).2)
+  | app f a => (closedB-sound k f (and.toSigma h).1, closedB-sound k a (and.toSigma h).2)
+  | const _ => ()
+  | construct _ _ args => \lam i => closedB-sound k (args i) (allFin-sound h i)
+  | case _ _ discr brs =>
+    (closedB-sound k discr (and.toSigma h).1,
+     \lam i => closedB-sound ((brs i).1.len Nat.+ k) (brs i).2 (allFin-sound (and.toSigma h).2 i))
+  | proj _ discr => closedB-sound k discr h
+  | fix defs _ => \lam j => closedB-sound (defs.len Nat.+ k) (defs j).defBody (allFin-sound h j)
+  | prim _ => ()
+
+-- Every constant body in the declarations is closed (`GlobClosed`).
+\func bodyClosedB (m : Maybe LBTerm) : Bool
+  | nothing => true
+  | just b => closedB 0 b
+
+\func declClosedB (d : GlobalDecl) : Bool
+  | constantDecl cb => bodyClosedB cb.cstBody
+  | inductiveDecl _ => true
+
+\func globClosedB (genv : GlobalDeclarations) : Bool => allFin genv.len (\lam i => declClosedB (genv i).2)
+
+\func checkProgram (p : LBProgram) : Bool => globClosedB p.1 and closedB 0 p.2
+
+-- `lookupEnv` only returns declarations that are in the list.
+\func pick {A : \Type} (b : Bool) (x y : A) : A \elim b
+  | true => x
+  | false => y
+
+\func lookupEnvCons (e : \Sigma Kername GlobalDecl) (env : GlobalDeclarations) (kn : Kername)
+  : lookupEnv (e :: env) kn = pick (kernameEq e.1 kn) (just e.2) (lookupEnv env kn) =>
+  cases (kernameEq e.1 kn) \with {
+    | true => idp
+    | false => idp
+  }
+
+\func lookupEnvIn {env : GlobalDeclarations} {kn : Kername} {d : GlobalDecl} (h : lookupEnv env kn = just d)
+  : \Sigma (i : Fin env.len) ((env i).2 = d) \elim env
+  | nil => absurd (noJust h)
+  | e :: env => lookupEnvPick e env kn (kernameEq e.1 kn) (inv (lookupEnvCons e env kn) *> h)
+
+\func lookupEnvPick (e : \Sigma Kername GlobalDecl) (env : GlobalDeclarations) (kn : Kername) (b : Bool) {d : GlobalDecl}
+                    (h : pick b (just e.2) (lookupEnv env kn) = just d)
+  : \Sigma (i : Fin (suc env.len)) (((e :: env) i).2 = d) \elim b
+  | true => (0, just-injective h)
+  | false => \let r => lookupEnvIn h \in (suc r.1, r.2)
+
+\func constOf (m : Maybe GlobalDecl) : Maybe ConstantBody
+  | nothing => nothing
+  | just (constantDecl cb) => just cb
+  | just (inductiveDecl _) => nothing
+
+\func lookupConstantOf (env : GlobalDeclarations) (kn : Kername) : lookupConstant env kn = constOf (lookupEnv env kn) =>
+  unfold lookupConstant (cases (lookupEnv env kn) \with {
+    | nothing => idp
+    | just (constantDecl cb) => idp
+    | just (inductiveDecl _) => idp
+  })
+
+\func constOfIn {m : Maybe GlobalDecl} {cb : ConstantBody} (h : constOf m = just cb) : m = just (constantDecl cb) \elim m
+  | nothing => absurd (noJust h)
+  | just (constantDecl cb') => pmap (\lam c => just (constantDecl c)) (just-injective h)
+  | just (inductiveDecl _) => absurd (noJust h)
+
+\func globClosedB-sound {genv : GlobalDeclarations} (h : globClosedB genv = true) : GlobClosed genv =>
+  \lam kn cb body lk cbb =>
+    \let | m => lookupEnvIn (constOfIn (inv (lookupConstantOf genv kn) *> lk))
+         | ok : declClosedB (constantDecl cb) = true => transport (\lam d => declClosedB d = true) m.2 (allFin-sound h m.1)
+    \in closedB-sound 0 body (transport (\lam x => bodyClosedB x = true) cbb ok)
+
+-- `foB t`: `t` is first-order data (`FOVal`).
+\func foB (t : LBTerm) : Bool \elim t
+  | box => true
+  | prim _ => true
+  | construct _ _ args => allFin args.len (\lam i => foB (args i))
+  | _ => false
+
+\func foB-sound (t : LBTerm) (h : foB t = true) : FOVal t \elim t
+  | box => ()
+  | prim _ => ()
+  | construct _ _ args => \lam i => foB-sound (args i) (allFin-sound h i)
+  | bvar _ => \case h
+  | fvar _ => \case h
+  | lambda _ _ => \case h
+  | letIn _ _ _ => \case h
+  | app _ _ => \case h
+  | const _ => \case h
+  | case _ _ _ _ => \case h
+  | proj _ _ => \case h
+  | fix _ _ => \case h
+
+-- ---------------------------------------------------------------------------
+-- For first-order data, `ValRel` determines the Java value.
+-- ---------------------------------------------------------------------------
+
+-- The `Rt` encoding of a first-order λ□ value (the other cases are never used).
+\func foJava (t : LBTerm) : Value \elim t
+  | box => vBox
+  | prim (primInt63, i) => vLong (pos i)
+  | prim (primInt64, i) => vLong (signed64 i)
+  | construct _ c args => vData c (mkArray {Value} {args.len} (\lam i => foJava (args i)))
+  | _ => vBox
+
+\func consMk {A : \Type} {n : Nat} (f : Fin (suc n) -> A)
+  : f 0 :: mkArray {A} {n} (\lam i => f (suc i)) = {Array A} mkArray {A} {suc n} f =>
+  inv (extArr (f 0 :: mkArray {A} {n} (\lam i => f (suc i))) f (\lam j => consAt f j))
+
+\func consAt {A : \Type} {n : Nat} (f : Fin (suc n) -> A) (j : Fin (suc n))
+  : f j = (f 0 :: mkArray {A} {n} (\lam i => f (suc i))) j \elim j
+  | 0 => idp
+  | suc j => idp
+
+\func agreesFun (n : Nat) (t : LBTerm) (j : Value) (fo : FOVal t) (h : agrees n t j = true) : j = foJava t \elim n, t
+  | 0, _ => \case h
+  | suc n, box => boxInv j h
+  | suc n, prim (primInt63, i) => p63Inv i j h
+  | suc n, prim (primInt64, i) => p64Inv i j h
+  | suc n, construct ind c args =>
+    \let s => conInv ind c args j h
+    \in s.2 *> pmap (vData c) (agreesAllFun n args s.1 fo s.3)
+  | suc n, bvar _ => \case fo
+  | suc n, fvar _ => \case fo
+  | suc n, lambda _ _ => \case fo
+  | suc n, letIn _ _ _ => \case fo
+  | suc n, app _ _ => \case fo
+  | suc n, const _ => \case fo
+  | suc n, case _ _ _ _ => \case fo
+  | suc n, proj _ _ => \case fo
+  | suc n, fix _ _ => \case fo
+
+\func agreesAllFun (n : Nat) (ts : Array LBTerm) (fs : Array Value)
+                   (fo : \Pi (i : Fin ts.len) -> FOVal (ts i)) (h : agreesAll n ts fs = true)
+  : fs = {Array Value} mkArray {Value} {ts.len} (\lam i => foJava (ts i)) \elim ts, fs
+  | nil, nil => inv (extArr nil (\lam i => foJava (nil i)) (\lam i => \case i \with {}))
+  | t :: ts, v :: vs =>
+    pmap2 (\lam (x : Value) (xs : Array Value) => x :: xs) (agreesFun n t v (fo 0) (and.toSigma h).1)
+               (agreesAllFun n ts vs (\lam i => fo (suc i)) (and.toSigma h).2)
+      *> consMk (\lam i => foJava ((t :: ts) i))
+  | nil, _ :: _ => \case h
+  | _ :: _, nil => \case h
+
+\func valRelFun {t : LBTerm} {j : Value} (fo : FOVal t) (r : ValRel t j) : j = foJava t => agreesFun r.1 t j fo r.2
+
+-- ---------------------------------------------------------------------------
+-- The corollary.
+-- ---------------------------------------------------------------------------
+
+\func correctChecked {p : LBProgram} {v : LBTerm}
+                     (c : checkProgram p = true) (d : EvalProgram lbAxioms p v) (f : foB v = true)
+  : JEval rtInt63 (compileClass progClassName p) bodyMethodName (foJava v) =>
+  \let | fo => foB-sound v f
+       | r => correctClosedFO (globClosedB-sound (and.toSigma c).1) (closedB-sound 0 p.2 (and.toSigma c).2) d fo
+  \in transport (JEval rtInt63 (compileClass progClassName p) bodyMethodName) (valRelFun fo r.3) r.2

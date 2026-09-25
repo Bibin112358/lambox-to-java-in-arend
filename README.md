@@ -24,6 +24,13 @@ backend turns them into one Java class plus a small hand-written runtime
 `backendShipped` in the same file covers every result, including functions:
 Java returns the closure compiled from the λ□ function.
 
+`Proof/Corollary.ard` (`correctChecked`) restates the theorem for use on a
+concrete program: the closedness and first-order hypotheses become Boolean
+checks, and the conclusion names the returned Java value exactly. It is applied
+to seven programs (beta, axioms, overflow, projection, `fix`, Peano addition
+through a constant) in `lambox-to-java-examples/src/ModelChecks/TheoremInstances.ard`,
+which shows the hypotheses can be met, i.e. the theorem is not vacuous.
+
 The proof follows MetaRocq's structure in two steps:
 
 1. **λ□ by substitution ⇒ λ□ with environments** (`Proof/SubstToEnv.ard`), the
