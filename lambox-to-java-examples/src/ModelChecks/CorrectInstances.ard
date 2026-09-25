@@ -26,41 +26,23 @@
 \import Compiler.StringUtil (intEqB)
 \import Compiler.ToJava
 
--- =============================================================================
--- What is KNOWN about `Proof/Statement.ard`'s statement: instances, and one
--- refutation.
+-- Concrete instances of the correctness statement, checked by computation.
 --
--- Two kinds of content, and the second is the surprise:
+-- The general theorem is proved (`Proof/MainTheorem.ard`); these are cheap
+-- executable sanity checks of the models and the compiler on small programs,
+-- one per λ□ construct. Each instance lines up three things: a λ□ derivation
+-- `EvalProgram lbAxioms p v` (by hand, or via the runner's soundness proof
+-- `evalT-sound`), the compiled Java run by `Semantics/JavaEval.ard` against
+-- `rtInt63`, and `agrees` between the two results. Most come with a NEGATIVE
+-- check that a wrong value is rejected, without which the positive one would
+-- prove little.
 --
---   * INSTANCES. `Correct` at a particular program, discharged by computation.
---     Each is three things lining up: a λ□ derivation `Eval decls t v` -- by
---     hand, so `v` is pinned by the SOURCE semantics rather than by whatever
---     the backend produced -- the real `compileClass` output run by
---     `Semantics/JavaEval.ard`, and `agrees` between the two results, plus a
---     NEGATIVE check that the relation rejects a wrong value (without which the
---     positive one proves nothing).
---
---   * TWO RETIRED REFUTATIONS, and they retired for different reasons.
---     `prim_sub_int` refuted the statement until `Rt.PRIM_*_INT63` fixed the
---     backend (`int63NowAgrees`). Lean's `Nat` then appeared to refute it --
---     until the frontend turned out to erase `Nat` to i63, making
---     `Semantics/LambdaBoxAxioms.ard` the wrong side (`natOverflowNowAgrees`). One was a
---     real defect in the implementation; the other was a defect in the
---     specification. Both are recorded where they stood.
---
--- The instance set is ported from branch `lambox-formal-semantics`
--- (`CorrectnessInstances.ard`), which chose these programs to cover the λ□
--- constructors `ExamplePeano.addProgram` does not reach. What is new here is
--- everything involving an axiom -- that branch's coverage table ended with "the
--- `Rt` axiom table: unreachable by construction (λ□ has no rule for an axiom)",
--- which the oracle has made false.
--- =============================================================================
+-- Also here: integer overflow at 2^63 (λ□ and Java both wrap), and the
+-- int64 rewrite (`Compiler/Int64Rewrite.ard`): one program whose value it
+-- preserves and one where it does not.
 
--- "The compiled program returns a VALUE related to `v`" -- the conclusion of
--- `Correct`, as one computable proposition.
---
--- A THROW IS A FAILURE, not a pass: λ□ produced a value, so the theorem demands
--- the Java side produce one too. `rvThrown` and both `Res` failures are `false`.
+-- The compiled program returns a value related to `v`. A throw, being stuck
+-- or running out of fuel are all failures.
 \func relatedTo (p : LBProgram) (n : Nat) (v : LBTerm) : Bool =>
   \case runClass rtInt63 (compileClass progClassName p) bodyMethodName n \with {
     | rOk (rvValue jv) => agrees 20 v jv
@@ -107,14 +89,9 @@
 \func jBeta : relatedTo betaProgram 20 box = true => idp
 
 -- ---------------------------------------------------------------------------
--- 3b. `eval_box` -- applying an erased value. Compiles to
--- `((Rt.Fn)Rt.BOX).apply(Rt.BOX)`.
---
--- THIS INSTANCE WAS FALSE until `Rt.BOX` became a self-returning `Fn`: it was
--- a bare `Object`, the `Rt.Fn` cast threw ClassCastException, and `JavaEval`'s
--- `castOk tFn vBox` said the same (a throw is a failure, see `relatedTo`). λ□
--- has had the rule all along, and Lean/Rocq erasure produces it whenever a
--- type former or proof is applied.
+-- 3b. `eval_box` -- applying an erased value (erasure produces this whenever a
+-- type former or proof is applied). Compiles to `((Rt.Fn)Rt.BOX).apply(Rt.BOX)`,
+-- which works because `Rt.BOX` is an `Fn` returning itself.
 -- ---------------------------------------------------------------------------
 
 \func boxAppProgram : LBProgram => (nil, app box box)
@@ -130,10 +107,9 @@
 \func jBoxAppVia : relatedTo boxAppViaProgram 20 box = true => idp
 
 -- ---------------------------------------------------------------------------
--- 3c. NAMES. `const` and the axiom table identify a constant by its mangled
--- name, so two kernames sharing one is a miscompile. Each pair below mangled
--- EQUAL under the previous encoding (`_` unescaped, path constructors
--- forgotten), and each is now distinct (`Compiler/Mangle.ard`).
+-- 3c. Names. `const` and the axiom table identify a constant by its mangled
+-- name, so distinct kernames must mangle differently (`Compiler/Mangle.ard`).
+-- These pairs would collide under a naive `_`-joined encoding.
 -- ---------------------------------------------------------------------------
 
 \func knAB : Kername => \new Kername (mpFile ("A_B" :: nil)) "x"
@@ -143,9 +119,8 @@
 \func mangleSplitsDirs : (mangleKername knAB == mangleKername knA_B) = false => idp
 \func mangleSplitsDot : (mangleKername knDotAB == mangleKername knA_B) = false => idp
 
--- A module literally named `_Nat` used to mangle onto `Nat.add`'s table entry
--- and be realized as Lean's addition. It is now just an unknown axiom (a
--- throwing stub), while the real `Nat.add` still resolves.
+-- A module named `_Nat` is not Lean's `Nat`: its `add` is an unknown axiom,
+-- while the real `Nat.add` resolves.
 \func underscoreNatIsNotNat
   : axiomRtName (\new Kername (mpDot (mpFile nil) "_Nat") "add") = nothing => idp
 
@@ -170,15 +145,10 @@
 -- ---------------------------------------------------------------------------
 -- 5. `proj` -- the offset guard.
 --
--- `Compiler/ToJava.ard` compiles a projection to `((Rt.Data)(s)).fields[npars + idx]`,
--- folding the addition into one literal. "Drop the `npars` offset" is a
--- standing mutation candidate, so an instance with `npars > 0` is the guard
--- for it.
---
--- The inductive has one parameter and one constructor with two fields, so a
--- `construct` node carries 1 + 2 = 3 arguments and projecting field 1 must read
--- index 1 + 1 = 2, NOT index 1. The three arguments are deliberately
--- DISTINGUISHABLE so an off-by-one changes the answer instead of hiding.
+-- A projection compiles to `((Rt.Data)(s)).fields[npars + idx]`. The inductive
+-- has one parameter and one constructor with two fields, so projecting field 1
+-- must read index 2; the three arguments are distinguishable so that dropping
+-- the `npars` offset changes the answer.
 -- ---------------------------------------------------------------------------
 
 \func pairKername : Kername => \new Kername (mpFile nil) "Pair"
@@ -203,9 +173,7 @@
 
 \func projProgram : LBProgram => (pairDecls, proj projInfo1 pairTerm)
 
--- The λ□ derivation. `evalProj`'s side conditions pin the offset arithmetic:
--- `constructorInfo` must report `(false, 1, 2)`, the argument array must have
--- length 1 + 2, and `nthArr (1 + 1)` must select the right field.
+-- The λ□ derivation; `evalProj`'s side conditions pin the offset arithmetic.
 \func lbPair (spec : LBSpec) : Eval spec pairDecls pairTerm pairTerm =>
   evalConstruct idp idp
     (\lam i => \case \elim i \with {
@@ -220,27 +188,13 @@
 
 \func jProj : relatedTo projProgram 40 (prim (primInt63, 21)) = true => idp
 
--- The off-by-one guard: field 0 of the same value is 20. If either side dropped
--- the `npars` offset, `jProj` would land on 20 and disagree with `lbProj`.
+-- The off-by-one guard: without the offset the result would be 20.
 \func jProjNotFieldZero : relatedTo projProgram 40 (prim (primInt63, 20)) = false => idp
 
 -- ---------------------------------------------------------------------------
--- 6. A `fix` block with TWO definitions -- the which-definition-got-selected
--- guard.
---
--- NOTE, because the branch this was ported from says otherwise: the encoding
--- has changed completely. That version compiled a `fix` to
---   final Rt.Fn[] x = new Rt.Fn[2];  x[0] = ...;  x[1] = ...;  x[idx]
--- and this instance existed to exercise the mutable knot -- allocate a two-cell
--- array, write both slots after the closures reading them were made, select
--- one. There is no array and no mutation now: a `fix` is a local class with one
--- method per definition, and siblings reach each other through the class. So
--- what this instance guards is only the SELECTION, which is still worth a check
--- ("wrong `fix` unfolding point" remains a mutation candidate).
---
--- The two definitions differ so that selecting the wrong one changes the
--- answer: definition 0 discards its argument and returns `box`, definition 1 is
--- the identity. Index 1 applied to 5 must give 5; slot 0 would give `box`.
+-- 6. A `fix` block with two definitions: is the right one selected?
+-- Definition 0 returns `box`, definition 1 is the identity; index 1 applied to
+-- 5 must give 5.
 -- ---------------------------------------------------------------------------
 
 \func constBoxTerm : LBTerm => lambda anon box
@@ -262,9 +216,8 @@
 
 -- ---------------------------------------------------------------------------
 -- 7. Peano: `const` unfolding, `case`, and a one-definition `fix`, on a real
--- two-declaration program. The λ□ side comes from `evalT-sound` rather than by
--- hand -- a derivation this size is not writable by hand, which is what the
--- soundness proof bought.
+-- two-declaration program. The λ□ derivation comes from the runner via
+-- `evalT-sound` (it is too big to write by hand).
 -- ---------------------------------------------------------------------------
 
 \func lbPeano : EvalProgram lbAxioms addProgram (suc' (suc' (suc' (suc' zero'))))
@@ -276,11 +229,8 @@
 \func jPeanoRejects : relatedTo addProgram 2000 three = false => idp
 
 -- ---------------------------------------------------------------------------
--- 8. AN AXIOM -- impossible on the old branch, where λ□ had no rule for one.
---
--- `prim_add_int 2 3`, i.e. a case where the correctness of `Rt.java`'s
--- arithmetic is genuinely on the critical path. The old branch's finding that
--- `RtSpec` "costs nothing here" held only because these cases were vacuous.
+-- 8. An axiom: `prim_add_int 2 3`, computed by the oracle on the λ□ side and
+-- by the runtime model on the Java side.
 -- ---------------------------------------------------------------------------
 
 \func lbAxiom : EvalProgram lbAxioms addAxiomProgram (prim (primInt63, 5))
@@ -291,69 +241,19 @@
 \func jAxiomRejects : relatedTo addAxiomProgram 200 (prim (primInt63, 6)) = false => idp
 
 -- ---------------------------------------------------------------------------
--- THE REFUTATION. The backend is incorrect, and here is the proof.
---
--- The witness is `int63Program` (`ModelChecks/Agreement.ard`): `prim_sub_int 1 2`.
--- λ□ says 2^63-1, because its primitive int is `Uint63` and subtraction wraps
--- unsigned; the JVM says -1, because the backend represents it as a `long`.
--- Both are right about their own model, and the backend is wrong to identify
--- them -- which is precisely the KNOWN MISMATCH `Compiler/JavaAxioms.ard` has carried as
--- a comment since the beginning. It is now a theorem.
---
--- WHY THIS FORM AND NOT `Correct`: `Correct`'s conclusion is `JEval`, which
--- quantifies the clock existentially, so contradicting it needs to know that
--- the clock it hands back computes the same value as the clock we ran at --
--- fuel monotonicity, obligation (1), which is open. Naming the clock closes
--- that gap with one run. Lifting this refutation to `Correct` is one of the
--- things obligation (1) buys.
---
--- AND WHY THE PROGRAM IS FIXED TOO. A clock-fixed statement quantified over all
--- programs would be refutable without saying anything: `addProgram` needs 2000
--- fuel, so `\Pi {p} -> ... runClass ... 200 ...` fails on it for lack of fuel
--- rather than for lack of correctness. Fixing the program avoids that, and the
--- fuel objection cannot be raised here because `int63InJava` shows 200 ticks
--- SUFFICE: the run finishes and returns `vLong (neg 1)`. So the only thing left
--- that can fail is the value relation, which is the translation's business.
---
--- WHAT IT DOES NOT SAY: `CorrectGeneric` is untouched. Its hypothesis is
--- `OracleAgree spec rt`, and what this proves is that
--- `OracleAgree lbAxioms rtLong` does not hold -- the two runtimes disagree on
--- `prim_sub_int`. A backend whose primitive ints really were 63-bit would
--- satisfy the hypothesis, and that is the fix this points at.
+-- 9. Unsigned int63 arithmetic: `prim_sub_int 1 2` (`int63Program`, from
+-- `ModelChecks/Agreement.ard`) is 2^63-1 in λ□ (`Uint63`) and in the compiled
+-- Java (`Rt.PRIM_SUB_INT63`). (A plain JVM `long` would say -1.)
 -- ---------------------------------------------------------------------------
 
 \func int63Value : LBTerm => prim (primInt63, 9223372036854775807)
 
--- ---------------------------------------------------------------------------
--- THE INT63 DEFECT, FIXED. This section used to hold a refutation.
---
--- `prim_sub_int 1 2` was the witness: λ□ says 2^63-1 because its primitive int
--- is a `Uint63`, and the backend said -1 because it represented one as a JVM
--- `long`. That gave `oracleDisagrees` (the runtimes differ) and
--- `int63RefutesCorrect` (so does the compiled program), i.e. a machine-checked
--- proof that the backend was wrong.
---
--- `Rt.PRIM_*_INT63` and `JavaAxioms.primRepr := int63Repr` fixed it, so the
--- same witness now satisfies the conclusion instead of contradicting it. The
--- old answer has not been edited away -- `ModelChecks/Agreement.ard`'s
--- `longWouldHaveSaid` still derives -1 from the model of the family that
--- produced it, and `oracleStillDisagreesOnNat` below shows the hypothesis is
--- still false for a DIFFERENT reason.
--- ---------------------------------------------------------------------------
-
 \func lbInt63 : EvalProgram lbAxioms int63Program int63Value
   => evalT-sound lbAxioms 200 idp
 
--- What used to be refuted, as the THREE FACTS rather than as
--- `CorrectAtProgram`'s conclusion.
---
--- Stated this way on purpose. Discharging `CorrectAtProgram` would read
--- `\lam _ => ...`, DISCARDING the `EvalProgram` hypothesis -- which makes the
--- λ□ side enter only through my having written `int63Value` by hand, and would
--- be inhabited for any value the Java run happened to produce. The `\Sigma`
--- names all three participants instead: what λ□ derives, what the compiled
--- program returns, and that the two correspond. (This is the shape the first
--- attempt's `correctAtPeano` used, for the same reason.)
+-- Stated as three facts (what λ□ derives, what the compiled program returns,
+-- and that they correspond), so that the λ□ side is not just a hand-written
+-- value.
 \func int63NowAgrees
   : \Sigma (EvalProgram lbAxioms int63Program int63Value)
            (runClass rtInt63 (compileClass progClassName int63Program) bodyMethodName 200
@@ -362,25 +262,8 @@
   => (lbInt63, int63InJava, idp)
 
 -- ---------------------------------------------------------------------------
--- AND LEAN'S `Nat` AGREES TOO -- which RETRACTS the refutation that stood here.
---
--- This section used to prove `natOverflowRefutesCorrect` and
--- `oracleStillDisagreesOnNat`: `Nat.add` at 2^63-1 and 1 gave 2^63 in λ□ and
--- -2^63 on the JVM, so the backend looked wrong on Lean's `Nat` even after the
--- int63 fix.
---
--- BOTH WERE PROOFS ABOUT A BUG IN `Semantics/LambdaBoxAxioms.ard`, not in the backend.
--- That module modelled `Nat.*` on unbounded naturals, reasoning that Lean's
--- `Nat` is arbitrary-precision -- true of LEAN, false of the λ□ that
--- lean-to-lambdabox emits, which erases a `Nat` literal to `prim ⟨.primInt, _⟩`
--- and panics rather than exceeding 63 bits. There is one integer kind in what
--- we compile, and it is i63. With `natRun` corrected to wrap `add` and `mul`,
--- and `javaAxioms` routing those two to `PRIM_*_INT63`, both sides say 0.
---
--- So limitation (L) is withdrawn, and the honest statement is the positive one
--- below. The lesson is the one the header already claims for the two oracles
--- being independent: when they disagreed it was evidence, and this time the
--- evidence convicted the specification rather than the implementation.
+-- 10. Lean's `Nat` is i63 too (lean-to-lambdabox erases `Nat` literals to
+-- `primInt`), so `Nat.add (2^63-1) 1` wraps to 0 on both sides.
 -- ---------------------------------------------------------------------------
 
 \func natOverflowProgram : LBProgram =>
@@ -398,8 +281,7 @@
   = rOk (rvValue (vLong 0))
   => idp
 
--- The three facts, as for the int63 witness above and for the same reason: a
--- `CorrectAtProgram` discharge would read `\lam _ => ...` and drop the λ□ side.
+-- The three facts, as for the int63 case above.
 \func natOverflowNowAgrees
   : \Sigma (EvalProgram lbAxioms natOverflowProgram natOverflowValue)
            (runClass rtInt63 (compileClass progClassName natOverflowProgram) bodyMethodName 200
@@ -407,76 +289,42 @@
            (agrees 20 natOverflowValue (vLong 0) = true)
   => (lbNatOverflow, natOverflowInJava, idp)
 
--- And `Nat.add` lands on the i63 family now, which is what makes that work.
+-- `Nat.add` is realized by the int63 family.
 \func natAddHasRuntimeName : axiomRtName natAddKn = just "PRIM_ADD_INT63" => idp
 
 \func natAddArityAgrees
   : axiomArity {lbAxioms} natAddKn = builtinArity {rtInt63} "PRIM_ADD_INT63" => idp
 
--- `Nat.sub` KEEPS ITS OWN CONSTANT, and this is the pin that says the fix did
--- not overreach. Lean's subtraction truncates at zero where i63's wraps, so
--- routing it with `add`/`mul` would be the very mistake `Rt.java`'s `NAT_SUB_*`
--- comment records (`const_fold` returned 2048 instead of 4772).
+-- `Nat.sub` truncates at zero (Lean) where i63 wraps, so it has its own
+-- runtime constant.
 \func natSubKeepsItsOwnConstant : axiomRtName natSubKn = just "NAT_SUB_LONG" => idp
 
 \func natSubStillTruncates
   : runProgram lbAxioms natSubProgram 200 = rOk (prim (primInt63, 0)) => idp
 
 -- ---------------------------------------------------------------------------
--- SO WHAT IS STILL OPEN? Not a defect, as far as anything here can tell.
---
--- No program in this module refutes the statement any more, which is a
--- genuinely different state from an hour ago and worth saying plainly rather
--- than leaving implied.
---
--- `OracleAgree lbAxioms rtInt63` is still not PROVABLE, but the reason is now
--- incomplete MODELLING rather than a wrong answer: `javaAxioms` realizes
--- `Nat.div`/`mod`/`ble`, the `Int.*` family and the `Array.*` family, and
--- `Semantics/RtLong.ard` does not model those constants -- so the arity half fails
--- on a name the model simply does not know. `natDivDisagrees` in
--- `ModelChecks/Agreement.ard` pins one such case. Closing it is bookkeeping (extend
--- `builtinArityLong`/`builtinRunLong`), not a correctness question, and it is
--- the honest reading of why the hypothesis is not discharged.
---
--- The obligations that ARE substantive remain `FuelMono` and `SubstLemma` in
--- `Proof/Statement.ard`, neither of which this work touched.
+-- 11. The int64 rewrite (`Compiler/Int64Rewrite.ard`): it renames the axioms
+-- and retags the literals, and the result is an ordinary λ□ program.
 -- ---------------------------------------------------------------------------
 
--- ---------------------------------------------------------------------------
--- CHOOSING 64-BIT ARITHMETIC: what the rewrite preserves, and where it stops.
---
--- `Int64Rewrite.rewriteProgram` is how a user asks for JVM `long` arithmetic.
--- It rewrites the payload tags AND the axiom names together -- both, because a
--- `const` is compiled before its operands, so the kind has to be said twice --
--- and produces an ordinary λ□ program run by the ordinary semantics. That is
--- what makes the choice comparable instead of invisible.
--- ---------------------------------------------------------------------------
-
--- IT PRESERVES, while the arithmetic stays in range. `prim_add_int 2 3` is 5
--- under i63 and 5 under i64, and the rewritten program says so.
+-- It preserves the value while the arithmetic stays in range.
 \func rewriteKeepsSmall : rewritePreserves addAxiomProgram 200 = true => idp
 
--- The rewritten program really is a DIFFERENT program -- the axiom is renamed
--- and the payloads retagged -- and it still computes, on the i64 family.
+-- The rewritten program computes on the i64 family ...
 \func rewrittenRuns
   : runProgram lbAxioms (rewriteProgram addAxiomProgram) 200
   = rOk (prim (primInt64, wrap64u 5))
   => idp
 
--- ... and the compiled Java of the REWRITTEN program computes the same 5,
--- through `Rt.PRIM_ADD_LONG` rather than `Rt.PRIM_ADD_INT63`. So the
--- representation choice reaches the generated code, which is the point of
--- putting it in the term.
+-- ... and so does its compiled Java, through `Rt.PRIM_ADD_LONG`.
 \func rewrittenCompiles
   : runClass rtInt63 (compileClass progClassName (rewriteProgram addAxiomProgram))
       bodyMethodName 200
   = rOk (rvValue (vLong 5))
   => idp
 
--- AND IT DOES NOT PRESERVE, at the first operation that crosses 2^63. This is
--- the counterexample the unconditional obligation needs: `(2^63-1) + 1` is 0
--- under i63 (it wrapped) and 2^63 under i64 (it did not), and those are
--- different numbers.
+-- It does not preserve the value once an operation crosses 2^63:
+-- `(2^63-1) + 1` is 0 under i63 and 2^63 under i64.
 \func overflowProgram : LBProgram =>
   ((axiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
    app (app (const axiomKn) (prim (primInt63, wrap63 (pos 9223372036854775807))))
@@ -492,46 +340,29 @@
 
 \func rewriteChangesOverflow : rewritePreserves overflowProgram 200 = false => idp
 
--- So the unconditional obligation is false, and this is the proof.
+-- So the rewrite is not sound without a side condition (the one stated in
+-- `Proof/Int64RewriteSpec.ard`).
 \lemma int64RewriteIsNotSound (s : Int64RewriteSound) : Empty =>
   true/=false (inv (s overflowProgram 200) *> rewriteChangesOverflow)
 
--- WHICH IS THE WHOLE VALUE OF THE EXERCISE. The same reinterpretation used to
--- happen inside the backend, silently and with no side condition, and was
--- simply wrong (`oracleDisagrees`). It is now a rewrite a user opts into, whose
--- exact failure case is a checked fact -- and the side condition a true theorem
--- would need ("no operation in this evaluation left [0, 2^63)") is named in
--- `Proof/Int64RewriteSpec.ard`.
-
 -- ---------------------------------------------------------------------------
--- COVERAGE. λ□ constructor -> is there an instance whose derivation reaches it?
+-- Coverage: λ□ constructors reached by an instance above.
 --
---   box        yes (1, and as the erased parameter in 5)
---   bvar       yes (2 via letIn, 3 via the lambda parameter)
---   lambda     yes (3)
---   app        yes (3, 7, 8)
---   letIn      yes (2)
---   const      yes (7, `evalDelta`) and (8, `evalAxiom` -- a different rule)
---   construct  yes (5, 7)
---   case       yes (7, `evalIota`; and `ModelChecks/Agreement.ard`'s `boolCaseProgram`
---              scrutinizes a value the ORACLE produced, which is the case that
---              depends on the axiom result carrying the right inductive)
---   proj       yes (5, with the npars offset guarded)
---   fix        yes (6 with two definitions and a selection guard; 7 with one)
---   prim       yes (4)
---   fvar       NO, deliberately: it has no `Eval` rule, so it cannot appear in
---              an instance of `Correct` at all. `Compiler/ToJava.ard` compiles it to a
---              throwing `Rt.freeVar` call, which `Semantics/JavaEval.ard` models;
---              that pairing needs a separate "ill-formed input throws"
---              statement, which nobody has written.
---
--- STILL UNCOVERED, in value order:
---   * a `case` whose scrutinee tag matches NO arm (the `Rt.noBranch` path).
---     Covered at the Java level in `ModelChecks/JavaEvalRuns.ard`, but not as an
---     agreement -- and it cannot be, since λ□ has no rule for it either. Same
---     shape of gap as `fvar`.
---   * the `BigInteger` target: every instance here is at the `Long`
---     representation, which is what `agrees` is written for.
---   * the axioms NEITHER oracle covers (`Array.*`, the `Decidable`-returning
---     comparisons) -- the census is in `ModelChecks/Agreement.ard`'s header.
+--   box        1, 3b, and as the erased parameter in 5
+--   bvar       2, 3
+--   lambda     3
+--   app        3, 7, 8
+--   letIn      2
+--   const      7 (`evalDelta`), 8 (`evalAxiom`)
+--   construct  5, 7
+--   case       7 (and `ModelChecks/Agreement.ard`'s `boolCaseProgram`, on a
+--              value produced by the oracle)
+--   proj       5
+--   fix        6 (two definitions), 7 (one)
+--   prim       4
+--   fvar       none: it has no `Eval` rule (the compiled code throws via
+--              `Rt.freeVar`, see `ModelChecks/JavaEvalRuns.ard`)
+-- Not covered as an agreement: a `case` matching no branch (`Rt.noBranch`, λ□
+-- has no rule either) and the axioms neither model covers (`Array.*`, the
+-- `Decidable`-returning comparisons; census in `ModelChecks/Agreement.ard`).
 -- ---------------------------------------------------------------------------

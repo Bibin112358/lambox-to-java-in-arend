@@ -27,7 +27,7 @@
 --   isn't construct-tagged. Every place the source recurred on `n`/`Fin n`
 --   structurally (funToVec's implicit loop bound, nth-style indexing) now
 --   needs explicit primitive comparison/subtraction, done via 4 arity-2
---   axioms below that a backend must implement natively (see "PRIMITIVE OPS").
+--   axioms below that a backend must implement natively (see "Primitive ops").
 --
 -- * `Array A n` is erasure-encoded as an ordinary 2-constructor inductive
 --   `List` (nil/cons) -- lambda-box has no native array/vector former.
@@ -38,19 +38,17 @@
 --   inspected as a value, only used in types) and drops dot's `n` (dot
 --   recurses structurally on the two lists, never touches `n` itself).
 --
--- * Per the earlier discussion: InductiveId's Kername is never passed to
---   mangleKername (construct/case discard it via `_` in Compiler/ToJava.ard), so it
---   is never rendered as text and can't hit the (still open) field-
---   projection-doesn't-reduce bug. Shared named \funcs for InductiveId are
---   fine. Every Kername that DOES get mangled (every function declaration's
---   own Kername, and every `const` reference to one) is instead written
---   fully inline as `\new Kername ...` at each occurrence, per that
---   discussion -- no named Kername-valued \func anywhere below.
+-- * Arend quirk: a String field read through a helper `\func` (e.g. the name of
+--   a Kername returned by a named function) can stay stuck during
+--   typechecking, so printing would show the stuck term instead of the name.
+--   Every Kername that gets mangled (declarations and `const` references) is
+--   therefore written inline as `\new Kername ...`. InductiveIds are never
+--   rendered as text, so they may be named.
 -- =============================================================================
 
 
 -- ---------------------------------------------------------------------------
--- Shared inductive ids (safe to name -- never mangled/printed, see above).
+-- Shared inductive ids (never printed, so they may be named).
 -- ---------------------------------------------------------------------------
 
 \func listInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "ListBlock") 0
@@ -71,25 +69,15 @@
 
 
 -- ---------------------------------------------------------------------------
--- PRIMITIVE OPS -- axioms (no body). A backend must realize these natively:
--- for Peregrine's C backend they are remapped (via `matMulAttrs` below /
--- out/matmul.attr) onto the CertiRocq runtime's arity-2 prim_int63_add /
--- prim_int63_mul / prim_int63_sub / prim_int63_eqb (prim_int63.{h,c}); the
--- Java backend realizes them as the curried constants
--- Rt.PRIM_{ADD,MUL,SUB,EQB}_{INT,LONG} in runtime/Rt.java, wired up by the
--- `javaAxioms` table in Compiler/ToJava.ard (INT = BigInteger, LONG = Java's built-in
--- 64-bit int; the one representation ToJava emits).
--- All four are ARITY-2 on purpose: the shipped C runtime has no arity-1 ops,
--- so "sub1 x" is expressed as `sub x 1` and "isZero x" as `eqb x 0`.
--- eqb's result ABI matches BoolBlock below: mk_bool encodes false as unboxed
--- ctor 0 and true as ctor 1, exactly our declared constructor order.
---
--- NOTE (int63 mismatch): the C/OCaml realizations are genuine 63-bit ops and
--- wrap mod 2^63 (MetaRocq's prim_model for primInt63 is PrimInt63.int, cf.
--- Compiler/LambdaBox.ard's PrimModel comment), while ours are unbounded (BigInteger) or
--- 64-bit signed (Long). This example never comes close: the result is
--- 130^3 = 2197000, so all backends agree. See notes/RESEARCH_AND_PLAN.md for
--- the planned int63 mode.
+-- Primitive ops: axioms (no body) that a backend realizes natively. For
+-- peregrine's C backend they are remapped (via `matMulAttrsC` below) onto the
+-- CertiRocq runtime's prim_int63_{add,mul,sub,eqb} (prim_int63.{h,c}); the Java
+-- backend realizes them as Rt.PRIM_{ADD,MUL,SUB,EQB}_INT63 in runtime/Rt.java
+-- (the `javaAxioms` table in Compiler/JavaAxioms.ard). All backends wrap mod
+-- 2^63.
+-- All four are arity 2 on purpose: the C runtime has no arity-1 ops, so
+-- "sub1 x" is `sub x 1` and "isZero x" is `eqb x 0`. eqb's result matches
+-- BoolBlock below: false is constructor 0, true is 1.
 -- ---------------------------------------------------------------------------
 
 \func primAddRef  : LBTerm => const (\new Kername (mpFile nil) "prim_add_int")
@@ -311,7 +299,7 @@
 -- occurrences below and are the same size to compile. That is what makes the
 -- pair usable as a runtime benchmark -- a change to ToJava that shows up only at
 -- 250 is a change in the generated code's runtime, not in its compilation.
--- See test/benchmarks.md for the sizes that were measured and why 250 won.
+-- See test/README.md ("Performance") for the sizes that were measured and why 250 won.
 \func sizeLitOf (n : Nat) : LBTerm => prim (primInt63, n)
 
 \func randNatRef  : LBTerm => const (\new Kername (mpFile nil) "randNat")
@@ -398,11 +386,7 @@
 -- Program assembly.
 -- ---------------------------------------------------------------------------
 
--- Order matters: EWellformed.v's `wf_glob` checks each entry's body against
--- only the *tail* of the list (`wf_global_decl Σ d` for `(kn,d)::Σ`), i.e. a
--- declaration may only reference declarations that come AFTER it in this
--- list -- dependents first, dependencies last (the reverse of a normal
--- "declare before use" order).
+-- Dependents first (see `GlobalDeclarations` in Compiler/LambdaBox.ard).
 \func declsOf (n : Nat) : GlobalDeclarations =>
   (\new Kername (mpFile nil) "sumRes",    constantDecl (\new ConstantBody (just sumResBody))) ::
   (\new Kername (mpFile nil) "sumMat",    constantDecl (\new ConstantBody (just sumMatFix))) ::
@@ -443,11 +427,9 @@
 -- backend. Fields of RemappedConstant: ext / arity / needs-GC / inline /
 -- target. Pass the printed file to a peregrine subcommand via `--attributes`.
 --
--- `\new RemappedConstant ...` is written INLINE at each entry (no shared
--- helper \func) for the same reason all Kernames are inline: a String field
--- read through a helper-\func call stays stuck at typecheck time (the known
--- String-field/isProperty bug), printing `reConstS {primRemap ...}` instead
--- of the target name; field access on a literal \new reduces fine.
+-- `\new RemappedConstant ...` is written inline at each entry for the same
+-- reason as the Kernames (a String field read through a helper `\func` stays
+-- stuck and would print as `reConstS {primRemap ...}`).
 --
 -- C backend: remaps onto the CertiRocq C runtime's prim_int63 functions
 -- (~/.opam/peregrine/.../CertiRocq/Plugin/runtime/prim_int63.{h,c}).

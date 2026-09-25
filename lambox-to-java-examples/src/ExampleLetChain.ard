@@ -3,9 +3,8 @@
 \import Data.Maybe
 \import Data.String
 
--- =============================================================================
--- A WORST CASE FOR THE `letIn` ENCODING: a hot loop that is almost entirely
--- `let`s.
+-- A worst case for the `letIn` encoding (corpus program `letchain`): a hot
+-- loop that is almost entirely `let`s.
 --
 --   letChainInner j acc = if j == 0 then acc else
 --     let a1 = acc + 1 in let a2 = a1 + 1 in .. let aN = a(N-1) + 1 in
@@ -14,40 +13,17 @@
 --     letChainOuter (i - 1) (letChainInner INNER acc)
 --   res = letChainOuter OUTER 0
 --
--- so the value is OUTER * INNER * N, and N lets are evaluated per inner
--- iteration with nothing else between them.
+-- The value is OUTER * INNER * N. Every let is used by the next and costs one
+-- `add`, so the cost of the let encoding dominates. Two nested loops, because
+-- λ□ `fix` compiles to non-tail Java recursion: the recursion depth is about
+-- OUTER + INNER rather than their product.
 --
--- WHY THIS SHAPE. `Compiler/ToJava.ard` can compile `letIn` two ways, and the corpus
--- could not tell them apart: a `final Object l = v;` statement costs nothing at
--- runtime, while the expression form `((Rt.Fn)(new Rt.Fn(){ .. })).apply(v)` --
--- λ□'s own equation `let x = v in b == (\lam x => b) v` -- costs a closure
--- allocation plus an interface dispatch. This program is built so that cost is
--- essentially the whole runtime: the lets are the loop body.
---
---   * Every let is USED, by the next one, so none can be eliminated. The chain
---     is a data dependency, not a sequence of dead bindings.
---   * Every let's value is one `add`, the cheapest thing that still cannot be
---     folded away, so the let ENCODING dominates rather than the work inside.
---   * TWO nested loops rather than one long one, because λ□ `fix` compiles to
---     non-tail Java recursion: iterations are stack frames. 2000 x 2000 gives
---     4,000,000 inner iterations at a recursion depth of ~4000 instead of
---     4,000,000 deep, which would need a stack no `-Xss` will give.
---
--- Being a worst case is the POINT, so do not read a regression here as the cost
--- on real code -- read it as the ceiling. `lean-matmul` (15 lets, some hot) is
--- the realistic middle, and `matmul` has no `letIn` at all.
---
--- Its measurement is conservative in one way worth knowing: `Long.valueOf`
--- allocates for values above the box cache, and this program's accumulator runs
--- to 80,000,000, so both encodings pay boxing on every `add`. That raises the
--- shared baseline and therefore UNDERSTATES the ratio between them.
---
--- Follows ExampleMatMul.ard's conventions: `bvar` indices written out by hand,
--- Kernames inline at each occurrence, and the four primitive-op axioms named as
--- there so `Compiler/JavaAxioms.ard`'s table realizes them (see that file's PRIMITIVE
--- OPS note). Only add/sub/eqb are used; `mul` is not declared, and this program
--- declares only the `java` backend, so it needs no attribute files.
--- =============================================================================
+-- Read a regression here as the ceiling, not the cost on real code
+-- (`lean-matmul` is the realistic middle; `matmul` has no `letIn`). Values
+-- above `Long.valueOf`'s cache are boxed on every `add`, which raises the
+-- baseline. Conventions as in ExampleMatMul.ard (hand-written `bvar`s, the
+-- peregrine `prim_*_int` axiom names); only the Java backend is targeted, so
+-- there are no attribute files.
 
 \func app2 (f a b : LBTerm) : LBTerm => app (app f a) b
 
@@ -123,10 +99,8 @@
   (\new Kername (mpFile nil) "prim_eqb_int", constantDecl (\new ConstantBody nothing)) ::
   (\new Kername (mpFile nil) "prim_sub_int", constantDecl (\new ConstantBody nothing)) ::
   (\new Kername (mpFile nil) "prim_add_int", constantDecl (\new ConstantBody nothing)) ::
-  -- REQUIRED, not decoration: peregrine checks each `case` for exhaustiveness
-  -- against the declared constructor count, and rejects the program
-  -- ("Case not exhaustive") if the inductive is missing. Constructor ORDER is
-  -- the ABI for `eqb`'s result -- false first, so false is tag 0.
+  -- Required: peregrine checks `case` exhaustiveness against it. Constructor
+  -- order is the ABI for `eqb`'s result: false is tag 0.
   (\new Kername (mpFile nil) "BoolBlock", inductiveDecl (\new MutualInductiveBody finite 0
                                                              ((\new OneInductiveBody "Bool" false IntoAny
                                                                     ((\new ConstructorBody "false" 0) :: (\new ConstructorBody "true" 0) :: nil)
@@ -135,8 +109,7 @@
 
 \func letChainProgramOf (lets inner outer : Nat) : LBProgram => (declsOf lets inner outer, resRef)
 
--- 20 lets, 10000 x 2000 iterations: 400,000,000 lets evaluated, value
--- 400,000,000, at a recursion depth of ~12000. Sized so the run stage is
--- seconds rather than the ~0.5 s that 2000 x 2000 gave, which is JVM warmup
--- with a program attached (see test/benchmarks.md, "Reading the numbers").
+-- 20 lets, 10000 x 2000 iterations: 400,000,000 lets evaluated, recursion
+-- depth ~12000. Sized so that the run takes seconds, well above JVM warmup
+-- (see test/README.md, "Performance").
 \func letChainProgram : LBProgram => letChainProgramOf 20 10000 2000

@@ -26,7 +26,7 @@
 \func matMulSexpr => putStrLn (LambdaBoxToString matMulProgram)
 -- The same program at other sizes, for the runtime benchmark of the corpus
 -- (`matmul250`): identical term shape, one literal apart. See
--- ExampleMatMul.sizeLitOf and test/benchmarks.md.
+-- ExampleMatMul.sizeLitOf and test/README.md ("Performance").
 \func matMulSexpr200 => putStrLn (LambdaBoxToString (matMulProgramOf 200))
 \func matMulSexpr250 => putStrLn (LambdaBoxToString (matMulProgramOf 250))
 \func matMulSexpr300 => putStrLn (LambdaBoxToString (matMulProgramOf 300))

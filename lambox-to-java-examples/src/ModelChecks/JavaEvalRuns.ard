@@ -12,38 +12,22 @@
 \import Paths
 \import Compiler.ToJava
 
--- =============================================================================
--- The Java fragment's semantics, run on a compiled program.
+-- The Java-fragment semantics (`Semantics/JavaEval.ard`) run on compiled
+-- programs: λ□ program -> `compileClass` -> `runClass`, compared with the
+-- expected value. Each check is `idp`, so typechecking this module runs it.
 --
--- The compiler project's `Semantics/JavaEval.ard` is executable on purpose (see its
--- header). This is the first
--- thing that executes it: λ□ program -> `compileClass` -> `runClass`, and the
--- result compared with the value the harness expects from the REAL run of the
--- same program (`test/corpora/handwritten/peano/meta`: `1(1(1(1(0))))`, i.e.
--- suc^4 zero, `Nat` being declared zero-then-suc).
+-- `peanoEvaluates` checks against what the real JVM prints for the corpus
+-- program `peano` (`test/corpora/handwritten/peano/meta`: `1(1(1(1(0))))`).
+-- The other programs are minimal, one feature each: the runtime interface
+-- (an axiom), wraparound at 2^63, `proj` (with and without parameters) and a
+-- `case` that throws. They carry no inductive declarations, so they are
+-- Java-only (see `ModelChecks/Agreement.ard` for two-sided checks).
 --
--- It is a `\lemma` proved by `idp`, so typechecking this module IS the check: if
--- the evaluator disagreed, or got stuck, or ran out of fuel, this would not
--- typecheck. That makes it a cheap differential test against the JVM for one
--- program -- not a proof of anything about the generator, which is what a
--- `Correct` statement relating `LambdaBoxEval` to `JEval` would be.
---
--- WHY HERE and not in the compiler project: this needs a λ□ program, and the
--- committed ones live here. The alternative, `src/Imported/<Module>.ard`, is
--- generated and gitignored, so a module importing it does not typecheck in a
--- fresh clone -- the trap the earlier semantics branch fell into.
--- =============================================================================
+-- These live in the examples project because they need committed λ□ programs
+-- (`test/arend/src/Imported/` is generated and gitignored).
 
--- peano needs NOTHING from the runtime: it has no axioms and no integer literal
--- (that is why it is the smoke set's "canonical small one"), so every field of
--- the interface may say "not covered", and the run below is then about the
--- fragment and not about `Rt.java`.
---
--- Note what that is NOT: an instance answering `nothing` suffices for THIS
--- program, not for programs in general. One `prim` int would already be `rStuck`
--- under it, since `intLit` boxes through `Long.valueOf` (Compiler/JavaAxioms.ard) --
--- which is why `peanoUnderRtLong` below re-runs the same program under the real
--- instance and gets the same value.
+-- A runtime that covers nothing: enough for peano, which has no axioms and no
+-- integer literals, so that run is about the fragment alone.
 \func rtNone : RtSpec \cowith
   | rtField _ => nothing
   | builtinArity _ => nothing
@@ -65,58 +49,39 @@
 \func peanoEvaluates : runClass rtNone peanoClass bodyMethodName 2000 = rOk (rvValue four)
   => idp
 
--- The same, under the instance the harness's programs actually run against: a
--- runtime that CAN answer must not perturb a program that never asks.
+-- The same under `rtLong`: a runtime that can answer does not change a program
+-- that never asks.
 \func peanoUnderRtLong : runClass rtLong peanoClass bodyMethodName 2000 = rOk (rvValue four)
   => idp
 
 -- ---------------------------------------------------------------------------
--- What peano cannot reach: the runtime interface, `proj`, and a throw.
---
--- peano is pure λ□ -- closures, constructors, `case`, `fix` -- so the whole
--- `RtSpec` half of the evaluator (`jField` -> `rtField` -> a `vBuiltin` that
--- accumulates arguments until `builtinRun` computes) is untouched by it, and so
--- is `proj`, which NO PROGRAM IN THE CORPUS exercises (golden.py records that
--- gap). The programs below are written here, minimal, one feature each, with
--- values that can be read off the term.
+-- What peano does not reach: the runtime interface (`jField` -> `rtField` ->
+-- a `vBuiltin` collecting arguments until `builtinRun`), `proj` (which no
+-- corpus program exercises), and a throw.
 -- ---------------------------------------------------------------------------
 
--- An `Fn`-valued axiom: a constant with no body, which `compileDecl` resolves
--- through `javaAxioms` -- `prim_add_int` under the root module path mangles to
--- `c___prim_add_int`, the table's key, and compiles to `Rt.PRIM_ADD_LONG`.
+-- An axiom (a constant with no body), which `compileDecl` resolves through
+-- `javaAxioms` to `Rt.PRIM_ADD_INT63`.
 \func primAddKn : Kername => \new Kername (mpFile nil) "prim_add_int"
 
 \func axiomDecls : GlobalDeclarations =>
   (primAddKn, constantDecl (\new ConstantBody nothing)) :: nil
 
--- `wrap63`, because the payload is `Fin int63Mod` -- there is no way to build a
--- λ□ primitive int without normalizing, which is what makes the runs below
--- comparable without any reconciliation.
+-- An int63 literal (payloads are built with `wrap63`).
 \func litT (i : Int) : LBTerm => prim (primInt63, wrap63 i)
 
 \func addT (a b : LBTerm) : LBTerm => app (app (const primAddKn) a) b
 
--- 2 + 3 = 5. Reaches `Rt.PRIM_ADD_INT63` as a field, applies it twice (the
--- arity contract: one argument leaves a `vBuiltin` holding it, the second
--- saturates), and boxes the result through `Long.valueOf`.
---
--- `rtInt63` because `JavaAxioms.primRepr` is `int63Repr`: the generator emits
--- the `_INT63` family for a λ□ primitive-int operation, so that is the runtime
--- the compiled class has to be run against. Under `rtLong` this class is stuck,
--- which is the model reporting a missing constant rather than guessing.
+-- 2 + 3 = 5: reads `Rt.PRIM_ADD_INT63` as a field and applies it twice (one
+-- argument leaves a `vBuiltin` holding it, the second saturates). Run against
+-- `rtInt63`, which models the `_INT63` family (under `rtLong` it is stuck).
 \func addClass : JClass => compileClass "Prog" (axiomDecls, addT (litT 2) (litT 3))
 
 \func addEvaluates : runClass rtInt63 addClass bodyMethodName 100 = rOk (rvValue (vLong 5))
   => idp
 
--- The same at the edge of the range, and THE POINT OF THE INT63 REPRESENTATION:
--- (2^63-1) + 1 is 0, because a λ□ primitive int is a `Uint63` and 2^63 is where
--- it wraps.
---
--- This line used to read `neg 9223372036854775808` -- the JVM's answer under
--- `PRIM_ADD_LONG`, which wraps at 2^64 and signed. Both are "wraparound", and
--- they are not the same wraparound; λ□'s semantics says 0
--- (`Semantics/LambdaBoxAxioms.ard`'s `int63Run`), and now so does the backend.
+-- At the edge of the range: (2^63-1) + 1 is 0, since a λ□ primitive int is a
+-- `Uint63` (as `Semantics/LambdaBoxAxioms.ard`'s `int63Run` also says).
 \func wrapClass : JClass =>
   compileClass "Prog" (axiomDecls, addT (litT 9223372036854775807) (litT 1))
 
@@ -124,17 +89,15 @@
   : runClass rtInt63 wrapClass bodyMethodName 100 = rOk (rvValue (vLong 0))
   => idp
 
--- And the old answer is still derivable, from the model of the family that
--- produced it -- so the change is visible as a disagreement between two
--- runtimes rather than as an edit to a number.
+-- For contrast: JVM `long` addition (`PRIM_ADD_LONG`) wraps signed at 2^64
+-- and gives -2^63.
 \func longWouldHaveSaid
   : builtinRunLong "PRIM_ADD_LONG" (vLong 9223372036854775807 :: vLong 1 :: nil)
   = rOk (vLong (neg 9223372036854775808))
   => idp
 
 -- `proj`: field 0 of a one-field constructor, with no inductive parameters.
--- Compiles to `((Rt.Data)(e)).fields[0]` -- the path with no corpus coverage at
--- all, which this is the first thing to evaluate.
+-- Compiles to `((Rt.Data)(e)).fields[0]`.
 \func boxInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "Box") 0
 
 \func projClass : JClass =>
@@ -144,12 +107,9 @@
 \func projEvaluates : runClass rtLong projClass bodyMethodName 100 = rOk (rvValue (vLong 7))
   => idp
 
--- `projParamCount` is the half of `proj` that can actually be wrong: the
--- generator has no arithmetic node, so it folds `npars + idx` into the field
--- index itself (Compiler/ToJava.ard). With ONE inductive parameter stored ahead of the
--- fields, field 0 of the record is physical field 1 -- so this constructor holds
--- 5 then 7, reading 7 is the check, and reading 5 would be that addition gone
--- missing. Nothing else anywhere exercises it.
+-- With one inductive parameter stored ahead of the fields, field 0 is physical
+-- field 1 (`npars + idx`, folded by the compiler): reading 5 instead of 7
+-- would mean the offset is missing.
 \func projParamClass : JClass =>
   compileClass "Prog"
     (nil, proj (\new ProjectionInfo boxInd 1 0) (construct boxInd 0 (litT 5 :: litT 7 :: nil)))
@@ -158,11 +118,8 @@
   : runClass rtLong projParamClass bodyMethodName 100 = rOk (rvValue (vLong 7))
   => idp
 
--- A `case` with NO branches (λ□'s erased `Empty`): the scrutinee is evaluated
--- and cast, and the chain of tag tests ends in `Rt.noBranch`, which throws. So
--- the observable is a THROW, not a value -- the outcome `runClass` reports as
--- `rvThrown` and the reason it is a separate constructor rather than a stuck
--- state.
+-- A `case` with no branches (an erased `Empty`): the scrutinee is evaluated
+-- and cast, and `Rt.noBranch` throws, which `runClass` reports as `rvThrown`.
 \func emptyCaseClass : JClass =>
   compileClass "Prog" (nil, case boxInd 0 (construct boxInd 0 nil) nil)
 

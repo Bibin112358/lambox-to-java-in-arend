@@ -3,21 +3,13 @@
 \import Data.Maybe
 \import Data.String
 
--- =============================================================================
--- Example λ□ program: Peano naturals + addition (recursion on the first
--- argument, via a lone `fix`) + `add 1 3`. Exercises fix / case / construct /
--- lambda / app / bvar / const -- everything compileExpr handles except
--- box / fvar / letIn / proj / prim (not needed for plain Nat arithmetic).
+-- Example λ□ program: Peano naturals, addition by recursion on the first
+-- argument (a single `fix`), and `add 1 3`. Exercises fix / case / construct /
+-- lambda / app / bvar / const (not box / fvar / letIn / proj / prim).
 --
--- BinderName values are all `anon`: compileExpr never reads the textual name
--- of a lambda/fix/case binder, only its POSITION (see pushFields), so
--- names carry no information for codegen and are left anonymous.
--- =============================================================================
+-- All binder names are `anon`: the compiler only uses binder positions.
 
--- \func natInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "Nat") 0
-
--- Nat = zero | suc Nat.  construct's 2nd argument is the constructor TAG used
--- for the switch (0 = zero, 1 = suc), not an argument count.
+-- Nat = zero | suc Nat; `construct`'s second argument is the constructor tag.
 \func zero' : LBTerm => construct (\new InductiveId (\new Kername (mpFile nil) "Nat") 0) 0 nil
 \func suc' (n : LBTerm) : LBTerm => construct (\new InductiveId (\new Kername (mpFile nil) "Nat") 0) 1 (n :: nil)
 
@@ -26,7 +18,7 @@
 
 -- add : Nat -> Nat -> Nat, defined by a single (non-mutual) `fix`.
 -- Trace of `env` (bvar 0 = innermost) through this term:
---   * entering `fix`'s body: [self(0)]                      (pushFix, k=1)
+--   * entering `fix`'s body: [self(0)]
 --   * after `\lam n`:        [n(0), self(1)]
 --   * after `\lam m`:        [m(0), n(1), self(2)]           <- at the `case`
 --   * "zero" branch (0 binders, no shift):        [m(0), n(1), self(2)]
@@ -40,23 +32,14 @@
     )
   ))
 
--- \func addDef : FixDef LBTerm => \new FixDef LBTerm anon addBody 0
 \func addFix : LBTerm => fix ((\new FixDef LBTerm anon addBody 0) :: nil) 0
 
 \func natCtors : Array ConstructorBody => (\new ConstructorBody "zero" 0) :: (\new ConstructorBody "suc" 1) :: nil
 
--- \func natBody : OneInductiveBody =>
---  \new OneInductiveBody "Nat" false IntoAny natCtors nil
-
 \func natMutual : MutualInductiveBody => \new MutualInductiveBody finite 0 ((\new OneInductiveBody "Nat" false IntoAny natCtors nil) :: nil)
 
--- Order matters: EWellformed.v's `wf_glob` (and peregrine's `CheckWf.v`)
--- checks each entry's body against only the *tail* of the list
--- (`wf_global_decl Σ d` for `(kn,d)::Σ`), i.e. a declaration may only
--- reference declarations that come AFTER it -- dependents first,
--- dependencies last (the reverse of a normal "declare before use" order).
--- With `Nat` listed first, `add`'s `case` could not find the inductive and
--- peregrine rejected the exported program as "Case not exhaustive".
+-- Dependents first (see `GlobalDeclarations`): with `Nat` listed first,
+-- peregrine rejects the exported program ("Case not exhaustive").
 \func decls : GlobalDeclarations =>
   (\new Kername (mpFile nil) "add", constantDecl (\new ConstantBody (just addFix))) ::
   (\new Kername (mpFile nil) "Nat", inductiveDecl natMutual) ::

@@ -21,67 +21,24 @@
 \import Compiler.StringUtil (intEqB)
 \import Compiler.ToJava
 
--- =============================================================================
--- The two semantics agree: λ□'s value and the compiled Java's value correspond.
+-- Differential checks of the two semantics: run a λ□ program with the λ□
+-- runner (`Semantics/LambdaBoxRun.ard`, against the oracle `lbAxioms`), run its
+-- compiled Java with the Java-fragment evaluator (`Semantics/JavaEval.ard`,
+-- against the runtime model `rtInt63`), and compare the results with the
+-- theorem's value relation `agrees` (`Proof/Statement.ard`). Each check is
+-- `idp`, so typechecking this module runs them.
 --
--- This is the executable half of a correctness claim. The full statement --
--- "for EVERY well-formed program, `Eval` and `JEval` agree" -- is a theorem
--- nobody has proved here. What this module does is check the statement's
--- INSTANCES, by running both sides:
+-- The general theorem is proved (`Proof/MainTheorem.ard`); these are cheap
+-- executable sanity checks, including values the theorem does not relate
+-- (partial applications) and axioms that neither model covers.
 --
---   λ□     `Formal/LambdaBoxRun.evalT`   (an oracle for the `Eval` relation)
---   Java   `compileClass` then `Formal/JavaEval.runClass`
---
--- and comparing the two values with `agrees`. Each check is `idp`, so
--- typechecking this module IS the check, and it fails if either side is stuck,
--- runs out of fuel, or produces something the other does not match.
---
--- TWO ORACLES, ONE CHECK. Each side takes its runtime as a parameter, and the
--- two parameters are DIFFERENT FUNCTIONS written from different sources:
---
---   λ□     `lbAxioms` (Semantics/LambdaBoxAxioms.ard)  -- λ□'s i63, which is what both
---                                               `prim_*_int` and Lean's `Nat.*`
---                                               range over
---   Java   `rtInt63`  (Semantics/RtInt63.ard)   -- `Rt.java` as `primRepr`
---                                               configures it: `PRIM_*_INT63`
---                                               for λ□ primitive ints, the
---                                               `_LONG` family for Lean's
---
--- That is what makes `bothAgree` worth running. If one oracle were defined in
--- terms of the other, every check below would pass and none would mean
--- anything. They are independent, and where they AGREE it is because the
--- backend was made to compute what the source language says -- `int63Agrees`
--- below is the case that used to fail and now does not. Where they still
--- disagree it is a finding, pinned as carefully as the agreements.
---
--- WHAT IT STILL CANNOT COVER:
---   * a program whose `construct`/`case`/`proj` has no inductive DECLARATION is
---     `rStuck` on the λ□ side (the arity and propositionality checks need it),
---     while the backend never looks. So the hand-written terms in
---     `ModelChecks/JavaEvalRuns.ard`, which carry no declarations, are Java-side
---     only.
---   * an axiom NEITHER oracle covers -- `Array.*` needs a store λ□'s value
---     domain has no room for, `Decidable`-returning comparisons need an
---     inductive declaration the oracle would have to invent. Pinned below.
---   * an axiom only ONE side MODELS: `Nat.div` computes in λ□ and is a named
---     gap in `Semantics/RtLong.ard`, so `bothAgree` is `false` for it. That is the
---     model being incomplete, not the backend being wrong -- `javaAxioms` does
---     realize it. Pinned, and labelled as such.
---   * a value that is a FUNCTION, including a partially-applied axiom -- see
---     `agrees` below.
--- =============================================================================
+-- Limits: a `construct`/`case`/`proj` without an inductive declaration is
+-- stuck on the λ□ side, so the declaration-free terms of
+-- `ModelChecks/JavaEvalRuns.ard` are Java-only; `agrees` relates first-order
+-- values only.
 
--- The value relation is `Proof/Statement.ard`'s `agrees`, imported rather than
--- defined here: it is part of the CORRECTNESS STATEMENT, and having a second
--- copy next to the checks that exercise it would let the two drift. Its
--- restriction -- first-order values only, so a closure or a partially-applied
--- axiom is `false` -- is documented there, along with the withdrawal of
--- limitation (L).
-
--- Run a program through both semantics and compare. `false` covers every way
--- this can fail to be an agreement, including either side not finishing.
---
--- The two oracles are fixed here, once: `lbAxioms` against `rtInt63`.
+-- Run a program through both semantics and compare; `false` if either side
+-- does not finish with a value.
 \func bothAgree (p : LBProgram) (fuel : Nat) : Bool =>
   \case runProgram lbAxioms p fuel,
         runClass rtInt63 (compileClass progClassName p) bodyMethodName fuel \with {
@@ -97,15 +54,8 @@
 -- which between them are every λ□ rule that fires without an axiom.
 \func peanoAgrees : bothAgree addProgram 2000 = true => idp
 
--- WITH SOUNDNESS, the oracle's answer IS a derivation of the relation. This is
--- `Eval` for a real program -- 1 + 3 through a `fix`, a `case` and a `const`
--- unfolding -- obtained by computation rather than by hand, which is what the
--- relation alone could not give: its own sanity checks in
--- `Semantics/LambdaBoxEval.ard` are `id`, `let`, a literal and a one-line `fix`,
--- because a derivation for anything bigger is not writable by hand.
---
--- So `peanoAgrees` above is not "the oracle and the Java semantics agree" but
--- "λ□'s semantics and the Java semantics agree", on this program.
+-- By the runner's soundness (`evalT-sound`), its answer is an `Eval`
+-- derivation, too big to write by hand.
 \func peanoEvalsToFour : EvalProgram lbAxioms addProgram (suc' (suc' (suc' (suc' zero'))))
   => evalT-sound lbAxioms 2000 idp
 
@@ -137,17 +87,14 @@
 
 \func zeroCaseAgrees : bothAgree zeroCaseProgram 500 = true => idp
 
--- A primitive integer. Nothing to normalize at 42, so this checks only that a
--- literal survives `intLit` and comes back as the same number; the values where
--- normalization matters are at the bottom of this module.
+-- A primitive integer literal (values at the edge of the range are at the
+-- bottom of this module).
 \func litProgram : LBProgram => (nil, prim (primInt63, 42))
 
 \func litAgrees : bothAgree litProgram 100 = true => idp
 
 -- ---------------------------------------------------------------------------
--- THE AXIOMS. These are the checks the oracle exists for: before it, every one
--- of them was `rStuck` on the λ□ side, and the only honest thing to pin was the
--- gap itself.
+-- Axioms.
 -- ---------------------------------------------------------------------------
 
 -- A λ□ primitive: `prim_add_int 2 3`. Both sides compute 5 -- λ□ through
@@ -160,8 +107,7 @@
 
 \func axiomAgrees : bothAgree addAxiomProgram 200 = true => idp
 
--- Each side separately, so a future change that breaks one is localized rather
--- than showing up only as `bothAgree = false`.
+-- Each side separately, to localize a failure.
 \func axiomRunsInLambdaBox
   : runProgram lbAxioms addAxiomProgram 200 = rOk (prim (primInt63, 5)) => idp
 
@@ -170,46 +116,25 @@
   = rOk (rvValue (vLong 5))
   => idp
 
--- WITH SOUNDNESS AGAIN: the λ□ run above is a derivation, so this is `Eval`
--- deriving a value for a program with an AXIOM in it -- which is the whole
--- extension, exercised end to end through `evalAxiom` and `evalAxiomApp`.
+-- An `Eval` derivation through `evalAxiom` and `evalAxiomApp`.
 \func axiomEvaluates : EvalProgram lbAxioms addAxiomProgram (prim (primInt63, 5))
   => evalT-sound lbAxioms 200 idp
 
--- AND THE SAME PROGRAM IS STUCK WITHOUT THE ORACLE, which is what makes the
--- three checks above about the oracle and not about the rest of the semantics.
--- `lbNone` is λ□ as MetaRocq and CertiRocq have it, and this line is exactly
--- what this module used to pin as a fact.
+-- Without the oracle (`lbNone`, upstream λ□) the program is stuck.
 \func axiomStuckWithoutOracle : runProgram lbNone addAxiomProgram 200 = rStuck => idp
 
--- Lean's machine `Nat`, which is the family the corpus actually reaches:
--- `Nat.add` mangles to `c__Nat__add` and so lands on `Rt.PRIM_ADD_LONG`, while
--- λ□ reads it as unbounded addition.
+-- Lean's machine `Nat` operations, which the Lean corpus actually uses.
 --
--- HOW MUCH OF THE CORPUS THIS IS, counted rather than guessed. Across
--- `Imported/Leanbench*.ard` the bodyless constants are 132 occurrences:
---   covered by BOTH oracles   `Nat.add` 18, `Nat.sub` 23, `Nat.mul` 4,
---                             `Nat.beq` 21                              (66)
---   λ□ only (`rtLong` gap)    `Nat.div` 3, `Nat.mod` 7, `Nat.ble` 3     (13)
---   neither                   `Nat.decEq` 14, `Nat.decLt` 7,
---                             `Nat.decLe` 5, `Nat.pow` 2, `Array.*` 17,
---                             `Int.*` 8, `Eq.rec` 1                     (53)
--- So `leanbench-even`, whose only axioms are `Nat.beq` and `Nat.sub`, is inside
--- the intersection, while the `qsort`/`rbmap` family needs the
--- `Decidable`-returning comparisons and is not.
+-- Census of bodyless constants across `Imported/Leanbench*.ard` (132
+-- occurrences): `Nat.add` 18, `Nat.sub` 23, `Nat.mul` 4, `Nat.beq` 21,
+-- `Nat.div` 3, `Nat.mod` 7, `Nat.ble` 3 are modelled on both sides (79);
+-- `Nat.decEq` 14, `Nat.decLt` 7, `Nat.decLe` 5, `Nat.pow` 2, `Array.*` 17,
+-- `Int.*` 8, `Eq.rec` 1 are modelled by neither (53).
 --
--- THAT DOES NOT MEAN THE BENCHMARK CAN BE CHECKED HERE. Running `program` from
--- `Imported/LeanbenchEven.ard` through `bothAgree` exhausts the JVM heap inside
--- Arend's normalizer (`OutOfMemoryError` in `SubstVisitor`), and lower fuel only
--- turns that into `rOutOfFuel`. The remaining obstacle to a real differential
--- corpus is therefore the cost of EVALUATING a benchmark-sized term in a
--- typechecker, not the missing oracle -- a different problem, and one the
--- harness (`test/run.py`, which runs the generated Java on a real JVM) already
--- solves from the other side.
---
--- What is checked here instead is the correspondence the oracle is responsible
--- for: the corpus's actual kernames, its actual `Bool` declaration, and a
--- `case` that scrutinizes what the oracle returns.
+-- Whole benchmarks cannot be checked here: evaluating a benchmark-sized term
+-- inside the typechecker runs out of memory (the test harness runs the
+-- generated Java on a real JVM instead). What is checked is the corpus's
+-- kernames, its `Bool` declaration, and a `case` on an oracle result.
 \func natAddKn : Kername => \new Kername (mpDot (mpFile nil) "Nat") "add"
 
 \func natAddProgram : LBProgram =>
@@ -218,10 +143,8 @@
 
 \func natAddAgrees : bothAgree natAddProgram 200 = true => idp
 
--- A PARTIAL APPLICATION is a value on both sides, and `agrees` says `false` for
--- it (it is a function -- see the note on `agrees`). Pinned so that the `false`
--- is on record as a restriction of the COMPARISON, not of either semantics:
--- both sides really did produce a value here.
+-- A partial application is a value on both sides, but a function, so `agrees`
+-- does not relate it: the `false` is a restriction of the comparison only.
 \func partialProgram : LBProgram =>
   ((natAddKn, constantDecl (\new ConstantBody nothing)) :: nil,
    app (const natAddKn) (prim (primInt63, 20)))
@@ -237,21 +160,11 @@
 \func partialIsNotCompared : bothAgree partialProgram 200 = false => idp
 
 -- ---------------------------------------------------------------------------
--- A BOOLEAN-RETURNING AXIOM, AND A `case` THAT READS IT.
---
--- The check the rest of this module does not reach: every other instance here
--- compares a primitive int, so nothing exercises the fact that `axiomRun` has to
--- return a value in the PROGRAM'S OWN inductive. `Semantics/LambdaBoxAxioms.ard` says why
--- that is delicate -- "a boolean built with the wrong id would compute and then
--- be stuck at the `case` that reads it", because `evalIota` checks that the
--- scrutinee's constructor belongs to the inductive the `case` names -- so the
--- claim needs a `case` on top of the axiom, not just the axiom.
---
--- The declaration is `Imported/LeanbenchEven.ard`'s, copied verbatim: the
--- Lean frontend's root-module `Bool`, with `Bool.false` and `Bool.true` as
--- constructors 0 and 1 and no parameters. So this pins `lbBool`'s inductive id
--- AND its tag convention against the corpus, and against `mkBool` on the Java
--- side, in one line.
+-- A boolean-returning axiom, and a `case` that reads it. `axiomRun` must return
+-- a value of the program's own `Bool` (`evalIota` checks the inductive), so
+-- this needs a `case` on top of the axiom. The declaration is the Lean
+-- frontend's root-module `Bool` (as in `Imported/LeanbenchEven.ard`): it pins
+-- `lbBool`'s inductive id and tag convention, and `mkBool`'s on the Java side.
 -- ---------------------------------------------------------------------------
 
 \func natBeqKn : Kername => \new Kername (mpDot (mpFile nil) "Nat") "beq"
@@ -271,10 +184,8 @@
             nil
          ) :: nil))) :: nil
 
--- `case (Nat.beq 3 3) of { false => 100 ; true => 200 }`, so the answer is 200
--- exactly when the oracle's boolean is `Bool.true` of THIS `Bool`. A wrong
--- inductive id computes a value and then stops at the `case`, which is the
--- failure this rules out; a swapped tag convention picks 100.
+-- `case (Nat.beq 3 3) of { false => 100 ; true => 200 }`: a wrong inductive id
+-- would be stuck at the `case`, a swapped tag convention would give 100.
 \func boolCaseProgram : LBProgram =>
   (boolDecls,
    case boolInd 0
@@ -287,8 +198,7 @@
 \func boolCaseInLambdaBox
   : runProgram lbAxioms boolCaseProgram 500 = rOk (prim (primInt63, 200)) => idp
 
--- And the unscrutinized boolean itself, so that what `lbBool` builds is on
--- record next to what `mkBool` builds (`vData 1 nil`).
+-- The boolean itself.
 \func boolProgram : LBProgram =>
   (boolDecls, app (app (const natBeqKn) (prim (primInt63, 3))) (prim (primInt63, 4)))
 
@@ -297,10 +207,7 @@
 
 \func boolFalseAgrees : bothAgree boolProgram 500 = true => idp
 
--- The other corpus axiom, `Nat.sub`, which truncates at zero in Lean and is why
--- `javaAxioms` sends it to `NAT_SUB_LONG` rather than to a wrapping `PRIM_SUB`.
--- 3 - 5 is 0, not -2. Note the suffix: this is a LEAN family, routed by
--- `leanOpSuffix`, so the int63 change does not touch it.
+-- `Nat.sub` truncates at zero (Lean's convention; `Rt.NAT_SUB_LONG`): 3 - 5 is 0.
 \func natSubKn : Kername => \new Kername (mpDot (mpFile nil) "Nat") "sub"
 
 \func natSubProgram : LBProgram =>
@@ -313,19 +220,9 @@
 \func natSubAgrees : bothAgree natSubProgram 200 = true => idp
 
 -- ---------------------------------------------------------------------------
--- THE INT63/INT64 MISMATCH -- FIXED, and this is the witness that used to show
--- it was not.
---
--- `Compiler/JavaAxioms.ard` called this a KNOWN MISMATCH from the start: λ□'s primitive
--- int is `Uint63` (unsigned, cyclic mod 2^63) while the backend represented it
--- as a JVM `long` (signed, cyclic mod 2^64). `prim_sub_int 1 2` is where the
--- two part company -- λ□ says 2^63-1, a `long` says -1 -- and with both sides
--- given a semantics it stopped being a caveat and became a refutation.
---
--- With `primRepr := int63Repr` the backend emits `Rt.PRIM_SUB_INT63`, which
--- masks to 63 bits, and the same program AGREES. Two lines below carry the
--- whole change: `int63Agrees` was `int63Disagrees`, and `int63InJava` said
--- `neg 1`.
+-- Unsigned int63 arithmetic: `prim_sub_int 1 2` is 2^63-1 in λ□ (`Uint63`) and
+-- in Java (`Rt.PRIM_SUB_INT63` masks to 63 bits), while a plain JVM `long`
+-- would give -1.
 -- ---------------------------------------------------------------------------
 
 \func subAxiomKn : Kername => \new Kername (mpFile nil) "prim_sub_int"
@@ -336,7 +233,7 @@
 
 \func int63Agrees : bothAgree int63Program 200 = true => idp
 
--- The two values, which are now the SAME value.
+-- The two values.
 \func int63InLambdaBox
   : runProgram lbAxioms int63Program 200 = rOk (prim (primInt63, 9223372036854775807))
   => idp
@@ -346,10 +243,8 @@
   = rOk (rvValue (vLong 9223372036854775807))
   => idp
 
--- AND THE OLD RUNTIME STILL SAYS WHAT IT SAID, from the model of the family it
--- used. Kept so the fix is a visible difference between two runtimes rather
--- than an edited constant -- and so that `ModelChecks/CorrectInstances.ard` can
--- refute the agreement hypothesis at `rtLong` with something concrete.
+-- For contrast: the `long` family (`rtLong`'s `PRIM_SUB_LONG`) gives -1, a
+-- different number.
 \func longWouldHaveSaid
   : builtinRunLong "PRIM_SUB_LONG" (vLong 1 :: vLong 2 :: nil) = rOk (vLong (neg 1))
   => idp
@@ -358,8 +253,7 @@
   : intEqB (pos 9223372036854775807) (neg 1) = false => idp
 
 -- ---------------------------------------------------------------------------
--- The remaining gaps, pinned in both directions so that neither is mistaken for
--- coverage.
+-- More Lean operations, and a gap.
 -- ---------------------------------------------------------------------------
 
 -- `Nat.div` compiles to `PRIM_DIV_LONG`; both sides compute 42 / 5 = 8.
@@ -374,9 +268,8 @@
 
 \func natDivAgrees : bothAgree natDivProgram 200 = true => idp
 
--- NEITHER SIDE: `Array.push` is realized by `javaAxioms` and modelled by
--- neither oracle -- λ□'s value domain has no store, and `builtinArityLong` omits
--- the `ARRAY_*` family. Both stuck, which is the honest report.
+-- `Array.push` is realized by `javaAxioms` but modelled on neither side (λ□'s
+-- values have no store; `rtLong` omits `ARRAY_*`): stuck.
 \func arrayPushKn : Kername => \new Kername (mpDot (mpFile nil) "Array") "push"
 
 \func arrayProgram : LBProgram =>
@@ -387,38 +280,28 @@
 
 \func arrayDisagrees : bothAgree arrayProgram 200 = false => idp
 
--- And `agrees` itself is not constant-true: it rejects the right tag with the
--- wrong fields, and a value of the wrong shape. Without these, every check
--- above would hold for a relation that says yes to everything.
+-- `agrees` is not constant-true: wrong fields, wrong shape and wrong tag are
+-- rejected.
 \func agreesRejectsArity : agrees 20 (suc' zero') (vData 1 nil) = false => idp
 
 \func agreesRejectsShape : agrees 20 box (vLong 0) = false => idp
 
 \func agreesRejectsTag : agrees 20 zero' (vData 1 nil) = false => idp
 
--- 2^63 IS NOT A λ□ VALUE, and can no longer be written as one. This is the
--- sharpest statement of what putting the kind in the term bought.
---
--- These checks used to be about how GENEROUS the value relation had to be. The
--- λ□ side could hold 2^63 (the payload was an unbounded `Int`), the JVM `long`
--- holding those bits reads -2^63, and `agrees` was parameterized by a
--- normalization so that the `longRepr` pairing could call them equal -- "one
--- bit pattern, two readings". The two `Int`s really are different:
+-- The edge of the range. 2^63 is not an int63 value: as a `long` bit pattern
+-- it reads -2^63, a different integer.
 \func int63TwoReadingsDiffer
   : intEqB (pos 9223372036854775808) (neg 9223372036854775808) = false => idp
 
--- Now `PrimModel primInt63` is `Fin int63Mod` and `wrap63` is the only way in,
--- so the out-of-range term does not exist to be compared. Writing the literal
--- gives the value λ□ means by it, which is 0:
+-- A payload is built with `wrap63`, so writing 2^63 gives 0 ...
 \func int63LiteralNormalizes
   : prim (primInt63, wrap63 (pos 9223372036854775808)) = prim (primInt63, 0) => idp
 
--- ... and THAT agrees with what the backend computes, exactly -- no
--- normalization in the relation, because there is nothing left to normalize.
+-- ... which agrees with the Java value 0 exactly ...
 \func int63NormalizedAgrees
   : agrees 20 (prim (primInt63, wrap63 (pos 9223372036854775808))) (vLong 0) = true => idp
 
--- The relation is still not constant-true at this value.
+-- ... and not with -2^63.
 \func int63NormalizedRejectsOld
   : agrees 20 (prim (primInt63, wrap63 (pos 9223372036854775808)))
               (vLong (neg 9223372036854775808)) = false
