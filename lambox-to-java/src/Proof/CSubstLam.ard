@@ -197,10 +197,6 @@
 -- Substituting an environment.
 -- ---------------------------------------------------------------------------
 
-\func substK (k : Nat) (sg : Array LBTerm) (b : LBTerm) : LBTerm \elim sg
-  | nil => b
-  | s :: sg => substK k sg (csubst s k b)
-
 \func skBox (k : Nat) (sg : Array LBTerm) : substK k sg box = box \elim sg
   | nil => idp
   | s :: sg => skBox k sg

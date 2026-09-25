@@ -224,6 +224,13 @@
   | nil => body
   | d :: ds => substl ds (csubst d 0 body)
 
+-- Substitute the whole array at the same index `k`, head first. With closed
+-- values this is how an environment is turned back into a term
+-- (`Semantics/LambdaBoxEnv.ard`'s `quote`).
+\func substK (k : Nat) (sg : Array LBTerm) (b : LBTerm) : LBTerm \elim sg
+  | nil => b
+  | s :: sg => substK k sg (csubst s k b)
+
 
 -- ---------------------------------------------------------------------------
 -- The global environment (EGlobalEnv.v).

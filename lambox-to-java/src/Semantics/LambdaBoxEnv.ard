@@ -2,7 +2,6 @@
 \import Data.Array (++, mkArray)
 \import Data.Bool
 \import Data.Maybe
-\import Proof.CSubstLam (substK)
 \import Semantics.LambdaBoxEval
 \import Compiler.LambdaBox
 \import Logic
