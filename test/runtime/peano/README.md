@@ -21,8 +21,7 @@ removes the axioms instead: `Nat` stays an inductive type and `Nat.add`/`mul`/
 `beq`/… are erased from their logical definitions. The resulting λ□ file needs no
 attributes and no realizations at all, so **all four backends run the identical
 file** — which is what makes these cases the strongest differential test in the
-corpus, at the price of unary arithmetic (hence much smaller inputs). (`eval` has
-since left the backend matrix; `test/tools/eval-ast.sh` keeps it available by hand.)
+corpus, at the price of unary arithmetic (hence much smaller inputs).
 
 Each such case returns a `Bool` (`Nat.beq (benchmark n) expected`) rather than the
 number: a unary result is a term as deep as its value, and every backend renders

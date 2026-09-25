@@ -18,10 +18,11 @@
 # all three.
 #
 # Cost: one Arend CLI run per program, ~40 s each (library loading dominates), so
-# this is a rare, manual step -- never part of a `run.py` run.
+# this is a rare, manual step -- never part of `test/check`.
 #
-# `letchain` is the fourth such program (test/benchmarks.md: the `letIn` worst
-# case); it declares only the java backend, so it needs no attribute files.
+# `letchain` is the fourth such program (the `letIn` worst case, see
+# test/README.md "Performance"); it declares only the java backend, so it needs
+# no attribute files.
 #
 # `matmul` additionally needs its two attribute files, which are extracted from
 # the same Arend module and are refreshed here as well. They are four fixed
@@ -65,7 +66,7 @@ if [ $# -gt 0 ]; then
   for prog in "$@"; do regen "$prog"; done
 else
   # matmul200/matmul300 are known to sexpr_def but have no program directory:
-  # test/benchmarks.md records why 250 is the size that is kept, and either of
+  # 250 is the kept benchmark size (test/README.md "Performance"); either of
   # the others is one `mkdir` plus a `meta` away.
   for prog in example peano matmul matmul250 letchain; do regen "$prog"; done
 fi

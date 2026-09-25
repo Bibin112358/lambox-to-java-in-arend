@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""The test harness' one entry point.
+
+    test/check quick            proofs + golden: run before every commit (~10 min)
+    test/check proofs [-j N] [MODULE...]
+                                typecheck every Compiler/Semantics/Proof module and
+                                every examples ModelChecks module, each in its own
+                                Arend run, N at a time (default 2)
+    test/check golden [...]     generated Java unchanged vs test/golden/ (~35 s)
+    test/check run [...]        compile + run programs, check their values
+    test/check diff             Arend models vs the real JVM on small programs (~1.5 min)
+
+`test/check <command> -h` for the options of each. Exit status 0 = all passed.
+"""
+
+import argparse
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import common as c
+
+
+def proof_modules():
+    """(project, module) for every module the proofs check covers, listed from
+    the directories so a new file is never missed."""
+    found = []
+    for project, dirs in ((c.CORE, ("Compiler", "Semantics", "Proof")),
+                          (c.EXAMPLES, ("ModelChecks",))):
+        for d in dirs:
+            for f in sorted((project / "src" / d).glob("*.ard")):
+                found.append((project, f"{d}.{f.stem}"))
+    return found
+
+
+def proofs(argv):
+    p = argparse.ArgumentParser(prog="check proofs", description=
+        "Typecheck each module in its own Arend run. One run per module on purpose: "
+        "typechecking several modules in one CLI invocation has been seen to hide errors.")
+    p.add_argument("modules", nargs="*", metavar="MODULE", help="only these (default: all)")
+    p.add_argument("-j", "--jobs", type=int, default=2, help="parallel Arend runs (default 2; ~2 GB each)")
+    args = p.parse_args(argv)
+
+    todo = proof_modules()
+    if args.modules:
+        known = {m: (proj, m) for proj, m in todo}
+        missing = [m for m in args.modules if m not in known]
+        if missing:
+            c.die(f"unknown module(s): {' '.join(missing)}")
+        todo = [known[m] for m in args.modules]
+    logdir = c.WORK_DIR / "proofs"
+    logdir.mkdir(parents=True, exist_ok=True)
+    c.info(f"proofs: {len(todo)} modules, {args.jobs} at a time; logs in {logdir}")
+    start = time.monotonic()
+
+    def check(item):
+        project, module = item
+        t0 = time.monotonic()
+        output = c.arend(project, module)
+        (logdir / f"{module}.log").write_text(output)
+        bad = c.problems(output)
+        if f"--- Typechecking {module}" not in output and not bad:
+            bad = ["[ERROR] module was not typechecked (see log)"]
+        status = "ok" if not bad else "FAIL"
+        print(f"  {status:4s} {module:40s} {time.monotonic() - t0:5.0f}s", flush=True)
+        for line in bad[:5]:
+            print(f"       {line}", flush=True)
+        return module, bad
+
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        results = list(pool.map(check, todo))
+    failed = [m for m, bad in results if bad]
+    print(f"\nproofs: {len(results)} module(s) in {time.monotonic() - start:.0f}s, "
+          f"{len(failed)} failing" + (f": {' '.join(failed)}" if failed else ""))
+    return 1 if failed else 0
+
+
+def golden(argv):
+    import golden as g
+    return g.main(argv)
+
+
+def run(argv):
+    import run as r
+    return r.main(argv)
+
+
+def diff(argv):
+    import diff as d
+    return d.main(argv)
+
+
+def quick(argv):
+    if argv:
+        c.die("quick takes no options")
+    status = {"proofs": proofs([]), "golden": golden([])}
+    print("\nquick: " + ", ".join(f"{k} {'ok' if v == 0 else 'FAILED'}" for k, v in status.items()))
+    return 1 if any(status.values()) else 0
+
+
+COMMANDS = {"quick": quick, "proofs": proofs, "golden": golden, "run": run, "diff": diff}
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        print(__doc__.strip())
+        return 0 if len(sys.argv) >= 2 and sys.argv[1] in ("-h", "--help") else 2
+    return COMMANDS[sys.argv[1]](sys.argv[2:])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

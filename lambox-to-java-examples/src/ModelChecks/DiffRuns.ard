@@ -1,39 +1,109 @@
 \import Data.Maybe
 \import Data.String
 \import Debug (putStrLn)
-\import ExamplePeano
-\import ModelChecks.Agreement
-\import Semantics.JavaEval
-\import ModelChecks.JavaEvalRuns (wrapClass)
-\import Semantics.RtInt63
-\import Semantics.RtLong
-\import Compiler.Int63 (wrap63)
-\import Compiler.JavaAst
-\import Compiler.JavaPrint (printClass)
+\import ExamplePeano (addProgram)
+\import ModelChecks.Agreement (twoProgram, predProgram, zeroCaseProgram, litProgram, addAxiomProgram,
+                               natAddProgram, boolCaseProgram, boolProgram, natSubProgram, int63Program,
+                               natDivProgram, axiomKn, subAxiomKn)
+\import Compiler.Int63 (signed64)
 \import Compiler.LambdaBox
-\import Paths
-\import Compiler.ToJava
-\import Compiler.ToJava (compileProgram)
+\import Compiler.StringUtil (natToStr, intToStr, joinStr)
+\import Compiler.ToJava (compileProgram, compileClass, bodyMethodName)
+\import Proof.Statement (progClassName)
+\import Semantics.JavaEval
+\import Semantics.JavaValue
+\import Semantics.LambdaBoxAxioms (lbAxioms)
+\import Semantics.LambdaBoxRun (runProgram)
+\import Semantics.Res
+\import Semantics.RtInt63 (rtInt63)
 
 -- =============================================================================
--- Differential Tests: Arend Model vs Real JVM
+-- Differential test: the Arend models against the real JVM.
+--
+-- Each `\func` below prints, for one small λ□ program,
+--   * the generated Java (`compileProgram`),
+--   * the value the λ□ semantics computes (`runProgram lbAxioms`),
+--   * the value the Java-fragment semantics computes for the compiled class
+--     (`runClass rtInt63`),
+-- the two values in the format `Rt.runMain` prints them on the JVM (`tag(f,..)`,
+-- decimal longs, `BOX`). `test/check diff` compiles and runs the Java for real
+-- and compares the three values (whitespace ignored). `ModelChecks/Agreement.ard`
+-- checks the two models against EACH OTHER by `idp`; this adds the JVM.
 -- =============================================================================
 
-\func peanoJava => putStrLn (compileProgram "Prog" addProgram)
-\func axiomAddJava => putStrLn (compileProgram "Prog" ModelChecks.Agreement.addAxiomProgram)
-\func natAddJava => putStrLn (compileProgram "Prog" ModelChecks.Agreement.natAddProgram)
-\func natSubJava => putStrLn (compileProgram "Prog" ModelChecks.Agreement.natSubProgram)
-\func int63SubJava => putStrLn (compileProgram "Prog" ModelChecks.Agreement.int63Program)
-\func wrapAddJava => putStrLn (printClass wrapClass)
-\func natDivJava => putStrLn (compileProgram "Prog" ModelChecks.Agreement.natDivProgram)
+\func wrapFields (tag : String) (fs : Array String) : String \elim fs
+  | nil => tag
+  | f :: fs => tag ++ "(" ++ joinStr "," (f :: fs) ++ ")"
 
-\func subZeroKn : Kername => \new Kername (mpFile nil) "prim_sub_int"
+-- λ□ values, laid out as `Proof.Statement.agrees` relates them to Java values.
+\func showLB (n : Nat) (t : LBTerm) : String \elim n
+  | 0 => "<too deep>"
+  | suc n => \case t \with {
+    | box => "BOX"
+    | prim (primInt63, i) => natToStr i
+    | prim (primInt64, i) => intToStr (signed64 i)
+    | construct _ c args => wrapFields (natToStr c) (showLBs n args)
+    | _ => "<not first-order>"
+  }
+
+\func showLBs (n : Nat) (ts : Array LBTerm) : Array String \elim ts
+  | nil => nil
+  | t :: ts => showLB n t :: showLBs n ts
+
+-- Java-fragment values, as `Rt.Data.render` / `String.valueOf` print them.
+\func showV (n : Nat) (v : Value) : String \elim n
+  | 0 => "<too deep>"
+  | suc n => \case v \with {
+    | vBox => "BOX"
+    | vLong j => intToStr j
+    | vData tg fs => wrapFields (natToStr tg) (showVs n fs)
+    | _ => "<not first-order>"
+  }
+
+\func showVs (n : Nat) (vs : Array Value) : Array String \elim vs
+  | nil => nil
+  | v :: vs => showV n v :: showVs n vs
+
+\func showLBRes (r : Res LBTerm) : String \elim r
+  | rOk t => showLB 1000 t
+  | rStuck => "<stuck>"
+  | rOutOfFuel => "<out of fuel>"
+
+\func showJRes (r : Res RunOut) : String \elim r
+  | rOk (rvValue v) => showV 1000 v
+  | rOk (rvThrown _) => "<exception>"
+  | rStuck => "<stuck>"
+  | rOutOfFuel => "<out of fuel>"
+
+\func diffFuel : Nat => 5000
+
+\func dump (name : String) (p : LBProgram) : String =>
+  "===== " ++ name ++ " java =====\n" ++ compileProgram "Prog" p ++
+  "\n===== " ++ name ++ " lambdabox-model =====\n" ++ showLBRes (runProgram lbAxioms p diffFuel) ++
+  "\n===== " ++ name ++ " java-model =====\n" ++
+  showJRes (runClass rtInt63 (compileClass progClassName p) bodyMethodName diffFuel) ++
+  "\n===== " ++ name ++ " end ====="
+
+-- Two int63 edge cases the JVM must wrap exactly like λ□'s `Uint63`.
 \func subZeroProgram : LBProgram =>
-  ((subZeroKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const subZeroKn) (prim (primInt63, 0))) (prim (primInt63, 1)))
-\func subZeroJava => putStrLn (compileProgram "Prog" subZeroProgram)
+  ((subAxiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
+   app (app (const subAxiomKn) (prim (primInt63, 0))) (prim (primInt63, 1)))
 
 \func addNearOverflowProgram : LBProgram =>
-  ((ModelChecks.Agreement.axiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const ModelChecks.Agreement.axiomKn) (prim (primInt63, 9223372036854775806))) (prim (primInt63, 1)))
-\func addNearOverflowJava => putStrLn (compileProgram "Prog" addNearOverflowProgram)
+  ((axiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
+   app (app (const axiomKn) (prim (primInt63, 9223372036854775806))) (prim (primInt63, 1)))
+
+\func diffPeano => putStrLn (dump "peano" addProgram)
+\func diffTwo => putStrLn (dump "two" twoProgram)
+\func diffPred => putStrLn (dump "pred" predProgram)
+\func diffZeroCase => putStrLn (dump "zero-case" zeroCaseProgram)
+\func diffLit => putStrLn (dump "lit" litProgram)
+\func diffPrimAdd => putStrLn (dump "prim-add" addAxiomProgram)
+\func diffNatAdd => putStrLn (dump "nat-add" natAddProgram)
+\func diffBoolCase => putStrLn (dump "bool-case" boolCaseProgram)
+\func diffBool => putStrLn (dump "bool" boolProgram)
+\func diffNatSub => putStrLn (dump "nat-sub" natSubProgram)
+\func diffInt63Sub => putStrLn (dump "int63-sub" int63Program)
+\func diffNatDiv => putStrLn (dump "nat-div" natDivProgram)
+\func diffSubZero => putStrLn (dump "sub-zero" subZeroProgram)
+\func diffAddNearOverflow => putStrLn (dump "add-near-overflow" addNearOverflowProgram)
