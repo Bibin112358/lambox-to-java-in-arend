@@ -21,6 +21,7 @@
 \import Proof.OracleShipped (kernameEq-sound, noJust)
 \import Proof.MangleInj (mangleKername-inj, kn_bytes)
 \import Proof.JavaExec (eqSelf, eqOther)
+\import Proof.CompileValue (constBody)
 \import Paths
 \import Paths.Meta
 \import Meta
@@ -28,55 +29,37 @@
 \import Function.Meta ($)
 
 -- =============================================================================
--- WHAT A COMPILED CLASS CONTAINS, as the Java evaluator looks it up -- and the
--- facts about the shipped runtime and axiom table that a correctness proof for
--- `const` needs besides.
+-- WHAT A COMPILED CLASS CONTAINS, and the facts about the shipped runtime and
+-- axiom table: the class/runtime fields of `SimHyps`, discharged.
 --
--- `Semantics/JavaEval.ard` resolves a static call by `lookupMethod` (the FIRST
--- method of that name, comments skipped); λ□ resolves a `const` by
--- `lookupConstant` (the FIRST declaration whose kername passes `kernameEq`).
--- `ClassOK` says the two scans agree on `compileClass`:
+-- The Java model resolves a static call by `lookupMethod` (the FIRST method of
+-- that name, comments skipped); λ□ resolves a `const` by `lookupConstant` (the
+-- FIRST declaration passing `kernameEq`). `classOK` shows that on
+-- `compileClass` the two scans agree: a constant with a body is found under its
+-- mangled name with the compiled body, a realized axiom returns its
+-- `axiomImpl`, and nothing is called `Long.valueOf` (so that call reaches the
+-- runtime). It is one induction on the declarations: an entry failing
+-- `kernameEq` mangles differently (`kernameEq` is reflexive and
+-- `mangleKername` injective, Proof/MangleInj.ard), an inductive compiles to a
+-- comment, and the entry that passes is the kername looked up
+-- (`kernameEq-sound`). `bodyLookup` is the same walk, ending at `body()`.
 --
---   * a constant with a body is found under its mangled name, and its method
---     body is the compiled body (`ConstMethodBody`);
---   * an axiom the backend realizes is found, and returns its `axiomImpl`;
---   * nothing is called `Long.valueOf`, so that static call falls through to
---     the runtime (`RtSpec.rtStaticCall`) rather than to a generated method.
+-- `body`, constants and `Long.valueOf` never collide, by FIRST BYTES: a
+-- mangled name starts with `c` (`kn_bytes`), `body` with `b`, `Long.valueOf`
+-- with `L`.
 --
--- `classOK` is one induction on the declaration list. A head entry that fails
--- `kernameEq` MANGLES DIFFERENTLY (`kernameEq` is reflexive, and
--- `mangleKername-inj` from Proof/MangleInj.ard), so `lookupMethodIn` skips
--- it; an inductive compiles to a comment, which it skips too; and the entry
--- that passes is -- by `kernameEq-sound` -- the very kername looked up.
--- `bodyLookup` is the same walk, landing on the trailing `body` method.
+-- `rtOKShipped`: `rtInt63` answers `Long.valueOf` as the identity and every
+-- name with an arity is an unapplied builtin. `axImplShape`: every
+-- `axiomImpl` is a field `Rt.<nm>`, as all 38 table entries are.
 --
--- The trailing `body` method never shadows or is shadowed by a constant, and
--- neither it nor any constant is `Long.valueOf`, by FIRST BYTES: a mangled name
--- starts with `c` (99, `kn_bytes`), `body` with `b` (98), `Long.valueOf` with
--- `L` (76). This is `ToJava.bodyMethodName`'s comment, mechanized.
---
--- The remaining two are facts about the SHIPPED instances, stated as
--- contracts (`RtOK`, `AxImplShape`) so that a proof can take them as
--- hypotheses and be discharged here:
---
---   * `rtOKShipped`: `rtInt63` answers `Long.valueOf` as the identity, and
---     every name with an arity is an unapplied builtin (`rtFieldInt63` is
---     DEFINED from `builtinArityShipped`, so this holds as stated);
---   * `axImplShape`: every `axiomImpl` is a field `Rt.<nm>` -- whatever
---     `lookupBy` returns is a table entry (`lookupByAll`), and all 38 entries
---     of `javaAxioms` are `jField rtRef _` (`tableShape`).
---
--- `\case` does not reduce under a hypothesis about its scrutinee, so each
--- tested value is either handed to a helper as a parameter together with its
--- equation (`foundStep`), or rewritten after `unfold`.
+-- `\case` does not reduce under a hypothesis about its scrutinee, so a tested
+-- value is passed to a helper together with its equation (`foundStep`), or
+-- rewritten after `unfold`.
 -- =============================================================================
-
-\func ConstMethodBody (body : LBTerm) : Array JStmt =>
-  appendStmts (compileExpr nil nil body).1 (jReturn (compileExpr nil nil body).2 :: nil)
 
 \func ClassOK (cls : JClass) (genv : GlobalDeclarations) : \Type => \Sigma
   (\Pi (kn : Kername) (cb : ConstantBody) (body : LBTerm) -> lookupConstant genv kn = just cb -> cb.cstBody = just body
-     -> \Sigma (m : JMethod) (lookupMethod cls (mangleKername kn) = just m) (JMethod.mBody {m} = ConstMethodBody body))
+     -> \Sigma (m : JMethod) (lookupMethod cls (mangleKername kn) = just m) (JMethod.mBody {m} = constBody body))
   (\Pi (kn : Kername) (cb : ConstantBody) (impl : JExpr) -> lookupConstant genv kn = just cb -> cb.cstBody = nothing
      -> axiomImpl kn = just impl
      -> \Sigma (m : JMethod) (lookupMethod cls (mangleKername kn) = just m) (JMethod.mBody {m} = jReturn impl :: nil))
@@ -162,8 +145,8 @@
   | inductiveDecl _ => ()
 
 \func declBody (k : Kername) (cb : ConstantBody) (body : LBTerm) (e : cb.cstBody = just body)
-  : compileDecl (k, constantDecl cb) = constMethod (mangleKername k) (ConstMethodBody body) =>
-  transport (\lam z => compileDecl (k, constantDecl (\new ConstantBody z)) = constMethod (mangleKername k) (ConstMethodBody body))
+  : compileDecl (k, constantDecl cb) = constMethod (mangleKername k) (constBody body) =>
+  transport (\lam z => compileDecl (k, constantDecl (\new ConstantBody z)) = constMethod (mangleKername k) (constBody body))
     (inv e) idp
 
 \func declAx (k : Kername) (cb : ConstantBody) (impl : JExpr) (e1 : cb.cstBody = nothing) (e2 : axiomImpl k = just impl)
@@ -233,9 +216,9 @@
 \func classOK (name : JIdent) (p : LBProgram) : ClassOK (compileClass name p) p.1 =>
   (\lam kn cb body h1 h2 =>
      \let r => foundC p.1 (compileBody p.2) kn cb h1
-     \in (\new JMethod (mangleKername kn) (ConstMethodBody body),
+     \in (\new JMethod (mangleKername kn) (constBody body),
           r.2 *> pmap (\lam x => lookupMethodIn (x :: r.1) (mangleKername kn)) (declBody kn cb body h2)
-              *> hitMember (\new JMethod (mangleKername kn) (ConstMethodBody body)) r.1 (mangleKername kn) idp,
+              *> hitMember (\new JMethod (mangleKername kn) (constBody body)) r.1 (mangleKername kn) idp,
           idp),
    \lam kn cb impl h1 h2 h3 =>
      \let r => foundC p.1 (compileBody p.2) kn cb h1
@@ -244,13 +227,13 @@
               *> hitMember (\new JMethod (mangleKername kn) (jReturn impl :: nil)) r.1 (mangleKername kn) idp,
           idp),
    skipDecls p.1 (compileBody p.2) "Long.valueOf" (\lam k => mangleNoC k "Long.valueOf" idp)
-     *> skipMember (constMethod bodyMethodName (ConstMethodBody p.2)) nil {bodyMethodName} idp bodyNeLV)
+     *> skipMember (constMethod bodyMethodName (constBody p.2)) nil {bodyMethodName} idp bodyNeLV)
 
 \func bodyLookup (name : JIdent) (p : LBProgram)
-  : \Sigma (m : JMethod) (lookupMethod (compileClass name p) bodyMethodName = just m) (JMethod.mBody {m} = ConstMethodBody p.2) =>
-  (\new JMethod bodyMethodName (ConstMethodBody p.2),
+  : \Sigma (m : JMethod) (lookupMethod (compileClass name p) bodyMethodName = just m) (JMethod.mBody {m} = constBody p.2) =>
+  (\new JMethod bodyMethodName (constBody p.2),
    skipDecls p.1 (compileBody p.2) bodyMethodName (\lam k => mangleNoC k bodyMethodName idp)
-     *> hitMember (\new JMethod bodyMethodName (ConstMethodBody p.2)) nil bodyMethodName idp,
+     *> hitMember (\new JMethod bodyMethodName (constBody p.2)) nil bodyMethodName idp,
    idp)
 
 \func RtOK (rt : RtSpec) : \Type => \Sigma

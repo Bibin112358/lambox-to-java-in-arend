@@ -22,44 +22,35 @@
 \import Compiler.ToJava
 
 -- =============================================================================
--- THE VALUE RELATION of the second step: λ□ with environments => Java.
+-- THE VALUE RELATION of step A2: λ□ with environments => Java.
 --
--- `Proof/SubstToEnv.ard` took λ□ from substitution to environments. Both
--- sides of this step now keep environments and closures, and the relation
--- between their values is, as in MetaRocq's `compile_value` step, "the Java
--- value is what the backend makes of that environment value":
+-- Both sides now keep environments and closures. As in MetaRocq's
+-- `compile_value`, `CV w jv` says "`jv` is what the backend makes of `w`":
 --
---   * `evBox`, a primitive, a constructor value: `Rt.BOX`, the boxed long of
---     the literal (the same reading `int63Lit`/`int64Lit` take), `Rt.Data`
---     with related fields.
---   * `evClos na b rho`: the Java closure compiled from `b` at SOME path `p`
---     under SOME compile-time environment `cenv`, capturing a runtime
---     environment `E` that realizes `rho` along `cenv` (`EnvRel`). Which `p`
---     and `cenv` does not matter -- that is the whole point of relating by
---     construction (Leroy): the code is `compileExpr` of the body, whatever
---     the context.
+--   * `evBox`, a primitive, a constructor: `Rt.BOX`, the long of the literal
+--     (read as `int63Lit`/`int64Lit` do), `Rt.Data` with related fields;
+--   * `evClos na b rho`: the closure compiled from `b` at SOME path `p` under
+--     SOME compile-time environment `cenv`, capturing a Java environment that
+--     realizes `rho` along `cenv`. Which `p` and `cenv` does not matter -- the
+--     point of relating by construction (Leroy): the code is `compileExpr` of
+--     the body, whatever the context;
 --   * `evFix defs idx rho`: the forwarding closure of `fixMethodRef`, whose
 --     receiver evaluates to the instance of the local class compiled from
---     `defs` at `p` under `cenv`, declared in a runtime environment `E0`
---     realizing `rho`. The receiver is `jVar inst` for the value a `fix`
---     node returns and `Fix.this` for a sibling reached from inside a method;
---     the relation only asks that it evaluate to that instance.
---   * `evAx kn args`: the runtime constant `Rt.<nm>` the backend realizes
---     `kn` by, holding the related arguments OLDEST FIRST (`RevCV`: the λ□
---     side collects newest first).
+--     `defs` (`jVar inst` for the value a `fix` node returns, `Fix.this` for a
+--     sibling reached from inside a method);
+--   * `evAx kn args`: the runtime constant `Rt.<nm>` realizing `kn`, holding
+--     the related arguments OLDEST first (`RevCV`; λ□ collects newest first).
 --
--- `EnvRel rho cenv E c`: index `i` compiles to the expression `cenv i`, and
--- that expression evaluates to a value related to `rho i` -- in `E`, and in
--- `E` extended by anything bound LATER at paths that are not strict ancestors
--- of the use site `c` (`NotAnc`, Proof/PathFresh.ard). Stating it for every
--- such extension, rather than for `E`, is what lets a variable survive the
--- statements of siblings and of its own subterm.
+-- `EnvRel rho cenv E c`: index `i` compiles to `cenv i`, which evaluates to a
+-- value related to `rho i` -- in `E` and in `E` extended by anything bound
+-- later at paths that are not strict ancestors of the use site `c` (`NotAnc`,
+-- Proof/PathFresh.ard). Quantifying over such extensions is what lets a
+-- variable survive the statements of siblings and of its own subterm.
 --
--- `SimOut`: the statements of the compiled node run and bind only names in the
--- node's subtree (`Within`), and the value expression then evaluates to a
--- related value in the resulting environment extended by anything from an
--- INDEPENDENT subtree (`IndepOf`) -- which is what the parent's later
--- statements bind before it evaluates the expression.
+-- `SimOut`: the node's statements run and bind only names in its subtree
+-- (`Within`); then its value expression evaluates to a related value, even
+-- after anything from an INDEPENDENT subtree is bound (`IndepOf`) -- which is
+-- what the parent's later statements do before evaluating it.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -149,12 +140,12 @@
   \Sigma (jv : Value) (n : Nat) (applyVal rt cls n jf ja = rOk (eVal jv)) (CV rt cls w jv)
 
 -- ---------------------------------------------------------------------------
--- WHAT THE SIMULATION ASSUMES. Each field is discharged for the shipped
--- backend elsewhere: the class facts by `Proof/ClassLookup.ard` for every
--- compiled program, the runtime facts at `rtInt63`, the oracle facts at
--- `lbAxioms` (`Proof/OracleShipped.ard`).
+-- WHAT THE SIMULATION ASSUMES. Discharged for the shipped backend in
+-- `Proof/MainTheorem.ard`: class and runtime facts by `Proof/ClassLookup.ard`,
+-- oracle facts by `Proof/OracleShipped.ard` and `Proof/OracleFOShipped.ard`.
 -- ---------------------------------------------------------------------------
 
+-- The method body compiled from a closed term (a constant, or `body()`).
 \func constBody (body : LBTerm) : Array JStmt =>
   appendStmts (compileExpr nil nil body).1 (jReturn (compileExpr nil nil body).2 :: nil)
 
