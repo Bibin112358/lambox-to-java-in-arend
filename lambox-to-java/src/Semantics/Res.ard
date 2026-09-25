@@ -1,20 +1,11 @@
--- =============================================================================
--- The result of running a semantics: a value, a gap, or a timeout.
+-- The result of running a semantics with fuel: a value, stuck, or out of fuel.
+-- Shared by the Java runner (`Semantics/JavaEval.ard`) and the λ□ runner
+-- (`Semantics/LambdaBoxRun.ard`).
 --
--- Shared by both runners -- the Java fragment's evaluator (`Semantics/JavaEval.ard`)
--- and λ□'s (`Semantics/LambdaBoxRun.ard`) -- which is the whole reason it is a
--- module of its own rather than living in either.
---
--- `rStuck` ("the semantics does not define this") is deliberately distinct from
--- `rOutOfFuel` ("the clock ran out"). A differential test needs the difference:
--- the first is a real disagreement, the second only a budget that was too small.
--- Collapsing both into `Maybe` would report the second as the first.
---
--- The clock discipline itself is Owens-Myreen-Kumar-Tan, "Functional Big-Step
--- Semantics" (ESOP 2016); `bindRes` is the functional answer to Charguéraud's
--- observation that exceptions otherwise duplicate every rule ("Pretty-Big-Step
--- Semantics", ESOP 2013), paid for once instead of per rule.
--- =============================================================================
+-- `rStuck` (the semantics does not define this) is kept apart from
+-- `rOutOfFuel` (the budget was too small): when comparing two runs, only the
+-- first is a real disagreement. The fuel discipline follows Owens et al.,
+-- "Functional Big-Step Semantics" (ESOP 2016).
 
 \data Res (A : \Type)
   | rOk A

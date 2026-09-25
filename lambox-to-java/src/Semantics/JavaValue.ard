@@ -1,6 +1,5 @@
 \import Data.Bool
--- Only the append, and under an alias: importing Data.Array wholesale would
--- shadow String's `++` (Compiler/ToJava.ard aliases it for the same reason).
+-- Only the append, aliased: Data.Array's `++` would clash with String's.
 \import Data.Array (++ \as \infixr 5 ++A)
 \import Data.Maybe
 \import Data.String
@@ -9,38 +8,17 @@
 \import Set
 \import Compiler.StringUtil
 
--- =============================================================================
--- Runtime values, outcomes, and the runtime interface for the Java fragment.
+-- Values, outcomes and the runtime interface of the Java fragment's semantics.
+-- `Semantics/JavaEval.ard` is the evaluator; this is split off because the
+-- runtime interface `RtSpec`, a parameter of every rule, mentions `Value`.
 --
--- The bottom layer of the fragment's semantics: `Semantics/JavaEval.ard` is the evaluator,
--- and it cannot hold this, because `RtSpec` is a parameter of every rule and
--- `RtSpec` mentions `Value`.
+-- There is no store: the generated code never mutates anything (`fix` is a
+-- local class, and `JStmt` has no assignment), so values are immutable, a
+-- `Data`'s fields are values, and the semantics is an environment semantics.
 --
--- NO STORE. The earlier version of this semantics (branch
--- `lambox-formal-semantics`) had one, and said why: "the generator mutates
--- exactly one thing: the `Rt.Fn[]` knot for `fix`, whose slots are filled after
--- the closures that read them have already captured the array". That knot is
--- gone -- `fix` is a local class whose methods reach each other through the class
--- declaration (see Compiler/ToJava.ard) -- and `JStmt` has no assignment node at all. So
--- every value here is immutable after construction, a `Data`'s fields are values
--- rather than a heap reference, and the semantics is an environment semantics.
--- What that buys is not brevity: it is that the meaning of a generated program
--- no longer depends on WHEN anything is read.
---
--- Three value constructors went with the store, each for a stated reason:
--- `vArr` (no array node survives outside `jDataNew`/`jDataField`), `vNull`
--- (nothing in the fragment can produce it: no array is zero-filled and every
--- `jLocal` is initialized), and `vUninit` (`jLocal` carries an expression, so a
--- declared-but-unassigned local is unrepresentable rather than stuck).
---
--- Sources, as in the earlier version:
---   * ClightBigstep.v -- `outcome` is `StmtOut` below, Java-specialised.
---   * CompCert `Events.v` `external_call` -- the model for `RtSpec`: the
---     semantics QUANTIFIES over the runtime instead of defining it.
---   * Owens-Myreen-Kumar-Tan / Charguéraud -- the clock discipline and the
---     propagation combinator; both live in `Semantics/Res.ard`, which λ□'s runner
---     shares.
--- =============================================================================
+-- Sources: ClightBigstep.v (`outcome` ~ `StmtOut`); CompCert's `Events.v`
+-- `external_call` (the semantics quantifies over the runtime, `RtSpec`,
+-- instead of defining it); the fuel discipline of `Semantics/Res.ard`.
 
 -- Every value the fragment can produce, and nothing else. Every static type in
 -- the fragment is `Object`, so this is one flat sum rather than a hierarchy.
@@ -48,29 +26,23 @@
   -- `Rt.BOX`, an erased proof or type. Identity-based in Java (`new Object()`),
   -- but nothing in the fragment tests identity, so one atom is faithful.
   | vBox
-  -- `new Rt.Data(tag, new Object[]{ .. })`: a constructor application. The
-  -- fields are VALUES -- see NO STORE above.
+  -- `new Rt.Data(tag, new Object[]{ .. })`: a constructor application.
   | vData (tag : Nat) (fields : Array Value)
   -- `new Rt.Fn(){ public Object apply(Object p){ body } }`. The environment is
   -- captured by value at creation (JLS 15.9.5, 4.12.4). `Env` cannot be named
   -- yet (it is defined below, in terms of `Value`), so it is spelled out.
   | vClos (param : JIdent) (body : Array JStmt) (cenv : Array (\Sigma JIdent Value))
-  -- An instance of a `fix` local class: its name, its methods (name, parameter,
-  -- body) and the environment captured at the declaration.
-  --
-  -- ONE VALUE FOR THE CLASS AND ITS INSTANCES. `jLocalClass` binds this, and
-  -- `new C()` evaluates to it rather than to something fresh. Faithful here
-  -- because the instances are indistinguishable: the class has no fields, no
-  -- constructor and no state, the captured locals are effectively final, and
-  -- nothing in the fragment compares references. What a method call does with
-  -- it is the interesting half -- see `jInvoke` in Semantics/JavaEval.ard.
+  -- A `fix` local class: its name, its methods (name, parameter, body) and
+  -- the environment captured at the declaration. The same value stands for
+  -- the class (bound by `jLocalClass`) and its instances (`new C()`): they
+  -- have no state and nothing compares references. See `jInvoke` in
+  -- Semantics/JavaEval.ard.
   | vObj (cname : JQIdent)
          (methods : Array (\Sigma JIdent JIdent (Array JStmt)))
          (cenv : Array (\Sigma JIdent Value))
   -- A runtime constant of `Rt` that is an `Fn`, with the arguments it has
   -- collected so far. `Rt.PRIM_ADD_LONG` is an `Fn` returning an `Fn`, so
-  -- applying it accumulates until saturation; `builtinArity` is that contract,
-  -- and its ABSENCE was the `Rt.curry` bug.
+  -- applying it accumulates arguments until `builtinArity` is reached.
   | vBuiltin (name : JIdent) (got : Array Value)
   -- The class `Rt` as a receiver (`jStatic "Rt"`). Not a first-class value in
   -- Java either -- it only ever appears to the left of a field access.
@@ -87,10 +59,7 @@
   -- Throwing it is a `StmtOut`.
   | vExcObj (excClass : JQIdent) (msg : String)
 
--- What a literal DENOTES. The value domain deliberately does not mention syntax
--- -- a computed `long` is not a literal -- so this function is the whole of the
--- boundary between the two, and the reason `Value` keeps three constructors
--- where `JLit` has three kinds.
+-- What a literal denotes.
 \func litValue (l : JLit) : Value
   | litStr s => vStr s
   | litInt n => vInt n
@@ -112,26 +81,18 @@
 \data StmtOut | oNormal Env | oReturn Value | oExcS Value
 
 -- ---------------------------------------------------------------------------
--- Small helpers.
---
--- All borrowed: `nthArr` and the association walk from `StringUtil` (λ□'s
--- semantics needs the same indexing, which is why it lives there and not here),
--- the append from `Data.Array`, equality on `Nat` from `Set`.
+-- Small helpers (lookups from `Compiler/StringUtil.ard`).
 -- ---------------------------------------------------------------------------
 
 \func snocArr {A : \Type} (xs : Array A) (y : A) : Array A => xs ++A (y :: nil)
 
 \func lookupVar (env : Env) (x : JIdent) : Maybe Value => lookupKey x env
 
--- Binding shadows by prepending, and lookup scans from the head, so the newest
--- binding wins. Shadowing cannot actually happen in generated code (names are
--- unique by Proof/NodePathUnique.ard's lemma), which is a property of the GENERATOR;
--- the semantics does not rely on it.
+-- The newest binding wins. (Generated code never shadows, see
+-- Proof/NodePathUnique.ard, but the semantics does not rely on it.)
 \func bindVar (env : Env) (x : JIdent) (v : Value) : Env => (x, v) :: env
 
--- Find a method of a `fix` local class by name, and return its (parameter,
--- body). A three-field entry, so it goes through `lookupBy` with a key function
--- rather than the pair-shaped `lookupKey`.
+-- A method of a `fix` local class by name: its (parameter, body).
 \func lookupClassMethod (ms : Array (\Sigma JIdent JIdent (Array JStmt))) (nm : JIdent)
   : Maybe (\Sigma JIdent (Array JStmt)) =>
   Maybe.map (\lam m => (m.2, m.3)) (lookupBy (\lam m => m.1) nm ms)
@@ -139,24 +100,12 @@
 -- ---------------------------------------------------------------------------
 -- The runtime interface
 --
--- `runtime/Rt.java` is hand-written Java using interfaces, nested classes,
--- instance fields, `instanceof`, loops, real arithmetic, generics and `Thread`
--- -- none of which is in this fragment. It is therefore NOT modelled. It is a
--- PARAMETER, and this class is its contract: CompCert's treatment of
--- `external_call`, and Malfunction's of OCaml primitives.
---
--- Two consequences worth stating: the correctness theorem quantifies over
--- `RtSpec`, so it does not depend on Rt's arithmetic being right -- Rt's
--- obligations become an explicit hypothesis rather than a silent assumption --
--- and writing `builtinArity` down IS the fix for the `Rt.curry` class of bug.
---
--- Anything an instance does not cover is `nothing`, hence `rStuck`: a named gap
--- rather than a wrong answer.
---
--- `builtinRun` returns a `Value` and no store, unlike the earlier version, where
--- it had to thread one because a primitive returning `Rt.TRUE`/`Rt.FALSE`
--- allocates a `Data` whose fields lived in the heap. With fields as values there
--- is nothing to allocate.
+-- `runtime/Rt.java` uses far more Java than the fragment (interfaces, loops,
+-- arithmetic, `Thread`), so it is not interpreted: it is a PARAMETER, and this
+-- class is its contract (as CompCert treats `external_call`, and Malfunction
+-- OCaml primitives). Its correctness is thus a hypothesis of the theorem; the
+-- instances are models in `Semantics/RtInt63.ard` and `Semantics/RtLong.ard`.
+-- Anything an instance does not cover is `nothing`, hence stuck.
 \class RtSpec
   -- The value of the field `Rt.<name>`: `PRIM_ADD_LONG`, `NAT_SUB_LONG`, ...
   -- (`Rt.BOX` is not here: `jBox` is a node of its own.)
@@ -168,6 +117,5 @@
   -- A static method of the runtime called by name: `Rt.unbound`, `Rt.freeVar`,
   -- `Rt.noBranch` (each throws, by construction), `Long.valueOf` (the identity
   -- on a boxed long). An `ExprOut`, so that an instance can say "this throws"
-  -- without the evaluator knowing which members those are -- the same division
-  -- `Compiler/ToJava.ard` keeps, where no runtime member is named in the generator.
+  -- without the evaluator naming runtime members.
   | rtStaticCall : JQIdent -> Array Value -> Maybe (Res ExprOut)

@@ -6,42 +6,19 @@
 \import Data.Maybe
 \import Data.String
 
--- =============================================================================
--- S-expression serializer for the lambda-box AST, translated by hand from
--- lean-to-lambdabox's Serialize.lean (Lean `class Serialize`+`instance`s
--- over `sexpr`).
+-- Export of λ□ programs as S-expressions in peregrine's format, translated by
+-- hand from lean-to-lambdabox's Serialize.lean. Not used by the compiler; the
+-- test tooling reads this format back (test/tools/ast-to-arend).
 --
--- Translation notes:
+-- Lean's `Serialize` type class becomes one `toSExpr<Type>` function per type;
+-- polymorphic instances (`List α`, `Option α`) become helpers taking the
+-- element serializer (`toSExprArray`, `toSExprMaybe`). `toSExprLBTerm`
+-- recurses on its own array children inline (`\lam i => toSExprLBTerm (args i)`)
+-- for the termination checker, as in `Compiler/ToJava.ard`; the generic helpers
+-- are only used for non-recursive element types.
 --
--- * Arend has no open-ended typeclass dispatch the way this was used in Lean
---   (one `instance` per concrete type, resolved by elaboration). Instead,
---   every type gets its own named `toSExpr<Type>` function, matching how
---   Compiler/ToJava.ard is structured (no generic dispatch, functions named per case).
---   Anywhere Lean used a *polymorphic* instance (`[Serialize α] => Serialize
---   (List α)`, `Option α`, pairs), the Arend version takes the per-element
---   serializer as an explicit function argument instead of instance search
---   (`toSExprArray`, `toSExprMaybe`).
---
--- * `sexpr.atom` holds a `String` (the generated-text type of String.ard, today a
---   plain `String`), so numeral atoms (`natToStr`/`intToStr`) fit in it as-is.
---   `sexpr.toString` becomes `sexprToString : Sexpr -> String`.
---
--- * Per Compiler/ToJava.ard's established termination-checker idiom: recursing over
---   an `Array LBTerm`/`Array (FixDef LBTerm)`/case-branch bodies through a
---   *separate* generic helper (like `toSExprArray`) breaks the structural
---   link the checker needs, because the helper's own recursive call to `f`
---   isn't syntactically a call to `toSExprLBTerm` on a subterm of the
---   original argument. So `toSExprLBTerm` inlines all of its own Array
---   recursion directly (`\lam i => toSExprLBTerm (args i)`, etc.), and only
---   uses `toSExprArray` for arrays of *other* (non-self-referential) types
---   (`Array ConstructorBody`, `Array BinderName`, ...).
---
--- * Lean's `ModPath` (in Serialize.lean's `LeanToLambdaBox.Basic`) has no
---   `MPbound` constructor (functors aren't modeled there); Arend's `ModPath`
---   keeps `mpBound` (per the earlier-established Coq/Arend vs. Lean
---   divergence). `toSExprModPath`'s `mpBound` case is therefore an
---   extension with no Lean counterpart to mirror.
--- =============================================================================
+-- Our `ModPath` keeps MetaRocq's `mpBound`, which Lean's has not; its case is
+-- an extension. `primInt64` has no wire format (see `toSExprPrimTag`).
 
 
 -- ---------------------------------------------------------------------------
@@ -52,10 +29,7 @@
   | atomS String
   | listS (Array Sexpr)
 
--- The children are rendered INLINE via `xs i` (not with `Data.Array.map`, which
--- hides the index behind a closure and fails the termination checker); the
--- resulting fragments are joined by `StringUtil.joinStr`, which recurses on its
--- own.
+-- Children are rendered inline via `xs i` (not `Data.Array.map`), for termination.
 \func sexprToString (e : Sexpr) : String \elim e
   | atomS c => c
   | listS xs =>
@@ -64,12 +38,10 @@
 \func quoteAtom (c : String) : String => "\"" ++ c ++ "\""
 
 -- Peregrine's build has `cstr_as_blocks = false` (EWellformed.all_env_flags),
--- meaning `tConstruct` must always carry an EMPTY arg list -- constructor
--- application is expressed via ordinary curried `tApp` on the bare
--- constructor instead (confirmed empirically: a non-empty tConstruct arg
--- list fails wellformedness with "Constructor args non-empty",
--- CheckWf.v:131). `args` here are already-rendered Sexprs (not LBTerm), so
--- this is a plain, non-Sexpr-recursive fold -- no termination concern.
+-- so `tConstruct` must carry an empty argument list ("Constructor args
+-- non-empty", CheckWf.v); constructor arguments are exported as curried `tApp`s
+-- instead. (This is why λ□'s semantics differs from its export, see
+-- Semantics/LambdaBoxEval.ard.)
 \func wrapTApp (base : Sexpr) (args : Array Sexpr) : Sexpr \elim args
   | nil => base
   | a :: rest => wrapTApp (listS (atomS ("tApp") :: base :: a :: nil)) rest
@@ -77,8 +49,6 @@
 
 -- ---------------------------------------------------------------------------
 -- Generic helpers, replacing Lean's polymorphic `Serialize` instances.
--- Safe to use freely (see note above): neither is itself Sexpr-recursive, so
--- there's nothing for the termination checker to prove about them.
 -- ---------------------------------------------------------------------------
 
 \func toSExprArray {A : \Type} (f : A -> Sexpr) (xs : Array A) : Sexpr =>
@@ -107,7 +77,7 @@
 
 \func toSExprModPath (mp : ModPath) : Sexpr \elim mp
   | mpFile dp => listS (atomS ("MPfile") :: toSExprArray toSExprIdent dp :: nil)
-  | mpBound dp id n =>                                                              -- extension, no Lean counterpart
+  | mpBound dp id n =>  -- extension, no Lean counterpart
     listS (atomS ("MPbound") :: toSExprArray toSExprIdent dp :: toSExprIdent id :: toSExprNat n :: nil)
   | mpDot mp' id => listS (atomS ("MPdot") :: toSExprModPath mp' :: toSExprIdent id :: nil)
 
@@ -121,41 +91,30 @@
   listS (atomS ("projection") :: toSExprInductiveId p.projIndType
                                         :: toSExprNat p.projParamCount :: toSExprNat p.projFieldIdx :: nil)
 
--- THE WIRE NAME IS STILL `primInt`, and must be: it is peregrine's tag, not
--- ours. `primInt63` is what WE call that kind (`Compiler/LambdaBox.ard` renamed it so
--- the width is in the name), and renaming our constructor must not rename the
--- serialized form.
---
--- `primInt64` HAS NO WIRE NAME. It is our extension, peregrine's deserializer
--- knows nothing of it, and export is allowed to be partial here -- λ□ is a
--- stepping stone for this project rather than an interchange format. The atom
--- below is deliberately one peregrine will reject loudly, in the same style as
--- `tVar_UNREACHABLE` elsewhere in this file, rather than a silent lowering to
--- `primInt` that would export a program meaning something else.
+-- Our `primInt63` is peregrine's `primInt`. `primInt64` is our extension and
+-- has no wire name: it is exported as an atom peregrine rejects (like
+-- `tVar_UNREACHABLE`), rather than silently as a `primInt` of another meaning.
 \func toSExprPrimTag (t : PrimTag) : Sexpr \elim t
   | primInt63 => atomS ("primInt")
   | primInt64 => atomS ("primInt64_NOT_REPRESENTABLE")
 
--- Lean's Serialize.lean quotes the BitVec 63 payload as a decimal string, but
--- that's specific to Lean's own serializer; Peregrine's native Ceres-based
--- serializer (Integral_sint/Serialize_Integral in CeresSerialize.v) emits the
--- primInt payload as a bare Num atom, NOT a quoted string -- a quoted "1"
--- fails Peregrine's deserializer ("could not read integral type, got a
--- non-Num atom"). So: bare `intToStr`, no `quoteAtom`.
+-- The payload is a bare number atom, as in peregrine's Ceres serializer
+-- (CeresSerialize.v); a quoted "1" (as Serialize.lean writes it) is rejected
+-- by peregrine's deserializer.
 \func toSExprPrimVal (pv : PrimVal) : Sexpr \elim pv
   | (primInt63, i) => listS (toSExprPrimTag primInt63 :: atomS (natToStr i) :: nil)
   | (primInt64, i) => listS (toSExprPrimTag primInt64 :: atomS (natToStr i) :: nil)
 
 
 -- ---------------------------------------------------------------------------
--- LBTerm (the mutual LBTerm.to_sexpr / edef.to_sexpr in Lean, flattened here
--- since FixDef's body is inlined the same way Compiler/ToJava.ard inlines it in `fix`).
+-- LBTerm (Lean's mutual `LBTerm.to_sexpr`/`edef.to_sexpr`, with `FixDef`
+-- inlined).
 -- ---------------------------------------------------------------------------
 
 \func toSExprLBTerm (t : LBTerm) : Sexpr \elim t
   | box => atomS ("tBox")
   | bvar n => listS (atomS ("tRel") :: toSExprNat n :: nil)
-  | fvar _ => atomS ("tVar_UNREACHABLE")     -- Lean: `unreachable!` -- should never occur post de-Bruijn conversion
+  | fvar _ => atomS ("tVar_UNREACHABLE")     -- Lean: `unreachable!`; no free variables after de Bruijn conversion
   | lambda na body => listS (atomS ("tLambda") :: toSExprBinderName na :: toSExprLBTerm body :: nil)
   | letIn na val body =>
     listS (atomS ("tLetIn") :: toSExprBinderName na :: toSExprLBTerm val :: toSExprLBTerm body :: nil)
@@ -182,8 +141,7 @@
 
 
 -- ---------------------------------------------------------------------------
--- Declaration-level types. None of these are self-referential via Arrays the
--- way LBTerm is, so toSExprArray/toSExprMaybe are safe to use throughout.
+-- Declaration-level types.
 -- ---------------------------------------------------------------------------
 
 \func toSExprConstructorBody (c : ConstructorBody) : Sexpr =>
@@ -267,11 +225,8 @@
 -- Entry point.
 -- ---------------------------------------------------------------------------
 
-\import Debug.Meta
-
--- LBProgram always has an entry term; ASTType's is optional (a bare library
--- has none) -- bridge by wrapping LBProgram's term in `just`.
-\func LambdaBoxToSrting (p : LBProgram) =>
+-- A program, as peregrine's `Untyped` AST with its entry term.
+\func LambdaBoxToString (p : LBProgram) =>
   sexprToString (toSExprASTType (untyped p.1 (just p.2)))
 
 -- Renders a Peregrine `--attributes` config file (axiom realizations etc.).

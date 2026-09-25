@@ -6,67 +6,36 @@
 \import Semantics.Res
 \import Semantics.JavaValue
 \import Set
-\import Compiler.StringUtil   -- nthArr, shared with λ□'s semantics
+\import Compiler.StringUtil
 
--- =============================================================================
--- Formal semantics of the Java fragment: a functional big-step evaluator.
+-- The semantics of the Java fragment (`Compiler/JavaAst.ard`): a functional
+-- big-step evaluator with fuel, the target side of the correctness theorem.
+-- Values and the runtime interface `RtSpec` are in `Semantics/JavaValue.ard`.
 --
--- `Compiler/JavaAst.ard` defines the SYNTAX of the fragment we commit to generating, and
--- says of itself that it "is what a future semantics and correctness statement
--- are given for". This module is that semantics. Nothing in the compiler imports
--- it -- it is a specification, not a pass -- so a normal compile never
--- typechecks it (`arend arend.yaml Formal.JavaEval` does).
+-- A function rather than a relation, so it can be run on generated programs
+-- (and compared with `javac` + `java`): the functional big-step style of
+-- Owens et al. (ESOP 2016, as in CakeML), where divergence is "out of fuel for
+-- every fuel". `JEval` at the end recovers a relation. Java fixes evaluation
+-- order left to right (JLS 15.7), so the evaluator is deterministic; rules
+-- cite the JLS.
 --
--- WHY A FUNCTION AND NOT A RELATION. There is no upstream to transcribe: no
--- existing formalisation is the semantics of THIS fragment (unlike the λ□ side,
--- where MetaRocq's `EWcbvEval.eval` is the oracle). So both oracles have to be
--- manufactured, and both want a function: a JLS citation per rule in place of an
--- upstream rule name, and an EXECUTABLE evaluator, so the semantics can be run
--- on generated programs and compared against `javac` + `java`. A relation cannot
--- be run. This is Owens-Myreen-Kumar-Tan's functional big-step style (ESOP
--- 2016), as used by CakeML: a recursive interpreter made total by a decreasing
--- clock, with a timeout result, where divergence is "times out for every clock".
--- `JEval` at the bottom recovers a relation from the function, for a theorem
--- statement. Determinism costs nothing: Java fixes evaluation order left to
--- right (JLS 15.7), so none of Csem.v's reduction-context machinery is needed.
+-- Every constructor of `JExpr`/`JStmt`/`JType`/`JMember` has a clause, and the
+-- fragment is closed, so no unmodelled Java can appear. Outside this model
+-- are the trusted printer `Compiler/JavaPrint.ard` (e.g. `litStr` is not
+-- escaped) and the runtime `runtime/Rt.java` (the parameter `RtSpec`).
 --
--- NO STORE, and hence no rule that depends on WHEN something is read: see the
--- header of Semantics/JavaValue.ard. This is the semantic payoff of the local-class
--- `fix` and of `case` being an expression.
---
--- WHAT IS AND IS NOT MODELLED. Every constructor of `JExpr`, `JStmt`, `JType`
--- and `JMember` has a clause. The fragment is closed by construction -- the
--- generator can only emit what those constructors allow -- so "unmodelled Java
--- features" cannot appear in the input. What can still affect a real run is
--- outside this function, and is named:
---
---   * `Compiler/JavaPrint.ard` turns this AST into text and is TRUSTED, in the same sense
---     as CompCert's `printClight.ml`. Its documented gap is that `litStr` is not
---     escaped.
---   * `runtime/Rt.java` is a parameter, `RtSpec` (JavaValue.ard, next to this).
---
--- THE OBSERVABLE of a generated program is the value its entry method returns
--- (`compileBody`'s `body`, passed to `runClass` by name -- the fragment has no
--- entry point and emits no `System.out.println`, so there is no output
--- component to model). An uncaught exception is a distinct, observable outcome,
--- not a stuck state.
---
--- FOUR NODES THE GENERATOR NEVER EMITS are `rStuck` rather than modelled, each
--- marked at its clause: `jField` on a non-`Rt` receiver, `jNew` of `tObject`/
--- `tFn`/`tData`, `jInvoke` with other than one argument, and `jCallStatic` of a
--- generated method with arguments (every generated method is zero-argument).
--- They are unreachable for output of `Compiler/ToJava.ard`, and `rStuck` says exactly
--- that: this semantics does not define them.
--- =============================================================================
+-- The observable is the value returned by the entry method (`body`) or the
+-- exception it throws. Four shapes the generator never emits are `rStuck`,
+-- marked at their clauses: `jField` on a non-`Rt` receiver, `jNew` of
+-- `tObject`/`tFn`/`tData`, `jInvoke` with other than one argument, and a call
+-- of a generated method with arguments.
 
 -- ---------------------------------------------------------------------------
--- Class-level lookup. One flat method table over the single generated class,
--- as every comparable formalisation does it (Featherweight Java's `CT`, Jinja's
--- `class P C`, Clight's `prog_defs`, Malfunction's global bindings).
+-- Class-level lookup: one flat method table (cf. Featherweight Java's `CT`).
 -- ---------------------------------------------------------------------------
 
--- Not `StringUtil.lookupBy`: a member is a SUM (a method or a comment), so there
--- is no key function to give it -- the pattern match is the filter.
+-- Not `StringUtil.lookupBy`: a member is a method or a comment, so there is no
+-- key function.
 \func lookupMethodIn (ms : Array JMember) (nm : JIdent) : Maybe JMethod \elim ms
   | nil => nothing
   | jMethod m :: ms => \case JMethod.mName {m} == nm \with {
@@ -79,12 +48,9 @@
   lookupMethodIn (JClass.classMembers {cls}) nm
 
 -- ---------------------------------------------------------------------------
--- Casts. JLS 5.5 / 15.16: a cast to a reference type checks at run time and
--- throws `ClassCastException` on failure.
---
--- The fragment casts for two reasons only -- to call `apply` on a value typed
--- `Object` (`jApply` spells its own cast) and to read a `Data`'s tag or field --
--- so this is the whole of its type discipline.
+-- Casts (JLS 5.5, 15.16): checked at run time, `ClassCastException` on
+-- failure. The fragment only casts to `Rt.Fn` (in `jApply`), to `Rt.Data` and
+-- to local classes.
 -- ---------------------------------------------------------------------------
 
 \func excCCE : Value => vExcObj "java.lang.ClassCastException" "cast failed"
@@ -116,25 +82,20 @@
 -- ---------------------------------------------------------------------------
 -- The evaluator.
 --
--- Fuel (`n`) is the first `\elim` argument and strictly decreases at every
--- recursive call, in every direction of the mutual cycle, so termination is
--- structural on it -- which is also why `Compiler/ToJava.ard`'s "recurse over arrays
--- inline" discipline does not transfer: `evalArgs` may be an ordinary helper,
--- since it recurses on fuel like everything else.
+-- Fuel (`n`) is the first `\elim` argument and decreases at every call of the
+-- mutual cycle, so termination is structural on it (and, unlike in the
+-- compiler, array helpers such as `evalArgs` are fine).
 -- ---------------------------------------------------------------------------
 
 \func evalExpr (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (e : JExpr)
   : Res ExprOut \elim n, e
   | 0, _ => rOutOfFuel
 
-  -- Literals (JLS 3.10) and the erased-value atom. One clause, since the AST has
-  -- one literal node; `litValue` is the whole of what a literal denotes.
+  -- Literals (JLS 3.10) and the erased-value atom.
   | suc _, jLit l => rOk (eVal (litValue l))
   | suc _, jBox => rOk (eVal vBox)
 
-  -- A local or a parameter. Unbound is `rStuck`: `javac` would reject the
-  -- program (JLS 6.5.6.1), and generated code cannot contain it -- the
-  -- generator binds every name it reads.
+  -- A local or a parameter. Unbound is `rStuck` (`javac` would reject it).
   | suc _, jVar x => \case lookupVar env x \with {
     | nothing => rStuck
     | just v => rOk (eVal v)
@@ -143,7 +104,7 @@
   -- `Rt` as a receiver. The generator only emits `jStatic runtimeClassName`.
   | suc _, jStatic q => rOk (eVal (vStaticRef q))
 
-  -- A closure. The environment is captured BY VALUE, now (JLS 15.9.5, 4.12.4).
+  -- A closure; the environment is captured by value (JLS 15.9.5, 4.12.4).
   | suc _, jClosure p body => rOk (eVal (vClos p body env))
 
   -- `C.this` from inside a nested anonymous class. `jLocalClass` bound `C` to
@@ -154,9 +115,8 @@
     | _ => rStuck
   }
 
-  -- `e.f`. Only ever a field of `Rt` (`Rt.PRIM_ADD_LONG`, ...): the tag and
-  -- field reads that used to go through here are `jTagEq`/`jDataField` now, so
-  -- ANY OTHER RECEIVER IS UNREACHABLE for generated code, hence stuck.
+  -- `e.f`: only ever a field of `Rt` (`Rt.PRIM_ADD_LONG`, ...); any other
+  -- receiver is never generated, hence stuck.
   | suc n, jField recv f =>
     bindRes (evalExpr rt cls n env recv) (\lam o => \case o \with {
       | eExc ev => rOk (eExc ev)
@@ -177,8 +137,7 @@
       }
     })
 
-  -- `((Rt.Fn)(f)).apply(x)`: λ□ application. The cast is part of the node (see
-  -- Compiler/JavaAst.ard's RUNTIME ABI), so it is checked here rather than by a `jCast`.
+  -- `((Rt.Fn)(f)).apply(x)`: λ□ application; the cast is part of the node.
   | suc n, jApply f a =>
     bindRes (evalExpr rt cls n env f) (\lam of => \case of \with {
       | eExc ev => rOk (eExc ev)
@@ -218,8 +177,7 @@
       | aVals vs => newObject env t vs
     })
 
-  -- `new Rt.Data(tag, new Object[]{ .. })`: a constructor application. Nothing
-  -- is allocated -- the fields ARE the values (JavaValue.ard, NO STORE).
+  -- `new Rt.Data(tag, new Object[]{ .. })`: fields are values (no store).
   | suc n, jDataNew tag args =>
     bindRes (evalArgs rt cls n env args) (\lam oas => \case oas \with {
       | aExc ev => rOk (eExc ev)
@@ -236,10 +194,8 @@
       | eVal _ => rStuck
     })
 
-  -- `d.fields[i]`. JLS 10.4: an out-of-range index throws. For a well-formed λ□
-  -- term the index is in range (it is a field of the matched constructor), so
-  -- the throw is unreachable rather than impossible -- worth modelling exactly
-  -- because a generator bug would land here.
+  -- `d.fields[i]`. An out-of-range index throws (JLS 10.4); unreachable for
+  -- well-formed λ□, but modelled since a generator bug would land here.
   | suc n, jDataField d i =>
     bindRes (evalExpr rt cls n env d) (\lam o => \case o \with {
       | eExc ev => rOk (eExc ev)
@@ -250,9 +206,7 @@
       | eVal _ => rStuck
     })
 
-  -- `(c ? a : b)`. JLS 15.25: the condition is evaluated, then EXACTLY ONE of
-  -- the two arms. This is the whole of λ□'s `iota` rule, and the reason a
-  -- branch of a `case` may cost nothing when it is not selected.
+  -- `(c ? a : b)`: the condition, then exactly one arm (JLS 15.25).
   | suc n, jCond c a b =>
     bindRes (evalExpr rt cls n env c) (\lam o => \case o \with {
       | eExc ev => rOk (eExc ev)
@@ -277,13 +231,9 @@
     })
 
 -- `apply`. A closure runs its body in the captured environment extended with
--- its parameter; a runtime constant accumulates arguments until it is saturated
--- and then computes (the arity discipline `Rt.curry` got wrong).
---
--- `Rt.BOX` applied to anything is `Rt.BOX` (λ□'s `evalBox`; see `Rt.java`).
---
--- The `Rt.Fn` cast at the call site has already been checked, so a value that is
--- none of these is unreachable.
+-- its parameter; a runtime constant accumulates arguments until
+-- `builtinArity` is reached and then computes; `Rt.BOX` applied to anything is
+-- `Rt.BOX` (λ□'s `evalBox`). Other values were excluded by the cast.
 \func applyVal (rt : RtSpec) (cls : JClass) (n : Nat) (f a : Value)
   : Res ExprOut \elim n
   | 0 => rOutOfFuel
@@ -311,12 +261,10 @@
 
 -- `recv.f<j>(arg)` on a `fix` local class instance.
 --
--- THIS IS WHERE THE KNOT IS TIED. The body runs in the environment captured at
--- the class declaration, extended with the class's own name bound to the
--- receiver and then with the parameter -- so a sibling reached through
--- `C.this.f<i>` finds the same instance, at any depth, without a mutable cell
--- and without an initialization order. That is the letrec rule, and it is what
--- the encoding buys the semantics.
+-- This is where the `fix` knot is tied (the letrec rule): the body runs in the
+-- environment captured at the class declaration, extended with the class name
+-- bound to the receiver, then with the parameter. So `C.this.f<i>` finds the
+-- same instance at any depth, with no mutable cell.
 \func invokeMethod (rt : RtSpec) (cls : JClass) (n : Nat) (recv : Value) (m : JIdent) (vs : Array Value)
   : Res ExprOut \elim n
   | 0 => rOutOfFuel
@@ -340,9 +288,8 @@
 
 -- `q(args)`: a method of the generated class, else a static of the runtime.
 --
--- A generated method body is evaluated in the EMPTY environment: every one is
--- `public static Object <name>()`, so it has no parameters, and a λ□ constant
--- is closed (`compileDecl` compiles it at the root path with `env = nil`).
+-- A generated method runs in the empty environment: it has no parameters and a
+-- λ□ constant is closed.
 \func callStatic (rt : RtSpec) (cls : JClass) (n : Nat) (q : JQIdent) (vs : Array Value)
   : Res ExprOut \elim n
   | 0 => rOutOfFuel
@@ -357,9 +304,8 @@
         })
       | _ => rStuck                              -- zero-argument by construction
     }
-    -- Not ours: `Rt.unbound`, `Rt.freeVar`, `Rt.noBranch`, `Long.valueOf`. The
-    -- instance decides, so this file names no runtime member -- the division
-    -- `Compiler/ToJava.ard` keeps between the generator and `Compiler/JavaAxioms.ard`.
+    -- Not ours: `Rt.unbound`, `Rt.freeVar`, `Rt.noBranch`, `Long.valueOf`; the
+    -- `RtSpec` instance decides.
     | nothing => \case rtStaticCall {rt} q vs \with {
       | nothing => rStuck
       | just r => r
@@ -369,9 +315,8 @@
 -- `new T(args)` for the two things the generator instantiates: a `fix` local
 -- class, and the `RuntimeException` of an unimplemented axiom's stub.
 --
--- A local class is looked up rather than built: `jLocalClass` bound the name to
--- the instance, and the instances are indistinguishable (JavaValue.ard, ONE VALUE
--- FOR THE CLASS AND ITS INSTANCES).
+-- A local class is looked up rather than built: `jLocalClass` bound its name to
+-- the (stateless) instance, see `vObj` in Semantics/JavaValue.ard.
 \func newObject (env : Env) (t : JType) (vs : Array Value) : Res ExprOut =>
   \case t \with {
     | tClass q => \case lookupVar env q \with {
@@ -390,9 +335,8 @@
   }
 
 -- ---------------------------------------------------------------------------
--- Statements. A statement list is a sequence of bindings ending in a `jReturn`
--- (Compiler/JavaAst.ard, STATEMENTS ARE FOR NAMING), so this is a let-chain with two
--- abrupt outcomes.
+-- Statements. A statement list is a sequence of bindings ending in a
+-- `jReturn`, i.e. a let-chain with two abrupt outcomes.
 -- ---------------------------------------------------------------------------
 
 \func execStmt (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (s : JStmt)
@@ -402,20 +346,16 @@
   -- No effect at all; it exists so the printer can put a comment on a line.
   | suc _, jComment _ => rOk (oNormal env)
 
-  -- `final T x = e;` -- always final, always initialized, so this is a binding
-  -- and nothing else. The declared type is not checked: it is what the printer
-  -- spells, and the value is whatever the initializer produced (`javac` checks
-  -- the pair, JLS 5.2).
+  -- `final T x = e;`: a binding. The declared type is not checked (`javac`
+  -- does, JLS 5.2).
   | suc n, jLocal _ x e =>
     bindRes (evalExpr rt cls n env e) (\lam o => \case o \with {
       | eExc ev => rOk (oExcS ev)
       | eVal v => rOk (oNormal (bindVar env x v))
     })
 
-  -- `class C { Object f0(Object p){ .. } .. }` declared in a block: the `fix`
-  -- knot. Declaring it binds the name to the instance, capturing the
-  -- environment at the declaration -- which is what makes the following
-  -- `new C()` and every `C.this` inside a method mean the same object.
+  -- A local class `C` (a `fix` block): binds `C` to the instance, capturing
+  -- the environment, so `new C()` and every `C.this` mean the same object.
   | suc _, jLocalClass c ms => rOk (oNormal (bindVar env c (vObj c ms env)))
 
   | suc n, jThrow e =>
@@ -447,11 +387,8 @@
 -- ---------------------------------------------------------------------------
 -- Running a program
 --
--- The generated class is a LIBRARY: `compileBody` emits one zero-argument
--- method (`body`) returning the program's value, and no entry point. So the
--- semantics of a generated program is what that method returns, and the entry
--- name is a parameter rather than a constant here -- the generator owns that
--- name (`Compiler/ToJava.ard`'s `bodyMethodName`), not the semantics.
+-- The result of calling the entry method (`Compiler/ToJava.ard`'s
+-- `bodyMethodName`, passed as a parameter).
 -- ---------------------------------------------------------------------------
 
 \data RunOut | rvValue Value | rvThrown Value
@@ -462,8 +399,6 @@
     | eExc ev => rOk (rvThrown ev)
   })
 
--- The relation, recovered from the function: "`cls` runs to `v`" is "there is a
--- clock for which the evaluator says so". This is the right-hand side a
--- correctness statement needs.
+-- The relation recovered from the function: `cls` runs to `v` for some fuel.
 \func JEval (rt : RtSpec) (cls : JClass) (entry : JIdent) (v : Value) : \Type =>
   \Sigma (n : Nat) (runClass rt cls entry n = rOk (rvValue v))

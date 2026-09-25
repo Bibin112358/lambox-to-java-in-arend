@@ -6,50 +6,24 @@
 \import Compiler.LambdaBox
 \import Set
 
--- =============================================================================
--- CHOOSING 64-BIT ARITHMETIC, as a source-to-source pass.
+-- Choosing 64-bit arithmetic, as a source-to-source pass on λ□ programs.
 --
--- This is how a user picks a representation. Not a compiler flag, not a
--- different backend: a REWRITE of the program, from the i63 terms an importer
--- produces into terms that say 64-bit. The output is an ordinary λ□ program,
--- compiled by the ordinary backend, and its meaning is given by the ordinary
--- semantics -- so "I want Java `long` for speed" becomes a claim about two
--- programs that can be compared, instead of a reinterpretation of one program
--- that cannot.
+-- `rewriteProgram` turns int63 literals and operations into int64 ones; the
+-- result is an ordinary λ□ program for the ordinary backend and semantics, so
+-- "use Java `long` for speed" becomes a comparison of two programs.
 --
--- WHY THE PASS TOUCHES BOTH VALUES AND OPERATIONS. A `prim` tag says what a
--- LITERAL means. It cannot say what an operation means, because an operation is
--- a `const` node carrying a `Kername` and `Compiler/ToJava.ard` compiles it before any
--- operand is in sight. So the kind has to appear twice -- in the payload tag
--- and in the axiom's name -- and the two have to be rewritten together or the
--- result is a program whose values and operations disagree. `rewriteTerm`
--- does both in one traversal for exactly that reason.
+-- Literals and operations are rewritten together in one traversal: a `prim`
+-- tag fixes what a literal means, but an operation is a `const` kername that
+-- the compiler translates without seeing its operands.
 --
--- ---------------------------------------------------------------------------
--- WHAT IT PRESERVES, AND WHAT IT DOES NOT
--- ---------------------------------------------------------------------------
--- NOT semantics. That is the point of writing it down rather than doing it
--- silently. i63 arithmetic wraps at 2^63 and i64 at 2^64, so the two programs
--- agree exactly while no operation overflows 2^63, and diverge at the first one
--- that does. `Proof/Int64RewriteSpec.ard` states that as an obligation with
--- the side condition named, and `ModelChecks/CorrectInstances.ard` pins both halves:
--- a program where the rewrite preserves the value, and one where it does not.
---
--- This is the honest version of what the backend used to do. Compiling i63
--- terms with `PRIM_*_LONG` performed this same reinterpretation invisibly and
--- without a side condition, and was simply incorrect -- `oracleDisagrees`
--- proved it. The rewrite makes the same trade available, with the trade stated.
---
--- ONE-WAY. There is no `rewriteBack`: i64 values outside [0, 2^63) have no i63
--- counterpart, so the inverse is partial in a way that is not worth pretending
--- about. And a rewritten program cannot be exported -- `Compiler/Serialize.ard` has no
--- wire name for `primInt64` -- which is accepted: λ□ is a stepping stone here,
--- not an interchange format.
--- =============================================================================
+-- This does NOT preserve semantics in general: the programs agree as long as
+-- no operation overflows 2^63. `Proof/Int64RewriteSpec.ard` states that side
+-- condition; `ModelChecks/CorrectInstances.ard` has one example where the
+-- value is preserved and one where it is not. The pass is one-way, and its
+-- output cannot be exported by `Compiler/Serialize.ard` (no `primInt64` there).
 
--- The four axioms whose meaning depends on the width. Everything else -- Lean's
--- `Nat.*`, the `Array.*` and `Int.*` groups, `Eq.rec` -- is left alone: those
--- are not λ□ primitive-int operations and choosing i64 says nothing about them.
+-- The four axioms whose meaning depends on the width; all others (Lean's
+-- `Nat.*`, `Int.*`, `Array.*`, `Eq.rec`) are left alone.
 \func i64Name (n : String) : Maybe String =>
   \case n == "prim_add_int" \with { | true => just "prim_add_int64" | false =>
   \case n == "prim_sub_int" \with { | true => just "prim_sub_int64" | false =>
@@ -57,14 +31,9 @@
   \case n == "prim_eqb_int" \with { | true => just "prim_eqb_int64" | false =>
     nothing } } } }
 
--- A root-module kername renamed to its i64 counterpart, or left as it is.
---
--- The module path is checked, not just the identifier: the primitive family
--- lives at the root, and an unrelated `Foo.prim_add_int` must not be caught.
--- Same discipline as `Compiler/JavaAxioms.ard`'s fully-mangled keys.
--- Matched structurally rather than through `Semantics/LambdaBoxEval.ard`'s
--- `modPathEq`: this is a compiler pass, and nothing in the compiler may depend
--- on the formalization.
+-- A root-module kername renamed to its i64 counterpart, or left as it is. The
+-- module path is checked too, so `Foo.prim_add_int` is not caught. Matched
+-- structurally: the compiler does not depend on `Semantics/`.
 \func rewriteKername (kn : Kername) : Kername =>
   \case kn.kerModPath \with {
     | mpFile nil => \case i64Name kn.kerName \with {
@@ -74,19 +43,14 @@
     | _ => kn
   }
 
--- The value half: an i63 payload becomes the i64 bit pattern DENOTING THE SAME
--- NUMBER. Every i63 value is in [0, 2^63), which is inside [0, 2^64) and is
--- read as itself by a JVM `long`, so no literal changes meaning here -- all the
--- divergence the pass can introduce comes from the operations.
+-- An i63 payload becomes the i64 bit pattern denoting the same number (it is
+-- in [0, 2^63)), so literals never change meaning; only operations can.
 \func rewritePrim (pv : PrimVal) : PrimVal \elim pv
   | (primInt63, i) => (primInt64, wrap64u (pos i))
   | (primInt64, i) => (primInt64, i)
 
--- The traversal. Recursion into an `Array LBTerm` child is INLINE via `xs i`
--- inside `mkArray`, never through a separate generic helper -- the termination
--- discipline `Compiler/ToJava.ard` and `Semantics/LambdaBoxEval.ard`'s `csubst` follow, for
--- the same reason (Arend's foetus checker does not see through a higher-order
--- map).
+-- Array children are recursed on inline via `xs i` inside `mkArray`: Arend's
+-- termination checker does not see through a higher-order `map`.
 \func rewriteTerm (t : LBTerm) : LBTerm \elim t
   | box => box
   | bvar n => bvar n
@@ -104,13 +68,8 @@
     fix (mkArray (\lam i => \new FixDef LBTerm (defs i).defName
                               (rewriteTerm (defs i).defBody) (defs i).principalArgIdx)) idx
 
--- A declaration: a constant's body is rewritten, and its NAME too, so the
--- renamed axiom is still declared. Missing that is the failure mode this
--- function exists to avoid -- a use renamed to `prim_add_int64` whose
--- declaration still says `prim_add_int` is an undeclared constant, and λ□ is
--- stuck on it rather than wrong about it.
---
--- An inductive declaration has no terms in it, so it passes through.
+-- A constant's name is rewritten along with its body, so that a renamed use
+-- (`prim_add_int64`) still refers to a declared constant.
 \func rewriteDecl (d : GlobalDecl) : GlobalDecl \elim d
   | constantDecl cb => constantDecl (\new ConstantBody (\case cb.cstBody \with {
       | nothing => nothing

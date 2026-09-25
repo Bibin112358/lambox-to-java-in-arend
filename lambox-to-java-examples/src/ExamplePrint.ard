@@ -7,44 +7,33 @@
 \import Compiler.Serialize
 \import Compiler.ToJava
 
--- =============================================================================
--- Printing entry points for the example programs.
+-- Printing entry points for the example programs: typechecking a definition
+-- here prints its result (`putStrLn` runs during typechecking). `*Java` prints
+-- the generated Java, `*Sexpr` the peregrine export (Compiler/Serialize.ard).
 --
--- Typechecking a definition here prints its result (`putStrLn` runs during
--- typechecking). Kept OUT of the Example*.ard modules on purpose: evaluating a
--- whole generated program needs a much bigger stack (the Arend CLI has to be
--- run with e.g. `-Xss1g`), while the example *definitions* themselves
--- typecheck with the default stack -- so the two can be checked independently.
---
--- Only the example entry points are imported by name, since the modules
--- otherwise share definition names (`decls`, `mainTerm`, ...).
---
--- `*Java` prints the generated Java. There are no generator options: the
--- `*JavaBigInteger` variants that used to sit beside these are gone with the
--- `JavaTarget` record that threaded a target through `compileClass`. The int
--- representation is chosen once, by `JavaAxioms.primRepr` -- currently
--- `int63Repr`, λ□'s own `Uint63` -- which is a named constant in that file and
--- not a knob a caller can turn.
--- =============================================================================
+-- Kept apart from the Example*.ard modules because evaluating a whole
+-- generated program needs a big stack (run the Arend CLI with e.g. `-Xss1g`),
+-- while the definitions themselves check with the default one. Entry points
+-- are imported by name since the example modules share definition names.
 
 \func exampleJava => putStrLn (compileProgram "Prog" testProgram)
-\func exampleSexpr => putStrLn (LambdaBoxToSrting testProgram)
+\func exampleSexpr => putStrLn (LambdaBoxToString testProgram)
 
 \func peanoJava => putStrLn (compileProgram "Prog" addProgram)
-\func peanoSexpr => putStrLn (LambdaBoxToSrting addProgram)
+\func peanoSexpr => putStrLn (LambdaBoxToString addProgram)
 
 \func matMulJava => putStrLn (compileProgram "Prog" matMulProgram)
-\func matMulSexpr => putStrLn (LambdaBoxToSrting matMulProgram)
+\func matMulSexpr => putStrLn (LambdaBoxToString matMulProgram)
 -- The same program at other sizes, for the runtime benchmark of the corpus
 -- (`matmul250`): identical term shape, one literal apart. See
 -- ExampleMatMul.sizeLitOf and test/benchmarks.md.
-\func matMulSexpr200 => putStrLn (LambdaBoxToSrting (matMulProgramOf 200))
-\func matMulSexpr250 => putStrLn (LambdaBoxToSrting (matMulProgramOf 250))
-\func matMulSexpr300 => putStrLn (LambdaBoxToSrting (matMulProgramOf 300))
+\func matMulSexpr200 => putStrLn (LambdaBoxToString (matMulProgramOf 200))
+\func matMulSexpr250 => putStrLn (LambdaBoxToString (matMulProgramOf 250))
+\func matMulSexpr300 => putStrLn (LambdaBoxToString (matMulProgramOf 300))
 \func matMulAttrsCText => putStrLn (AttributesToString matMulAttrsC)
 \func matMulAttrsOCamlText => putStrLn (AttributesToString matMulAttrsOCaml)
 
 -- The `letIn` worst case (corpus program `letchain`). Java only, so no
 -- attribute files; see ExampleLetChain.ard.
 \func letChainJava => putStrLn (compileProgram "Prog" letChainProgram)
-\func letChainSexpr => putStrLn (LambdaBoxToSrting letChainProgram)
+\func letChainSexpr => putStrLn (LambdaBoxToString letChainProgram)

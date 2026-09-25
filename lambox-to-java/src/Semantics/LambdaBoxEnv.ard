@@ -9,39 +9,26 @@
 \import Set
 \import Compiler.StringUtil (nthArr)
 
--- =============================================================================
--- λ□ WITH ENVIRONMENTS: the middle language of the two-step correctness proof.
+-- λ□ with environments: the middle language of the correctness proof.
 --
--- MetaRocq does not prove its backends against the substitution semantics of
--- `EWcbvEval` directly. It first proves that semantics equivalent to an
--- ENVIRONMENT semantics on the same terms (`EWcbvEvalNamed.v`,
--- `eval_to_eval_named`), and only then compiles that to Malfunction, where
--- both sides keep environments and closures and the value relation is almost a
--- function (`compile_value`). This file is our `EWcbvEvalNamed`:
+-- As in MetaRocq, where backends are proved against an environment semantics
+-- (`EWcbvEvalNamed.v`, `eval_to_eval_named`) rather than directly against the
+-- substitution semantics of `EWcbvEval`, the proof goes
+-- λ□ (substitution, `Semantics/LambdaBoxEval.ard`) => λ□ (environments, this
+-- file) in `Proof/SubstToEnv.ard`, then environments => Java.
 --
---   * `EV`: the values of the environment semantics -- closures (`evClos`,
---     `evFix`) carry the environment they were built in, and data/primitive
---     values are what they are. `evAx kn args` is an axiom still collecting its
---     arguments, NEWEST FIRST (so extending it is `::`, no snoc).
---   * `quote`: the READ-BACK of an `EV` as the λ□ term it stands for -- a
---     closure is its body with its environment SUBSTITUTED (`substK`). This one
---     function is the whole relation between the two λ□ semantics, the role
---     `represents_value` plays upstream; it is a function here because a value
---     determines the term it stands for.
---   * `EvalE`/`ApplyE`: big-step, call-by-value, one rule per rule of
---     `LambdaBoxEval.Eval`, with the environment in place of substitution.
+--   * `EV`: values. Closures (`evClos`, `evFix`) carry their environment;
+--     `evAx kn args` is an axiom collecting arguments, NEWEST FIRST.
+--   * `quote`: reads an `EV` back as the λ□ term it stands for (a closure is
+--     its body with its environment substituted, `substK`). This function is
+--     the whole relation between the two semantics (upstream:
+--     `represents_value`).
+--   * `EvalE`/`ApplyE`: one rule per rule of `Eval`, with an environment
+--     instead of substitution.
 --
--- The step "λ□ (substitution) => λ□ (environments)" is
--- `Proof/SubstToEnv.ard`; the step "λ□ (environments) => Java" is the
--- backend proof proper, and there both sides keep environments.
---
--- THE ORACLE. An axiom is consulted on the READ-BACK of its arguments, in λ□'s
--- own terms (`axiomSat`/`axiomRun` of `LBSpec`, unchanged), so the oracle is
--- the same object in both semantics -- nothing to prove about it at this step.
--- What it returns is a λ□ term, embedded back by `ofFO`; that is faithful for
--- first-order results (`FOVal`), which is what the shipped oracle returns and
--- what `EvalEnvSound` assumes of the oracle it is given.
--- =============================================================================
+-- The oracle is consulted on the read-back of the arguments, so it is the same
+-- `LBSpec` as for `Eval`. Its result is embedded back by `ofFO`, which is
+-- faithful for first-order results (`FOVal`), the case the proof assumes.
 
 \data EV
   | evBox
@@ -106,7 +93,7 @@
 \func fixEnv (defs : Array (FixDef LBTerm)) (rho : Array EV) : Array EV => fixEnvAux defs rho defs.len
 
 -- ---------------------------------------------------------------------------
--- THE EVALUATION RELATION. `EvalE spec genv rho t w`: under the global
+-- The evaluation relation. `EvalE spec genv rho t w`: under the global
 -- declarations `genv`, the term `t` with its free indices bound by `rho`
 -- (index `i` is `rho i`) evaluates to `w`. `ApplyE wf wa w`: the value `wf`
 -- applied to `wa` gives `w`.

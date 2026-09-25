@@ -1,63 +1,43 @@
--- The target language of the extractor: the small Java fragment `Compiler/ToJava.ard`
--- generates, as an AST rather than source text. It defines the subset we commit
--- to, it is what the semantics (`Semantics/JavaEval.ard`, with its `JavaValue.ard`)
--- and any correctness statement are given for, and it keeps spelling in one
--- trusted place (`Compiler/JavaPrint.ard`).
+-- The target language: the small Java fragment `Compiler/ToJava.ard`
+-- generates, as an AST. The Java semantics (`Semantics/JavaEval.ard`) and the
+-- correctness theorem are stated for this AST; turning it into text is the job
+-- of the (trusted, unverified) printer `Compiler/JavaPrint.ard`.
 --
--- SCOPE. Exactly what the generator emits: no arithmetic, comparison, loops,
--- `if`, generics, interfaces, `void`, array types or entry point, and no modifier
--- but `public static`. The one operator is `?:` (`jCond`). Every value has static
--- type `Object` and is cast where needed, so this is not Featherweight Java.
--- Classes come in three shapes: the program class, the anonymous one-method
--- closures (`jClosure`), and the local classes that tie a `fix` knot
--- (`jLocalClass`).
+-- Scope: exactly what the generator emits. No arithmetic, comparisons, loops,
+-- `if`, generics or arrays; every value has static type `Object` and is cast
+-- where needed. The only operator is `?:` (`jCond`), which is the whole of
+-- λ□'s `case`. Statements only NAME values (`jLocal`) or tie a `fix` knot
+-- (`jLocalClass`); a statement list is a sequence of bindings ending in
+-- `jReturn`. Binders are names derived from node paths (`Compiler/NodePath.ard`).
 --
--- STATEMENTS ARE FOR NAMING, NOT FOR CONTROL. `JStmt` has no branching
--- construct: every λ□ node either denotes an expression or introduces a `jLocal`
--- to name a value used more than once. So a statement list is a sequence of
--- bindings ending in `jReturn`, and control flow lives entirely in `jCond`.
+-- The runtime `runtime/Rt.java` is hand-written. Its core (application,
+-- closures, constructors, tag/field reads) has dedicated AST nodes, which the
+-- semantics interprets; everything else is referenced by name from
+-- `Compiler/JavaAxioms.ard` and is assumed.
 --
--- The runtime (`runtime/Rt.java`) is hand-written. Its CORE has dedicated nodes
--- (RUNTIME ABI below), being what a correctness statement quantifies over; its
--- periphery is referenced by name from `Compiler/JavaAxioms.ard`, being axioms a proof
--- assumes rather than interprets.
---
--- `JExpr` and `JStmt` are mutually recursive sorts, mirroring the generator's
--- `\Sigma (Array JStmt) JExpr` -- a statement prelude plus a value. Binders are
--- NAMES: the `path`-derived names are what lets the generator's recursion pass
--- Arend's termination checker without threading state.
---
--- ARRAY-OF-\Sigma, NOT ARRAY-OF-RECORD in `jClosure` and `jLocalClass`: a record
+-- `jClosure`/`jLocalClass` use arrays of `\Sigma`, not of records: a record
 -- with a `JStmt` field would join the JExpr/JStmt `\data` cycle, which Arend
--- rejects. (`Compiler/LambdaBox.ard`'s `case` branches likewise.)
+-- rejects.
 --
--- Compare: Malfunction.v, the verified λ□ backend (its `Ident.t`/`Longident.t`
--- split is `JIdent`/`JQIdent`, its `Mvar`/`Mglobal` split is `jVar`/`jStatic`);
--- CompCert `Clight.v` (same two-sort shape, and the same printer-outside-the-
--- proof division CertiCoq's C backend uses); Featherweight Java (`x | e.f |
--- e.m(e*) | new C(e*) | (C)e` is the expression core); Jinja/µJava (folds
--- statements into expressions, we do not).
+-- Related designs: Malfunction.v (`Ident.t`/`Longident.t` ~ `JIdent`/`JQIdent`,
+-- `Mvar`/`Mglobal` ~ `jVar`/`jStatic`), CompCert's `Clight.v` (two sorts,
+-- printer outside the proof), Featherweight Java (the expression core).
 
 \import Data.String
 
--- Both `String`: a simple Java identifier, and a possibly dotted one (`Rt.Fn`,
--- `Long.valueOf`). Every such position holds an already-valid name -- mangling
--- happens once, at `mangleKername`. Plain strings are what source-level backends
--- use (MetaRocq, lean-to-lambdabox); interned integers (CompCert, CertiCoq λANF)
--- buy cheap maps and freshness proofs this generator does not need.
+-- A simple and a possibly dotted Java identifier (`Rt.Fn`, `Long.valueOf`).
+-- Both are already valid Java: mangling happens once, in `mangleKername`.
 \func JIdent => String
 
 \func JQIdent => String
 
--- The runtime's class name lives here because the ABI nodes below carry no name
--- of their own, and this decides how they print.
+-- The runtime's class name, used when printing the ABI nodes below.
 \func runtimeClassName : JIdent => "Rt"
 
 \func runtimeQual : String => runtimeClassName ++ "."
 
--- `tFn`/`tData` are separate from `tClass` although they print as `Rt.Fn` and
--- `Rt.Data`: a semantics has to give them meaning (a function space, a tagged
--- product), not treat them as opaque named classes.
+-- `tFn`/`tData` print as `Rt.Fn`/`Rt.Data` but are separate from `tClass`:
+-- the semantics gives them meaning (function space, tagged product).
 \data JType
   | tObject
   | tFn    -- the runtime's one-method function interface: λ□'s function space
@@ -70,80 +50,61 @@
   -- it is resolved globally, not in the environment.
   | jStatic JQIdent
   | jField JExpr JIdent  -- `e.f`: `Rt.BOX`, `Rt.PRIM_ADD_LONG`
-  -- Printed fully parenthesized (see Compiler/JavaPrint.ard); unavoidable, since every
-  -- value is typed `Object`.
+  -- Printed fully parenthesized (see Compiler/JavaPrint.ard).
   | jCast JType JExpr
   | jInvoke JExpr JIdent (Array JExpr)  -- `e.m(args)`
   | jCallStatic JQIdent (Array JExpr)  -- `c_foo()`, `Long.valueOf(5L)`
   | jNew JType (Array JExpr)  -- an exception, or a `fix` local class
 
-  -- --- RUNTIME ABI ---------------------------------------------------------
+  -- --- Runtime ABI ---------------------------------------------------------
   -- λ□'s `box`, `app`, `lambda`, `construct` and the tag/field reads of `case`
-  -- and `proj`: the nodes a correctness statement is about, hence nodes and not
-  -- combinations of the general ones above over hard-coded member names. As
-  -- strings, the AST could not tell the runtime's application from any call of a
-  -- method named `apply`. What `apply` DOES is still fixed by `Rt.java` and
-  -- assumed; the point is having a node to assume it of.
+  -- and `proj`. They are nodes (rather than calls of the general nodes above
+  -- on hard-coded member names) so that the semantics can interpret them.
   | jBox  -- `Rt.BOX`: an erased proof or type
   | jApply JExpr JExpr  -- `((Rt.Fn)(f)).apply(x)`; the cast is how application is spelled
-  -- `new Rt.Fn(){ public Object apply(Object <p>){ <body> } }` -- an anonymous
-  -- class, no `invokedynamic`. Always `public Object apply(Object)`, so the
-  -- method is (parameter, body); see ARRAY-OF-\Sigma above.
+  -- `new Rt.Fn(){ public Object apply(Object <p>){ <body> } }`: an anonymous
+  -- class with one method, given as (parameter, body).
   | jClosure JIdent (Array JStmt)
   | jDataNew Nat (Array JExpr)  -- `new Rt.Data(tag, new Object[]{ .. })`
-  -- `d.tag == n`: is this value the n-th constructor? One node rather than a tag
-  -- read and an `==`, so the fragment still has no comparison operator and this
-  -- denotes exactly λ□'s branch selection.
+  -- `d.tag == n`: is this value the n-th constructor? (One node, so the
+  -- fragment needs no comparison operator.)
   | jTagEq JExpr Nat
-  -- `d.fields[i]`. `Nat`, not `JExpr`: λ□ has no computed field access, and
-  -- folding `proj`'s `npars + idx` here is why the fragment needs no arithmetic.
+  -- `d.fields[i]`, with a constant index: `proj`'s `npars + idx` is folded at
+  -- compile time.
   | jDataField JExpr Nat
-  -- --- end RUNTIME ABI -----------------------------------------------------
+  -- --- end of runtime ABI --------------------------------------------------
 
-  -- `(c ? a : b)`. The fragment's ONE operator, and the whole of λ□ `case`: a
-  -- chain of these denotes the `iota` rule directly, where a `switch` denoted it
-  -- only together with a side condition about a variable being assigned.
+  -- `(c ? a : b)`. A chain of these implements λ□'s iota rule for `case`.
   | jCond JExpr JExpr JExpr
 
-  -- `C.this` -- the enclosing instance of local class `C`, from inside a nested
-  -- anonymous class: a `fix` sibling is referenced within a `jClosure` whose own
-  -- `this` is the closure. NOT `jStatic "C.this"`, which prints identically:
-  -- `jStatic` is resolved globally, this one in the enclosing class's scope.
+  -- `C.this`: the instance of local class `C` (a `fix` block), referenced from
+  -- inside a nested closure. Prints like `jStatic "C.this"` but is resolved in
+  -- the enclosing class, not globally.
   | jQualThis JQIdent
-  -- A literal, of the three kinds the fragment has. ONE NODE, and the kinds in
-  -- a datatype of their own: every removed constructor is a removed case in the
-  -- printer, in a semantics and in every proof, and nothing about the fragment
-  -- distinguishes these three except how they print and what they denote.
   | jLit JLit
 
--- `litStr`: the printer quotes but does not escape (see Compiler/JavaPrint.ard).
--- `litInt`: a decimal `int` -- a constructor tag, a field index, a de Bruijn
--- index in a diagnostic. `litLong`: a `long` (`5L`), λ□'s `prim` int, signed
--- and hence `Int`.
+-- `litStr`: quoted but not escaped by the printer. `litInt`: an `int` (a
+-- constructor tag, an index in a diagnostic). `litLong`: a `long` such as
+-- `5L`, λ□'s primitive int (signed, hence `Int`).
 \data JLit
   | litStr String
   | litInt Nat
   | litLong Int
 
 \data JStmt
-  -- `final Object l3 = e;`. Always final and always initialized: a statement
-  -- exists here only to NAME a value, so that the value expression can use it
-  -- more than once without recomputing it.
+  -- `final Object l3 = e;`: names a value used more than once.
   | jLocal JType JIdent JExpr
-  -- A local class -- declared in a block, capturing effectively-final locals --
-  -- whose k methods may call each other. This is how λ□ `fix` is encoded: the
-  -- knot is tied by the declaration, so there are no mutable cells and no
-  -- initialization order. Methods are (name, parameter, body), see above.
+  -- A local class whose methods (name, parameter, body) may call each other:
+  -- the encoding of λ□ `fix`. The knot is tied by the declaration, so there
+  -- are no mutable cells.
   | jLocalClass JIdent (Array (\Sigma JIdent JIdent (Array JStmt)))
   | jThrow JExpr
   | jReturn JExpr
   | jComment String
 
--- A λ□ constant (`c_foo`) or the program's value (`body`). Only a name and a
--- body: every one is `public static Object <name>()` -- static since the class is
--- a namespace, `Object` since that is the only type a λ□ value has, zero-argument
--- since a λ□ function is a closure VALUE. A closure's `apply` and a `fix` sibling
--- belong to `jClosure`/`jLocalClass` instead.
+-- A λ□ constant (`c_foo`) or the program's value (`body`), printed as
+-- `public static Object <name>()`. Zero arguments: a λ□ function is a closure
+-- value.
 \record JMethod
   (mName : JIdent)
   (mBody : Array JStmt)
@@ -152,8 +113,6 @@
   | jMethod JMethod
   | jMemberComment String  -- what an erased inductive produces
 
--- `public final class <className> { .. }`, a LIBRARY: `body()` returns the
--- program's value and there is no entry point, so a caller writes the `main`
--- (`runtime/Main.java.in`). The name is DATA so two separately extracted programs
--- can coexist; it says what to call the output, not how to compile it.
+-- `public final class <className> { .. }`. A library: `body()` returns the
+-- program's value and `runtime/Main.java.in` supplies `main`.
 \record JClass (className : JIdent) (classMembers : Array JMember)

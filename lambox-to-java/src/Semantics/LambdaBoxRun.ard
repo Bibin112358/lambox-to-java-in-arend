@@ -8,54 +8,22 @@
 \import Set
 \import Compiler.StringUtil (nthArr)
 
--- =============================================================================
--- λ□, RUN: a fuelled functional evaluator.
+-- A fuelled evaluator for λ□: `Semantics/LambdaBoxEval.ard`'s `Eval` as a
+-- function, so that programs can be run (e.g. `ModelChecks/Agreement.ard`
+-- compares its results with the compiled Java).
 --
--- NOT THE SPECIFICATION. `Semantics/LambdaBoxEval.ard`'s `Eval` relation is that --
--- it transcribes MetaRocq's `EWcbvEval.eval`, rule for rule, and is what a
--- correctness statement is stated against. This module is an ORACLE: the same
--- semantics as a function, so that a λ□ program can be RUN and its value
--- compared with what the compiled Java computes (`ModelChecks/Agreement.ard` in the
--- examples project does exactly that). A relation cannot be run.
+-- Soundness, `evalT spec env n t = rOk v -> Eval spec env t v`, is proved in
+-- `Proof/LambdaBoxSound.ard`. Completeness is not, so `rStuck` only means that
+-- this function found no rule. For a closed program that happens at a
+-- `bvar`/`fvar`, an axiom the oracle `spec` does not cover (or whose
+-- arguments it declines), or a missing/ill-formed declaration.
 --
--- The obligations this creates, and where they stand:
---
---     evalT spec env n t = rOk v  ->  Eval spec env t v               (soundness)
---         PROVED, `Proof/LambdaBoxSound.ard`. So a value this function
---         computes is backed by a derivation of the transcribed relation, and
---         an agreement checked against it is an agreement with the SPEC.
---
---     Eval spec env t v      ->  \Sigma (n : Nat) (evalT spec env n t = rOk v)
---                                                               (completeness)
---         OPEN. Until it is proved, `rStuck` means "this function found no
---         rule", not "the relation derives nothing" -- so a stuck result is
---         evidence about the oracle, while an `rOk` result is evidence about
---         the semantics.
---
--- Every clause below is a transcription of the relation's clause of the same
--- name, with the same side conditions in the same order -- `evalDelta` next to
--- the `const` clause, `evalIota` next to `case`, and so on; the soundness proof
--- is structured the same way, one case per clause.
---
--- Fuel is the first `\elim` argument and strictly decreases at every recursive
--- call, exactly as in `Semantics/JavaEval.ard`. `rStuck` means "no rule applies",
--- which for a closed, well-formed λ□ program means one of: a `bvar`/`fvar` (not
--- a value and not reducible), an axiom THE ORACLE DOES NOT COVER (`axiomArity`
--- is `nothing` for it, or `axiomRun` declined the arguments it was handed), or a
--- missing/ill-formed declaration.
---
--- `spec` is that oracle, `LBSpec` from `Semantics/LambdaBoxEval.ard`, and it is a
--- parameter here for the same reason it is one there. It is threaded, never
--- inspected: every clause below either passes it down or consults it through
--- `axiomArity`/`axiomSat`/`axiomRun`. With `lbNone` this function is what it was
--- before the oracle existed -- every axiom stuck.
--- =============================================================================
+-- Each clause transcribes the relation's clause of the same name, with the
+-- side conditions in the same order (the soundness proof follows the same
+-- structure). Fuel is the first `\elim` argument and decreases at every call.
 
--- The relation states "the scrutinee evaluates to a constructor OF THIS
--- inductive" by sharing the variable `ind` between premise and pattern, which
--- unification then enforces. A function has to compare, so it needs this; the
--- `case` and `proj` clauses below would otherwise accept a constructor of an
--- unrelated inductive that happens to have a matching tag.
+-- The relation requires a constructor of the same inductive by sharing `ind`
+-- between premise and pattern; the function has to compare.
 \func indEq (a b : InductiveId) : Bool =>
   kernameEq a.indMutualBlock b.indMutualBlock and (a.indIdx == b.indIdx)
 
@@ -69,14 +37,12 @@
   | suc _, fix defs idx => rOk (fix defs idx)
   | suc _, prim pv => rOk (prim pv)
 
-  -- No rule exists for either (see the relation's header): a de Bruijn index
-  -- under no binder, and a locally-nameless free variable.
+  -- No rule for either.
   | suc _, bvar _ => rStuck
   | suc _, fvar _ => rStuck
 
-  -- `evalDelta`, and `evalAxiom` for a constant with no body: if the oracle
-  -- declares an arity the axiom is a VALUE, and if it does not, `rStuck` --
-  -- which stays the honest report, since then nothing defines it.
+  -- `evalDelta`, and `evalAxiom` for a constant with no body (a value if the
+  -- oracle declares an arity, otherwise stuck).
   | suc n, const kn => \case lookupConstant env kn \with {
     | nothing => rStuck
     | just cb => \case ConstantBody.cstBody {cb} \with {
@@ -92,15 +58,12 @@
   | suc n, letIn _ b0 b1 =>
     bindRes (evalT spec env n b0) (\lam b0v => evalT spec env n (csubst b0v 0 b1))
 
-  -- `evalBox` / `evalBeta` / `evalFix` / `evalAppCong`, in that order -- the
-  -- argument is evaluated in every one of them, so it is evaluated once here,
-  -- before the function's value is dispatched on.
+  -- All `app` rules evaluate both parts first; `applyT` then dispatches.
   | suc n, app f a =>
     bindRes (evalT spec env n f) (\lam fv =>
     bindRes (evalT spec env n a) (\lam av => applyT spec env n fv av))
 
-  -- `evalConstruct`: saturated by construction, so evaluate the fields and
-  -- rebuild. The arity check is the relation's `args.len = arity` premise.
+  -- `evalConstruct`.
   | suc n, construct ind c args =>
     \case constructorArity env ind c \with {
       | nothing => rStuck
@@ -110,8 +73,7 @@
       }
     }
 
-  -- `evalIota`: to a constructor of THIS inductive, then select the branch,
-  -- drop the parameters, substitute the fields.
+  -- `evalIota`.
   | suc n, case ind npars discr brs =>
     bindRes (evalT spec env n discr) (\lam dv => \case dv \with {
       | construct ind' c args => \case constructorInfo env ind c \with {
@@ -130,7 +92,7 @@
       | _ => rStuck
     })
 
-  -- `evalProj`: constructor 0 of a single-constructor block, field `npars+idx`.
+  -- `evalProj`.
   | suc n, proj p discr =>
     bindRes (evalT spec env n discr) (\lam dv => \case dv \with {
       | construct ind' 0 args => \case constructorInfo env (ProjectionInfo.projIndType {p}) 0 \with {
@@ -155,32 +117,19 @@
   : Res LBTerm \elim n
   | 0 => rOutOfFuel
   | suc n => \case fv \with {
-    -- `evalBox`: applying an erased value stays erased (the argument has been
-    -- evaluated already, which is what makes `app` strict in both positions).
+    -- `evalBox`.
     | box => rOk box
     -- `evalBeta`.
     | lambda _ b => evalT spec env n (csubst av 0 b)
-    -- `evalFix`, unguarded: unfold on application, without inspecting `av`.
+    -- `evalFix` (unguarded).
     | fix defs idx => \case cunfoldFix defs idx \with {
       | nothing => rStuck
       | just (_, fn) => evalT spec env n (app fn av)
     }
-    -- `evalAxiomApp` then `evalAppCong`, in that order and as ONE dispatch on
-    -- `axiomSat`, which is what keeps this function and the relation in step:
-    -- the relation's `evalAppCong` carries `axiomSat ... = nothing` as a
-    -- premise, so `nothing` here is exactly the case where that rule is
-    -- available.
-    --
-    -- A DECLINING ORACLE IS STUCK, never an `appCongOk` fallback. `axiomRun`
-    -- returning `nothing` on a saturated call means the runtime was handed
-    -- arguments it does not compute on (`builtinRunLong` on non-`vLong`s is the
-    -- Java twin, and it is `rStuck` there too). Falling through would make the
-    -- function accept what the relation rejects -- the saturated case is
-    -- excluded from `evalAppCong` unconditionally -- and soundness would fail.
-    --
-    -- `box`/`lambda`/`fix` above cannot reach here and need no exclusion:
-    -- `axiomSat` demands a `const` at the head of the spine, which none of them
-    -- is, so the rules stay disjoint.
+    -- `evalAxiomApp` / `evalAppCong`, by one dispatch on `axiomSat` (whose
+    -- `nothing` is `evalAppCong`'s premise). A saturated call the oracle
+    -- declines is stuck, not a congruence value: `evalAppCong` excludes every
+    -- saturated call, so falling through would be unsound.
     | f' => \case axiomSat spec (app f' av) \with {
       | just (kn, args) => \case axiomRun {spec} kn args \with {
         | nothing => rStuck
@@ -193,13 +142,8 @@
     }
   }
 
--- Fields left to right, as `evalConstruct`'s pointwise premise says.
---
--- The result is indexed by the INPUT's length, which is not decoration: the
--- relation's `evalConstruct` wants `vs : Array LBTerm args.len` and a pointwise
--- premise over `Fin args.len`, so a plain `Array LBTerm` here would owe a
--- length lemma and a transport at exactly the place the proof of soundness
--- (`Proof/LambdaBoxSound.ard`) needs to build that constructor.
+-- Fields left to right. The result has the input's length, as
+-- `evalConstruct` needs, which saves the soundness proof a transport.
 \func evalArgsT (spec : LBSpec) (env : GlobalDeclarations) (n : Nat) (xs : Array LBTerm)
   : Res (Array LBTerm xs.len)
   \elim n, xs
@@ -209,7 +153,6 @@
     bindRes (evalT spec env n x) (\lam v =>
     bindRes (evalArgsT spec env n xs) (\lam vs => rOk (v :: vs)))
 
--- Running a program is evaluating its body in its declarations, as
--- `EvalProgram` says for the relation.
+-- As `EvalProgram`.
 \func runProgram (spec : LBSpec) (p : LBProgram) (n : Nat) : Res LBTerm =>
   evalT spec p.1 n p.2
