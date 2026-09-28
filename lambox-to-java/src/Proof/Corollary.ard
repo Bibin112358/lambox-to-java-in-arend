@@ -180,8 +180,8 @@
 -- The `Rt` encoding of a first-order λ□ value (the other cases are never used).
 \func foJava (t : LBTerm) : Value \elim t
   | box => vBox
-  | prim (primInt63, i) => vLong (pos i)
-  | prim (primInt64, i) => vLong (signed64 i)
+  | prim (rocqUint63, i) => vLong (pos i)
+  | prim (javaLong, i) => vLong (signed64 i)
   | construct _ c args => vData c (mkArray {Value} {args.len} (\lam i => foJava (args i)))
   | _ => vBox
 
@@ -196,8 +196,8 @@
 
 \func agreesFun (t : LBTerm) (j : Value) (fo : FOVal t) (h : agrees t j = true) : j = foJava t \elim t
   | box => boxInv j h
-  | prim (primInt63, i) => p63Inv i j h
-  | prim (primInt64, i) => p64Inv i j h
+  | prim (rocqUint63, i) => p63Inv i j h
+  | prim (javaLong, i) => p64Inv i j h
   | construct ind c args =>
     \let s => conInv ind c args j h
     \in s.2 *> pmap (vData c) (agreesAllFun args s.1 (\lam i v => agreesFun (args i) v (fo i)) s.3)

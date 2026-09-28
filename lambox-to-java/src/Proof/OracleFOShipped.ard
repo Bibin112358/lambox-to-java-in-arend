@@ -22,12 +22,12 @@
 -- `ofFO`) and it only computes on first-order arguments (`oracleArgsFOShipped`).
 --
 -- Both are facts about the shape of `axiomRunLb`, not its arithmetic: every
--- `just` it returns is `lbInt`/`lbInt64` (a `prim`) or `lbBool` (a nullary
--- `construct`), and every `just` goes through `twoOf int63Of`/`twoOf int64Of`,
+-- `just` it returns is `lbInt`/`lbLong` (a `prim`) or `lbBool` (a nullary
+-- `construct`), and every `just` goes through `twoOf int63Of`/`twoOf longOf`,
 -- which succeed only on two `prim` literals. `wrap63`/`wrap64u` stay abstract.
 --
 -- The operation name is arbitrary (`kn.kerName`), so the `\case op == ...`
--- chains of `natRun`/`int63Run`/`int64Run` do not reduce. Each test is split by
+-- chains of `natRun`/`int63Run`/`longRun` do not reduce. Each test is split by
 -- `\case e \as b, idp : e = b` and the goal (the unfolded body) is rewritten --
 -- a `\case` does not reduce under a hypothesis about its scrutinee. Hence the
 -- argument half is stated as `IsJ (...) -> ...`, with the oracle call in the goal.
@@ -98,14 +98,14 @@
     })
   })
 
-\lemma int64RunFO (op : String) (x y : Int) : MFO (int64Run op x y) =>
-  unfold int64Run (\case op == "prim_add_int64" \as b1, idp : op == "prim_add_int64" = b1 \with {
+\lemma longRunFO (op : String) (x y : Int) : MFO (longRun op x y) =>
+  unfold longRun (\case op == "prim_add_long" \as b1, idp : op == "prim_add_long" = b1 \with {
     | true, p1 => rewrite p1 ()
-    | false, p1 => rewrite p1 (\case op == "prim_mul_int64" \as b2, idp : op == "prim_mul_int64" = b2 \with {
+    | false, p1 => rewrite p1 (\case op == "prim_mul_long" \as b2, idp : op == "prim_mul_long" = b2 \with {
       | true, p2 => rewrite p2 ()
-      | false, p2 => rewrite p2 (\case op == "prim_sub_int64" \as b3, idp : op == "prim_sub_int64" = b3 \with {
+      | false, p2 => rewrite p2 (\case op == "prim_sub_long" \as b3, idp : op == "prim_sub_long" = b3 \with {
         | true, p3 => rewrite p3 ()
-        | false, p3 => rewrite p3 (\case op == "prim_eqb_int64" \as b4, idp : op == "prim_eqb_int64" = b4 \with {
+        | false, p3 => rewrite p3 (\case op == "prim_eqb_long" \as b4, idp : op == "prim_eqb_long" = b4 \with {
           | true, p4 => rewrite p4 (lbBoolFO (intEqB (pos (wrap64u x)) (pos (wrap64u y))))
           | false, p4 => rewrite p4 ()
         })
@@ -117,13 +117,13 @@
   | nothing => ()
   | just (x, y) => natRunFO op (wrap63 x) (wrap63 y)
 
-\lemma int64AtFO (op : String) (m : Maybe (\Sigma Int Int)) : MFO (int64At op m) \elim m
+\lemma longAtFO (op : String) (m : Maybe (\Sigma Int Int)) : MFO (longAt op m) \elim m
   | nothing => ()
-  | just (x, y) => int64RunFO op x y
+  | just (x, y) => longRunFO op x y
 
 \lemma rootAtFO (op : String) (m63 m64 : Maybe (\Sigma Int Int)) : MFO (rootAt op m63 m64) \elim m63
   | just (x, y) => int63RunFO op x y
-  | nothing => int64AtFO op m64
+  | nothing => longAtFO op m64
 
 \lemma axiomRunFO (kn : Kername) (xs : Array LBTerm) : MFO (axiomRunLb kn xs) =>
   unfold axiomRunLb (\case modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") \as b, idp : modPathEq kn.kerModPath (mpDot (mpFile nil) "Nat") = b \with {
@@ -152,7 +152,7 @@
   | proj _ _ => absurd h
   | fix _ _ => absurd h
 
-\lemma int64OfFO {t : LBTerm} (h : IsJ (int64Of t)) : FOVal t \elim t
+\lemma longOfFO {t : LBTerm} (h : IsJ (longOf t)) : FOVal t \elim t
   | prim _ => ()
   | box => ()
   | bvar _ => absurd h
@@ -197,7 +197,7 @@
                   (e63 : twoInts xs = m63) (e64 : twoInts64 xs = m64)
   : IsJ (rootAt op m63 m64) -> ArgsFO xs \elim m63, m64
   | just _, _ => \lam _ => twoOfFO int63Of int63OfFO xs (transportInv IsJ e63 ())
-  | nothing, just _ => \lam _ => twoOfFO int64Of int64OfFO xs (transportInv IsJ e64 ())
+  | nothing, just _ => \lam _ => twoOfFO longOf longOfFO xs (transportInv IsJ e64 ())
   | nothing, nothing => \lam h => absurd h
 
 \lemma axiomRunArgs (kn : Kername) (xs : Array LBTerm) : IsJ (axiomRunLb kn xs) -> ArgsFO xs =>

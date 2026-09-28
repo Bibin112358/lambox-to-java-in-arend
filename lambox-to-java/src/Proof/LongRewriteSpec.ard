@@ -6,18 +6,18 @@
 \import Semantics.LambdaBoxAxioms
 \import Semantics.Res
 \import Compiler.Int63
-\import Compiler.Int64Rewrite
+\import Compiler.LongRewrite
 \import Compiler.LambdaBox
 \import Set
 \import Compiler.StringUtil (intEqB)
 
 -- =============================================================================
--- What the i64 rewrite pass (`Compiler/Int64Rewrite.ard`) preserves, stated.
+-- What the i64 rewrite pass (`Compiler/LongRewrite.ard`) preserves, stated.
 --
 -- The pass is how a user opts into 64-bit arithmetic: it rewrites the program,
 -- so the question "does the rewritten program compute the same thing?" is a
 -- comparison of two λ□ programs under one semantics and one oracle
--- (`rewritePreserves`). The answer is "not always": `Int64RewriteSound` below
+-- (`rewritePreserves`). The answer is "not always": `LongRewriteSound` below
 -- is deliberately false and refuted in `ModelChecks/CorrectInstances.ard` by an
 -- addition that crosses 2^63.
 -- =============================================================================
@@ -32,8 +32,8 @@
   | 0 => false
   | suc n => \case a, b \with {
     | box, box => true
-    | prim (primInt63, i), prim (primInt64, j) => samePrim (pos i) (signed64 j)
-    | prim (primInt64, i), prim (primInt64, j) => samePrim (signed64 i) (signed64 j)
+    | prim (rocqUint63, i), prim (javaLong, j) => samePrim (pos i) (signed64 j)
+    | prim (javaLong, i), prim (javaLong, j) => samePrim (signed64 i) (signed64 j)
     | construct _ c xs, construct _ d ys => (c == d) and sameValues n xs ys
     | _, _ => false
   }
@@ -65,5 +65,5 @@
 -- below 2^63.
 -- ---------------------------------------------------------------------------
 
-\func Int64RewriteSound : \Type =>
+\func LongRewriteSound : \Type =>
   \Pi (p : LBProgram) (fuel : Nat) -> rewritePreserves p fuel = true

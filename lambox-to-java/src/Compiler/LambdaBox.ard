@@ -51,31 +51,31 @@
   | defBody : term
   | principalArgIdx : Nat  -- Principal/structural argument for recursion
 
--- Primitive integers. Upstream λ□ has one kind, MetaRocq's `primInt63`
--- (`EPrimitive.v`, model `PrimInt63.int`; lean-to-lambdabox: `BitVec 63`).
--- Only `tPrim` is affected: Rocq's `nat`/`Z` and Lean's Peano mode erase to
--- ordinary constructors.
+-- Primitive integers. The two kinds are unrelated, not two widths of one type:
+--   * `rocqUint63`: Rocq's `Uint63` (MetaRocq's `EPrimitive.v`, tag `primInt`,
+--     model `PrimInt63.int`; lean-to-lambdabox: `BitVec 63`). Unsigned,
+--     cyclic mod 2^63. The only primitive integer of upstream λ□.
+--   * `javaLong`: our extension for the Java backend, a signed two's-complement
+--     64-bit JVM `long`. Only `Compiler/LongRewrite.ard` produces it, so
+--     `Compiler/Serialize.ard` cannot export it (export is allowed to be
+--     partial). Its operations are the `prim_*_long` axioms.
+-- Rocq's `nat`/`Z` and Lean's Peano mode erase to ordinary constructors.
 --
--- The width is part of the TERM, not a backend choice: a backend computing
--- with JVM `long`s on an int63 term would simply be wrong. Choosing a
--- different representation is instead a source-to-source rewrite on terms
--- (see `Compiler/Int64Rewrite.ard`), mirroring how lean-to-lambdabox's
--- `config.nat` emits different λ□ terms.
---
--- `primInt64` has no peregrine counterpart, so `Compiler/Serialize.ard`
--- cannot export it (export is allowed to be partial). Its operations are
--- selected by kername at `const` nodes (see `Compiler/JavaAxioms.ard`).
+-- The kind is part of the TERM, not a backend choice: a backend computing with
+-- `long`s on a `rocqUint63` term would simply be wrong. Choosing `long`s is a
+-- source-to-source rewrite (`Compiler/LongRewrite.ard`), mirroring how
+-- lean-to-lambdabox's `config.nat` emits different λ□ terms.
 \data PrimTag
-  | primInt63  -- MetaRocq/peregrine's `Uint63`: unsigned, cyclic mod 2^63
-  | primInt64  -- two's-complement 64-bit, i.e. a JVM `long`
+  | rocqUint63
+  | javaLong
 -- | primFloat
 -- | primList
 
 -- Payloads are bounded by construction (`Fin`); they are built with
 -- `Int63.wrap63`/`wrap64u`, so an out-of-range primitive cannot be written.
 \func PrimModel (t : PrimTag) : \Set0
-  | primInt63 => Fin int63Mod
-  | primInt64 => Fin int64Mod
+  | rocqUint63 => Fin int63Mod
+  | javaLong => Fin int64Mod
 
 \func PrimVal : \Type => \Sigma (t : PrimTag) (PrimModel t)
 

@@ -89,7 +89,7 @@
 
 -- A primitive integer literal (values at the edge of the range are at the
 -- bottom of this module).
-\func litProgram : LBProgram => (nil, prim (primInt63, 42))
+\func litProgram : LBProgram => (nil, prim (rocqUint63, 42))
 
 \func litAgrees : bothAgree litProgram 100 = true => idp
 
@@ -103,13 +103,13 @@
 
 \func addAxiomProgram : LBProgram =>
   ((axiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const axiomKn) (prim (primInt63, 2))) (prim (primInt63, 3)))
+   app (app (const axiomKn) (prim (rocqUint63, 2))) (prim (rocqUint63, 3)))
 
 \func axiomAgrees : bothAgree addAxiomProgram 200 = true => idp
 
 -- Each side separately, to localize a failure.
 \func axiomRunsInLambdaBox
-  : runProgram lbAxioms addAxiomProgram 200 = rOk (prim (primInt63, 5)) => idp
+  : runProgram lbAxioms addAxiomProgram 200 = rOk (prim (rocqUint63, 5)) => idp
 
 \func axiomRunsInJava
   : runClass rtInt63 (compileClass progClassName addAxiomProgram) bodyMethodName 200
@@ -117,7 +117,7 @@
   => idp
 
 -- An `Eval` derivation through `evalAxiom` and `evalAxiomApp`.
-\func axiomEvaluates : EvalProgram lbAxioms addAxiomProgram (prim (primInt63, 5))
+\func axiomEvaluates : EvalProgram lbAxioms addAxiomProgram (prim (rocqUint63, 5))
   => evalT-sound lbAxioms 200 idp
 
 -- Without the oracle (`lbNone`, upstream λ□) the program is stuck.
@@ -139,7 +139,7 @@
 
 \func natAddProgram : LBProgram =>
   ((natAddKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const natAddKn) (prim (primInt63, 20))) (prim (primInt63, 22)))
+   app (app (const natAddKn) (prim (rocqUint63, 20))) (prim (rocqUint63, 22)))
 
 \func natAddAgrees : bothAgree natAddProgram 200 = true => idp
 
@@ -147,11 +147,11 @@
 -- does not relate it: the `false` is a restriction of the comparison only.
 \func partialProgram : LBProgram =>
   ((natAddKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (const natAddKn) (prim (primInt63, 20)))
+   app (const natAddKn) (prim (rocqUint63, 20)))
 
 \func partialRunsInLambdaBox
   : runProgram lbAxioms partialProgram 200
-  = rOk (app (const natAddKn) (prim (primInt63, 20))) => idp
+  = rOk (app (const natAddKn) (prim (rocqUint63, 20))) => idp
 
 \func partialRunsInJava
   : runClass rtInt63 (compileClass progClassName partialProgram) bodyMethodName 200
@@ -189,18 +189,18 @@
 \func boolCaseProgram : LBProgram =>
   (boolDecls,
    case boolInd 0
-     (app (app (const natBeqKn) (prim (primInt63, 3))) (prim (primInt63, 3)))
-     (((nil : Array BinderName), prim (primInt63, 100)) ::
-      ((nil : Array BinderName), prim (primInt63, 200)) :: nil))
+     (app (app (const natBeqKn) (prim (rocqUint63, 3))) (prim (rocqUint63, 3)))
+     (((nil : Array BinderName), prim (rocqUint63, 100)) ::
+      ((nil : Array BinderName), prim (rocqUint63, 200)) :: nil))
 
 \func boolCaseAgrees : bothAgree boolCaseProgram 500 = true => idp
 
 \func boolCaseInLambdaBox
-  : runProgram lbAxioms boolCaseProgram 500 = rOk (prim (primInt63, 200)) => idp
+  : runProgram lbAxioms boolCaseProgram 500 = rOk (prim (rocqUint63, 200)) => idp
 
 -- The boolean itself.
 \func boolProgram : LBProgram =>
-  (boolDecls, app (app (const natBeqKn) (prim (primInt63, 3))) (prim (primInt63, 4)))
+  (boolDecls, app (app (const natBeqKn) (prim (rocqUint63, 3))) (prim (rocqUint63, 4)))
 
 \func boolFalseInLambdaBox
   : runProgram lbAxioms boolProgram 500 = rOk (construct boolInd 0 nil) => idp
@@ -212,10 +212,10 @@
 
 \func natSubProgram : LBProgram =>
   ((natSubKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const natSubKn) (prim (primInt63, 3))) (prim (primInt63, 5)))
+   app (app (const natSubKn) (prim (rocqUint63, 3))) (prim (rocqUint63, 5)))
 
 \func natSubTruncates
-  : runProgram lbAxioms natSubProgram 200 = rOk (prim (primInt63, 0)) => idp
+  : runProgram lbAxioms natSubProgram 200 = rOk (prim (rocqUint63, 0)) => idp
 
 \func natSubAgrees : bothAgree natSubProgram 200 = true => idp
 
@@ -229,13 +229,13 @@
 
 \func int63Program : LBProgram =>
   ((subAxiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const subAxiomKn) (prim (primInt63, 1))) (prim (primInt63, 2)))
+   app (app (const subAxiomKn) (prim (rocqUint63, 1))) (prim (rocqUint63, 2)))
 
 \func int63Agrees : bothAgree int63Program 200 = true => idp
 
 -- The two values.
 \func int63InLambdaBox
-  : runProgram lbAxioms int63Program 200 = rOk (prim (primInt63, 9223372036854775807))
+  : runProgram lbAxioms int63Program 200 = rOk (prim (rocqUint63, 9223372036854775807))
   => idp
 
 \func int63InJava
@@ -261,10 +261,10 @@
 
 \func natDivProgram : LBProgram =>
   ((natDivKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const natDivKn) (prim (primInt63, 42))) (prim (primInt63, 5)))
+   app (app (const natDivKn) (prim (rocqUint63, 42))) (prim (rocqUint63, 5)))
 
 \func natDivInLambdaBox
-  : runProgram lbAxioms natDivProgram 200 = rOk (prim (primInt63, 8)) => idp
+  : runProgram lbAxioms natDivProgram 200 = rOk (prim (rocqUint63, 8)) => idp
 
 \func natDivAgrees : bothAgree natDivProgram 200 = true => idp
 
@@ -274,7 +274,7 @@
 
 \func arrayProgram : LBProgram =>
   ((arrayPushKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const arrayPushKn) box) (prim (primInt63, 1)))
+   app (app (const arrayPushKn) box) (prim (rocqUint63, 1)))
 
 \func arrayStuckInLambdaBox : runProgram lbAxioms arrayProgram 200 = rStuck => idp
 
@@ -295,14 +295,14 @@
 
 -- A payload is built with `wrap63`, so writing 2^63 gives 0 ...
 \func int63LiteralNormalizes
-  : prim (primInt63, wrap63 (pos 9223372036854775808)) = prim (primInt63, 0) => idp
+  : prim (rocqUint63, wrap63 (pos 9223372036854775808)) = prim (rocqUint63, 0) => idp
 
 -- ... which agrees with the Java value 0 exactly ...
 \func int63NormalizedAgrees
-  : agrees (prim (primInt63, wrap63 (pos 9223372036854775808))) (vLong 0) = true => idp
+  : agrees (prim (rocqUint63, wrap63 (pos 9223372036854775808))) (vLong 0) = true => idp
 
 -- ... and not with -2^63.
 \func int63NormalizedRejectsOld
-  : agrees (prim (primInt63, wrap63 (pos 9223372036854775808)))
+  : agrees (prim (rocqUint63, wrap63 (pos 9223372036854775808)))
               (vLong (neg 9223372036854775808)) = false
   => idp

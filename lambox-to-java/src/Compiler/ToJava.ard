@@ -126,8 +126,8 @@
   | fvar v => (nil, rtFreeVar v.varName path)
 
   -- The payload is already bounded; the tag decides how it is emitted.
-  | prim (primInt63, i) => (nil, int63Lit i)
-  | prim (primInt64, i) => (nil, int64Lit i)
+  | prim (rocqUint63, i) => (nil, int63Lit i)
+  | prim (javaLong, i) => (nil, longLit i)
 
   | const k => (nil, jCallStatic (mangleKername k) nil)
 

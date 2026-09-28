@@ -119,10 +119,10 @@
          (1, evalVar rt cls 0 {(wrapName p idx, a) :: (X ++ (ext0 ++ jenv))} {inst} {obj} (lookupCons a (X ++ (ext0 ++ jenv)) (renderNeKind (\lam (q : nParam = nFixInst) => contradiction) (sWrap idx :: p) p)
                                *> lookupSkip ix nFixInst (\lam ind => indepNotSelf ind idp) (ext0 ++ jenv)
                                *> lookupHead inst obj ((cn, obj) :: jenv)))))))
-  | prim (primInt63, i), eePrim e =>
-    pureOut (compileExpr cenv p (prim (primInt63, i))) idp (\lam X _ => (vLong (pos i), 4, valueOfEval H (X ++ jenv) (pos i), rewrite e (cvP63 idp)))
-  | prim (primInt64, i), eePrim e =>
-    pureOut (compileExpr cenv p (prim (primInt64, i))) idp (\lam X _ => (vLong (signed64 i), 4, valueOfEval H (X ++ jenv) (signed64 i), rewrite e (cvP64 idp)))
+  | prim (rocqUint63, i), eePrim e =>
+    pureOut (compileExpr cenv p (prim (rocqUint63, i))) idp (\lam X _ => (vLong (pos i), 4, valueOfEval H (X ++ jenv) (pos i), rewrite e (cvP63 idp)))
+  | prim (javaLong, i), eePrim e =>
+    pureOut (compileExpr cenv p (prim (javaLong, i))) idp (\lam X _ => (vLong (signed64 i), 4, valueOfEval H (X ++ jenv) (signed64 i), rewrite e (cvP64 idp)))
   | const kn, eeDelta {cb} {body} lk cbb dbody =>
     \let | r => simE H dbody {nil} {nil} {nil} erNil
          | v => r.5 nil ()

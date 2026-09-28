@@ -10,10 +10,10 @@
 \import Semantics.LambdaBoxEval
 \import Semantics.LambdaBoxRun
 \import Proof.LambdaBoxSound
-\import Proof.Int64RewriteSpec
+\import Proof.LongRewriteSpec
 \import Semantics.LambdaBoxAxioms
 \import Compiler.Int63 (wrap63, wrap64u)
-\import Compiler.Int64Rewrite
+\import Compiler.LongRewrite
 \import Semantics.Res
 \import Semantics.RtInt63
 \import Semantics.RtLong
@@ -38,7 +38,7 @@
 -- prove little.
 --
 -- Also here: integer overflow at 2^63 (λ□ and Java both wrap), and the
--- int64 rewrite (`Compiler/Int64Rewrite.ard`): one program whose value it
+-- int64 rewrite (`Compiler/LongRewrite.ard`): one program whose value it
 -- preserves and one where it does not.
 
 -- The compiled program returns a value related to `v`. A throw, being stuck
@@ -133,14 +133,14 @@
 -- numerals are constructors, not primitives).
 -- ---------------------------------------------------------------------------
 
-\func primProgram : LBProgram => (nil, prim (primInt63, 7))
+\func primProgram : LBProgram => (nil, prim (rocqUint63, 7))
 
-\func lbPrim (spec : LBSpec) : EvalProgram spec primProgram (prim (primInt63, 7)) => evalPrim idp
+\func lbPrim (spec : LBSpec) : EvalProgram spec primProgram (prim (rocqUint63, 7)) => evalPrim idp
 
-\func jPrim : relatedTo primProgram 20 (prim (primInt63, 7)) = true => idp
+\func jPrim : relatedTo primProgram 20 (prim (rocqUint63, 7)) = true => idp
 
 -- The relation must distinguish integers, or `jPrim` is vacuous.
-\func jPrimRejects : relatedTo primProgram 20 (prim (primInt63, 8)) = false => idp
+\func jPrimRejects : relatedTo primProgram 20 (prim (rocqUint63, 8)) = false => idp
 
 -- ---------------------------------------------------------------------------
 -- 5. `proj` -- the offset guard.
@@ -166,7 +166,7 @@
 
 -- `mk <param> 20 21`, the parameter erased to `box`.
 \func pairTerm : LBTerm =>
-  construct pairInd 0 (box :: prim (primInt63, 20) :: prim (primInt63, 21) :: nil)
+  construct pairInd 0 (box :: prim (rocqUint63, 20) :: prim (rocqUint63, 21) :: nil)
 
 -- Project field 1 (the second field), i.e. index `npars + 1 = 2`, value 21.
 \func projInfo1 : ProjectionInfo => \new ProjectionInfo pairInd 1 1
@@ -183,13 +183,13 @@
     })
     idp
 
-\func lbProj (spec : LBSpec) : EvalProgram spec projProgram (prim (primInt63, 21)) =>
+\func lbProj (spec : LBSpec) : EvalProgram spec projProgram (prim (rocqUint63, 21)) =>
   evalProj (lbPair spec) idp idp idp (evalPrim idp)
 
-\func jProj : relatedTo projProgram 40 (prim (primInt63, 21)) = true => idp
+\func jProj : relatedTo projProgram 40 (prim (rocqUint63, 21)) = true => idp
 
 -- The off-by-one guard: without the offset the result would be 20.
-\func jProjNotFieldZero : relatedTo projProgram 40 (prim (primInt63, 20)) = false => idp
+\func jProjNotFieldZero : relatedTo projProgram 40 (prim (rocqUint63, 20)) = false => idp
 
 -- ---------------------------------------------------------------------------
 -- 6. A `fix` block with two definitions: is the right one selected?
@@ -203,13 +203,13 @@
   (\new FixDef LBTerm anon constBoxTerm 0) ::
   (\new FixDef LBTerm anon idTerm 0) :: nil
 
-\func fix2Program : LBProgram => (nil, app (fix twoDefs 1) (prim (primInt63, 5)))
+\func fix2Program : LBProgram => (nil, app (fix twoDefs 1) (prim (rocqUint63, 5)))
 
-\func lbFix2 (spec : LBSpec) : EvalProgram spec fix2Program (prim (primInt63, 5)) =>
+\func lbFix2 (spec : LBSpec) : EvalProgram spec fix2Program (prim (rocqUint63, 5)) =>
   evalFix (evalAtomFix idp) idp (evalPrim idp)
           (evalBeta (evalAtomLambda idp) (evalPrim idp) (evalPrim idp))
 
-\func jFix2 : relatedTo fix2Program 40 (prim (primInt63, 5)) = true => idp
+\func jFix2 : relatedTo fix2Program 40 (prim (rocqUint63, 5)) = true => idp
 
 -- The selection guard: had either side taken definition 0, the result is `box`.
 \func jFix2NotSlotZero : relatedTo fix2Program 40 box = false => idp
@@ -233,12 +233,12 @@
 -- by the runtime model on the Java side.
 -- ---------------------------------------------------------------------------
 
-\func lbAxiom : EvalProgram lbAxioms addAxiomProgram (prim (primInt63, 5))
+\func lbAxiom : EvalProgram lbAxioms addAxiomProgram (prim (rocqUint63, 5))
   => evalT-sound lbAxioms 200 idp
 
-\func jAxiom : relatedTo addAxiomProgram 200 (prim (primInt63, 5)) = true => idp
+\func jAxiom : relatedTo addAxiomProgram 200 (prim (rocqUint63, 5)) = true => idp
 
-\func jAxiomRejects : relatedTo addAxiomProgram 200 (prim (primInt63, 6)) = false => idp
+\func jAxiomRejects : relatedTo addAxiomProgram 200 (prim (rocqUint63, 6)) = false => idp
 
 -- ---------------------------------------------------------------------------
 -- 9. Unsigned int63 arithmetic: `prim_sub_int 1 2` (`int63Program`, from
@@ -246,7 +246,7 @@
 -- Java (`Rt.PRIM_SUB_INT63`). (A plain JVM `long` would say -1.)
 -- ---------------------------------------------------------------------------
 
-\func int63Value : LBTerm => prim (primInt63, 9223372036854775807)
+\func int63Value : LBTerm => prim (rocqUint63, 9223372036854775807)
 
 \func lbInt63 : EvalProgram lbAxioms int63Program int63Value
   => evalT-sound lbAxioms 200 idp
@@ -268,10 +268,10 @@
 
 \func natOverflowProgram : LBProgram =>
   ((natAddKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const natAddKn) (prim (primInt63, 9223372036854775807))) (prim (primInt63, 1)))
+   app (app (const natAddKn) (prim (rocqUint63, 9223372036854775807))) (prim (rocqUint63, 1)))
 
 -- 2^63-1 plus 1 is 0, in BOTH semantics: i63 wraps at 2^63.
-\func natOverflowValue : LBTerm => prim (primInt63, 0)
+\func natOverflowValue : LBTerm => prim (rocqUint63, 0)
 
 \func lbNatOverflow : EvalProgram lbAxioms natOverflowProgram natOverflowValue
   => evalT-sound lbAxioms 200 idp
@@ -300,10 +300,10 @@
 \func natSubKeepsItsOwnConstant : axiomRtName natSubKn = just "NAT_SUB_LONG" => idp
 
 \func natSubStillTruncates
-  : runProgram lbAxioms natSubProgram 200 = rOk (prim (primInt63, 0)) => idp
+  : runProgram lbAxioms natSubProgram 200 = rOk (prim (rocqUint63, 0)) => idp
 
 -- ---------------------------------------------------------------------------
--- 11. The int64 rewrite (`Compiler/Int64Rewrite.ard`): it renames the axioms
+-- 11. The int64 rewrite (`Compiler/LongRewrite.ard`): it renames the axioms
 -- and retags the literals, and the result is an ordinary λ□ program.
 -- ---------------------------------------------------------------------------
 
@@ -313,7 +313,7 @@
 -- The rewritten program computes on the i64 family ...
 \func rewrittenRuns
   : runProgram lbAxioms (rewriteProgram addAxiomProgram) 200
-  = rOk (prim (primInt64, wrap64u 5))
+  = rOk (prim (javaLong, wrap64u 5))
   => idp
 
 -- ... and so does its compiled Java, through `Rt.PRIM_ADD_LONG`.
@@ -327,22 +327,22 @@
 -- `(2^63-1) + 1` is 0 under i63 and 2^63 under i64.
 \func overflowProgram : LBProgram =>
   ((axiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const axiomKn) (prim (primInt63, wrap63 (pos 9223372036854775807))))
-       (prim (primInt63, wrap63 1)))
+   app (app (const axiomKn) (prim (rocqUint63, wrap63 (pos 9223372036854775807))))
+       (prim (rocqUint63, wrap63 1)))
 
 \func overflowInI63
-  : runProgram lbAxioms overflowProgram 200 = rOk (prim (primInt63, 0)) => idp
+  : runProgram lbAxioms overflowProgram 200 = rOk (prim (rocqUint63, 0)) => idp
 
 \func overflowInI64
   : runProgram lbAxioms (rewriteProgram overflowProgram) 200
-  = rOk (prim (primInt64, wrap64u (pos 9223372036854775808)))
+  = rOk (prim (javaLong, wrap64u (pos 9223372036854775808)))
   => idp
 
 \func rewriteChangesOverflow : rewritePreserves overflowProgram 200 = false => idp
 
 -- So the rewrite is not sound without a side condition (the one stated in
--- `Proof/Int64RewriteSpec.ard`).
-\lemma int64RewriteIsNotSound (s : Int64RewriteSound) : Empty =>
+-- `Proof/LongRewriteSpec.ard`).
+\lemma longRewriteIsNotSound (s : LongRewriteSound) : Empty =>
   true/=false (inv (s overflowProgram 200) *> rewriteChangesOverflow)
 
 -- ---------------------------------------------------------------------------

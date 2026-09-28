@@ -26,7 +26,7 @@
 --
 -- `vLong` (`Semantics/JavaValue.ard`) holds an unbounded `Int`, while a Java
 -- `long` lies in [-2^63, 2^63). The Java fragment never computes on longs, so
--- they come from compiler literals (`int63LitIn`, `int64LitIn`) or from the
+-- they come from compiler literals (`int63LitIn`, `longLitIn`) or from the
 -- runtime model `rtInt63`: its builtins return only in-range longs, on any
 -- arguments (`builtinRunIn`), `Long.valueOf` returns its in-range argument
 -- (`staticCallIn`), and no field is a long (`rtFieldIn`).
@@ -113,8 +113,8 @@
 -- `int63Lit i` is `Long.valueOf(i)`, and `i < 2^63`.
 \lemma int63LitIn (i : Fin int63Mod) : InLong (pos i) => fin_< i
 
--- `int64Lit i` is `Long.valueOf(signed64 i)`, the signed reading of a 64-bit pattern.
-\lemma int64LitIn (i : Fin int64Mod) : InLong (signed64 i) =>
+-- `longLit i` is `Long.valueOf(signed64 i)`, the signed reading of a 64-bit pattern.
+\lemma longLitIn (i : Fin int64Mod) : InLong (signed64 i) =>
   transportInv InLong (signed64-read i) (readIn pow2_63 pow2_64 i idp (fin_< i))
 
 -- ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@
 
 -- `Nat.sub 3 5` returns `0L`: Lean's truncating subtraction, `Rt.NAT_SUB_LONG`.
 \func natSubReturns : Returns natSubProgram (vLong 0) =>
-  correctChecked idp (evalT-sound lbAxioms 200 idp : EvalProgram lbAxioms natSubProgram (prim (primInt63, 0))) idp
+  correctChecked idp (evalT-sound lbAxioms 200 idp : EvalProgram lbAxioms natSubProgram (prim (rocqUint63, 0))) idp
 
 -- `Nat.add (2^63-1) 1` returns `0L`: both sides wrap at 2^63.
 \func natOverflowReturns : Returns natOverflowProgram (vLong 0) => correctChecked idp lbNatOverflow idp

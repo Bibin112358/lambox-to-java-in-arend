@@ -41,8 +41,8 @@
   | 0 => "<too deep>"
   | suc n => \case t \with {
     | box => "BOX"
-    | prim (primInt63, i) => natToStr i
-    | prim (primInt64, i) => intToStr (signed64 i)
+    | prim (rocqUint63, i) => natToStr i
+    | prim (javaLong, i) => intToStr (signed64 i)
     | construct _ c args => wrapFields (natToStr c) (showLBs n args)
     | _ => "<not first-order>"
   }
@@ -99,11 +99,11 @@
 -- Two int63 edge cases the JVM must wrap exactly like λ□'s `Uint63`.
 \func subZeroProgram : LBProgram =>
   ((subAxiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const subAxiomKn) (prim (primInt63, 0))) (prim (primInt63, 1)))
+   app (app (const subAxiomKn) (prim (rocqUint63, 0))) (prim (rocqUint63, 1)))
 
 \func addNearOverflowProgram : LBProgram =>
   ((axiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const axiomKn) (prim (primInt63, 9223372036854775806))) (prim (primInt63, 1)))
+   app (app (const axiomKn) (prim (rocqUint63, 9223372036854775806))) (prim (rocqUint63, 1)))
 
 \func diffPeano => putStrLn (dump "peano" addProgram)
 \func diffSort => putStrLn (dumpJavaOnly "insertion-sort" sortProgram)

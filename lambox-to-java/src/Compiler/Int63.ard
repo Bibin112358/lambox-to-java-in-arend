@@ -3,9 +3,9 @@
 
 -- The primitive integer widths and their normal forms.
 --
--- A λ□ `primInt63` is MetaRocq's `Uint63` (EPrimitive.v; lean-to-lambdabox:
+-- A λ□ `rocqUint63` is MetaRocq's `Uint63` (EPrimitive.v; lean-to-lambdabox:
 -- `BitVec 63`): an unsigned 63-bit integer, i.e. a residue mod 2^63. A
--- `primInt64` payload is a 64-bit bit pattern in [0, 2^64), read as a signed
+-- `javaLong` payload is a 64-bit bit pattern in [0, 2^64), read as a signed
 -- JVM `long` by `signed64`.
 --
 -- One shared definition is used by the compiler (`Compiler/JavaAxioms.ard`,
@@ -32,7 +32,7 @@
   | neg n => finMod (iabs (int64Mod Nat.- (n Nat.mod int64Mod)))
 
 -- `x` reduced into [0, 2^63), the `Uint63` normal form. It returns a `Fin`,
--- so this is the only way to build a `primInt63` payload. No sign
+-- so this is the only way to build a `rocqUint63` payload. No sign
 -- reinterpretation: that is the int63/int64 difference. The `neg` clause is
 -- reduced mod 2^63 again so that `neg 0` (= `pos 0` definitionally) gives 0.
 -- (`finMod` needs no positivity proof: the modulus is a literal.)

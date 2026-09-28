@@ -23,7 +23,7 @@
 -- in `long`'s non-negative half. They differ in arithmetic, `Rt.PRIM_*_INT63`
 -- versus `Rt.PRIM_*_LONG`. A `const` node is compiled without seeing its
 -- operands, so the kind reaches an operation through its axiom NAME
--- (`prim_add_int` vs `prim_add_int64`, see `Compiler/Int64Rewrite.ard`).
+-- (`prim_add_int` vs `prim_add_long`, see `Compiler/LongRewrite.ard`).
 
 -- A `Uint63` literal (the payload is already normalized).
 \func int63Lit (i : Fin int63Mod) : JExpr =>
@@ -31,7 +31,7 @@
 
 -- A 64-bit literal: the payload is the unsigned bit pattern, emitted with the
 -- signed reading a JVM `long` gives it.
-\func int64Lit (i : Fin int64Mod) : JExpr =>
+\func longLit (i : Fin int64Mod) : JExpr =>
   jCallStatic "Long.valueOf" (jLit (litLong (signed64 i)) :: nil)
 
 -- Runtime family implementing λ□'s `Uint63` operations.
@@ -67,12 +67,12 @@
       (axKnRoot "prim_mul_int", primOp "MUL") ::
       (axKnRoot "prim_sub_int", primOp "SUB") ::
       (axKnRoot "prim_eqb_int", primOp "EQB") ::
-      -- int64 operations, produced only by `Compiler/Int64Rewrite.ard`: Java's
+      -- int64 operations, produced only by `Compiler/LongRewrite.ard`: Java's
       -- unmasked `long` arithmetic.
-      (axKnRoot "prim_add_int64", leanOp "ADD") ::
-      (axKnRoot "prim_mul_int64", leanOp "MUL") ::
-      (axKnRoot "prim_sub_int64", leanOp "SUB") ::
-      (axKnRoot "prim_eqb_int64", leanOp "EQB") ::
+      (axKnRoot "prim_add_long", leanOp "ADD") ::
+      (axKnRoot "prim_mul_long", leanOp "MUL") ::
+      (axKnRoot "prim_sub_long", leanOp "SUB") ::
+      (axKnRoot "prim_eqb_long", leanOp "EQB") ::
       (axKnIn "Nat" "add", primOp "ADD") ::
       (axKnIn "Nat" "mul", primOp "MUL") ::
       -- Truncating subtraction, see `leanOpSuffix`.

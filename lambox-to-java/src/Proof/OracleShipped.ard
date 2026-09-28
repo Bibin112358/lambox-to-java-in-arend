@@ -113,9 +113,9 @@
 -- ---------------------------------------------------------------------------
 
 \func inv63 {t : LBTerm} {x : Int} (h : int63Of t = just x)
-  : \Sigma (a : Fin int63Mod) (t = prim (primInt63, a)) (x = pos a) \elim t
-  | prim (primInt63, a) => (a, idp, inv (just-injective h))
-  | prim (primInt64, _) => absurd (noJust h)
+  : \Sigma (a : Fin int63Mod) (t = prim (rocqUint63, a)) (x = pos a) \elim t
+  | prim (rocqUint63, a) => (a, idp, inv (just-injective h))
+  | prim (javaLong, _) => absurd (noJust h)
   | box => absurd (noJust h)
   | bvar _ => absurd (noJust h)
   | fvar _ => absurd (noJust h)
@@ -128,10 +128,10 @@
   | proj _ _ => absurd (noJust h)
   | fix _ _ => absurd (noJust h)
 
-\func inv64 {t : LBTerm} {x : Int} (h : int64Of t = just x)
-  : \Sigma (a : Fin int64Mod) (t = prim (primInt64, a)) (x = pos a) \elim t
-  | prim (primInt64, a) => (a, idp, inv (just-injective h))
-  | prim (primInt63, _) => absurd (noJust h)
+\func inv64 {t : LBTerm} {x : Int} (h : longOf t = just x)
+  : \Sigma (a : Fin int64Mod) (t = prim (javaLong, a)) (x = pos a) \elim t
+  | prim (javaLong, a) => (a, idp, inv (just-injective h))
+  | prim (rocqUint63, _) => absurd (noJust h)
   | box => absurd (noJust h)
   | bvar _ => absurd (noJust h)
   | fvar _ => absurd (noJust h)
@@ -223,7 +223,7 @@
   \Pi (a b : Fin int63Mod) (v : LBTerm) -> int63Run op (pos a) (pos b) = just v
     -> Goal nm (vLong a :: vLong b :: nil) v
 
-\func liftR63At (op : String) (nm : JIdent) (core : R63Core op nm) (no64 : \Pi (x y : Int) -> int64Run op x y = nothing)
+\func liftR63At (op : String) (nm : JIdent) (core : R63Core op nm) (no64 : \Pi (x y : Int) -> longRun op x y = nothing)
                 (args : Array LBTerm) (jargs : Array Value args.len) (v : LBTerm) (rel : Rel args jargs)
                 (m m64 : Maybe (\Sigma Int Int)) (em : twoInts args = m)
                 (r : rootAt op m m64 = just v) : Goal nm jargs v \elim m, m64
@@ -234,13 +234,13 @@
          | r' : int63Run op (pos d.1) (pos d.2) = just v => transport2 (\lam z w => int63Run op z w = just v) d.3 d.4 r
     \in transport (Goal nm __ v) (inv d.5) (core d.1 d.2 v r')
 
-\func liftR63 (op : String) (nm : JIdent) (core : R63Core op nm) (no64 : \Pi (x y : Int) -> int64Run op x y = nothing)
+\func liftR63 (op : String) (nm : JIdent) (core : R63Core op nm) (no64 : \Pi (x y : Int) -> longRun op x y = nothing)
   : ValCore (rootKn op) nm =>
   \lam args jargs v rel r => liftR63At op nm core no64 args jargs v rel (twoInts args) (twoInts64 args) idp r
 
--- `prim_*_int64`: i64 arguments, read signed by the JVM.
+-- `prim_*_long`: i64 arguments, read signed by the JVM.
 \func R64Core (op : String) (nm : JIdent) : \Type =>
-  \Pi (a b : Fin int64Mod) (v : LBTerm) -> int64Run op (pos a) (pos b) = just v
+  \Pi (a b : Fin int64Mod) (v : LBTerm) -> longRun op (pos a) (pos b) = just v
     -> Goal nm (vLong (signed64 a) :: vLong (signed64 b) :: nil) v
 
 \func liftR64At (op : String) (nm : JIdent) (core : R64Core op nm) (no63 : \Pi (x y : Int) -> int63Run op x y = nothing)
@@ -251,7 +251,7 @@
   | nothing, nothing => absurd (noJust r)
   | nothing, just (x, y) =>
     \let | d => decode64 args jargs rel em
-         | r' : int64Run op (pos d.1) (pos d.2) = just v => transport2 (\lam z w => int64Run op z w = just v) d.3 d.4 r
+         | r' : longRun op (pos d.1) (pos d.2) = just v => transport2 (\lam z w => longRun op z w = just v) d.3 d.4 r
     \in transport (Goal nm __ v) (inv d.5) (core d.1 d.2 v r')
 
 \func liftR64 (op : String) (nm : JIdent) (core : R64Core op nm) (no63 : \Pi (x y : Int) -> int63Run op x y = nothing)
@@ -389,11 +389,11 @@
 -- the JVM computes on the signed readings and wraps. `Proof/Mod64.ard`'s
 -- `signed-wrapu` equates the two readings, and `wrap64-cong` says the JVM's
 -- wrap cannot see the multiples of 2^64 by which the readings differ.
-\func relI64 (Z : Int) (J : Value) (jz : Int) (eJ : J = vLong jz) (E : wrap64 Z = jz) : ValRel (lbInt64 Z) J =>
-  transportInv (\lam (w : Value) => agrees (lbInt64 Z) w = true) eJ
+\func relI64 (Z : Int) (J : Value) (jz : Int) (eJ : J = vLong jz) (E : wrap64 Z = jz) : ValRel (lbLong Z) J =>
+  transportInv (\lam (w : Value) => agrees (lbLong Z) w = true) eJ
     (transportInv (\lam z => intEqB z jz = true) (signed-wrapu Z *> E) (intEqB-refl jz))
 
-\func coreAdd64 : R64Core "prim_add_int64" "PRIM_ADD_LONG" =>
+\func coreAdd64 : R64Core "prim_add_long" "PRIM_ADD_LONG" =>
   \lam a b v r =>
     \let | sa => signed-off a
          | sb => signed-off b
@@ -403,9 +403,9 @@
            pmap2 (\lam (p q : Nat) => wrap64 (pos (p Nat.+ q))) (wu-id a) (wu-id b) *>
            inv (wrap64-cong (pos a + pos b) (sa.1 + sb.1)) *>
            pmap wrap64 (inv (addRe (pos a) (pos b) sa.1 sb.1 (pos pow2_64)) *> pmap2 (+) (inv sa.2) (inv sb.2))
-    \in goalOf "PRIM_ADD_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbInt64 Z) r (vLong jz) idp (relI64 Z _ jz idp E)
+    \in goalOf "PRIM_ADD_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbLong Z) r (vLong jz) idp (relI64 Z _ jz idp E)
 
-\func coreSub64 : R64Core "prim_sub_int64" "PRIM_SUB_LONG" =>
+\func coreSub64 : R64Core "prim_sub_long" "PRIM_SUB_LONG" =>
   \lam a b v r =>
     \let | sa => signed-off a
          | sb => signed-off b
@@ -415,9 +415,9 @@
            pmap2 (\lam (p q : Nat) => wrap64 (p Nat.- q)) (wu-id a) (wu-id b) *>
            inv (wrap64-cong (pos a - pos b) (sa.1 - sb.1)) *>
            pmap wrap64 (inv (subRe (pos a) (pos b) sa.1 sb.1 (pos pow2_64)) *> pmap2 (-) (inv sa.2) (inv sb.2))
-    \in goalOf "PRIM_SUB_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbInt64 Z) r (vLong jz) idp (relI64 Z _ jz idp E)
+    \in goalOf "PRIM_SUB_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbLong Z) r (vLong jz) idp (relI64 Z _ jz idp E)
 
-\func coreMul64 : R64Core "prim_mul_int64" "PRIM_MUL_LONG" =>
+\func coreMul64 : R64Core "prim_mul_long" "PRIM_MUL_LONG" =>
   \lam a b v r =>
     \let | sa => signed-off a
          | sb => signed-off b
@@ -427,7 +427,7 @@
            pmap2 (\lam (p q : Nat) => wrap64 (pos (p Nat.* q))) (wu-id a) (wu-id b) *>
            inv (wrap64-cong (pos a * pos b) (sa.1 * pos b + sb.1 * pos a + sa.1 * sb.1 * pos pow2_64)) *>
            pmap wrap64 (inv (mulRe (pos a) (pos b) sa.1 sb.1 (pos pow2_64)) *> pmap2 (*) (inv sa.2) (inv sb.2))
-    \in goalOf "PRIM_MUL_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbInt64 Z) r (vLong jz) idp (relI64 Z _ jz idp E)
+    \in goalOf "PRIM_MUL_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbLong Z) r (vLong jz) idp (relI64 Z _ jz idp E)
 
 \lemma boolIff {p q : Bool} (f : p = true -> q = true) (g : q = true -> p = true) : p = q \elim p, q
   | true, true => idp
@@ -442,7 +442,7 @@
           (\lam h => transport (\lam (z : Nat) => intEqB (pos a) (pos z) = true)
                                (signed64-inj {a} {b} (intEqB-sound h)) (intEqB-refl (pos a)))
 
-\func coreEqb64 : R64Core "prim_eqb_int64" "PRIM_EQB_LONG" =>
+\func coreEqb64 : R64Core "prim_eqb_long" "PRIM_EQB_LONG" =>
   \lam a b v r =>
     \let | B => intEqB (signed64 a) (signed64 b)
          | X : intEqB (pos (wrap64u (pos a))) (pos (wrap64u (pos b))) = B =>
@@ -476,10 +476,10 @@
   | 1 => (idp, valAt (rootKn "prim_mul_int") "PRIM_MUL_INT63" idp (liftR63 "prim_mul_int" "PRIM_MUL_INT63" coreMul63 (\lam _ _ => idp)))
   | 2 => (idp, valAt (rootKn "prim_sub_int") "PRIM_SUB_INT63" idp (liftR63 "prim_sub_int" "PRIM_SUB_INT63" coreSub63 (\lam _ _ => idp)))
   | 3 => (idp, valAt (rootKn "prim_eqb_int") "PRIM_EQB_INT63" idp (liftR63 "prim_eqb_int" "PRIM_EQB_INT63" coreEqb63 (\lam _ _ => idp)))
-  | 4 => (idp, valAt (rootKn "prim_add_int64") "PRIM_ADD_LONG" idp (liftR64 "prim_add_int64" "PRIM_ADD_LONG" coreAdd64 (\lam _ _ => idp)))
-  | 5 => (idp, valAt (rootKn "prim_mul_int64") "PRIM_MUL_LONG" idp (liftR64 "prim_mul_int64" "PRIM_MUL_LONG" coreMul64 (\lam _ _ => idp)))
-  | 6 => (idp, valAt (rootKn "prim_sub_int64") "PRIM_SUB_LONG" idp (liftR64 "prim_sub_int64" "PRIM_SUB_LONG" coreSub64 (\lam _ _ => idp)))
-  | 7 => (idp, valAt (rootKn "prim_eqb_int64") "PRIM_EQB_LONG" idp (liftR64 "prim_eqb_int64" "PRIM_EQB_LONG" coreEqb64 (\lam _ _ => idp)))
+  | 4 => (idp, valAt (rootKn "prim_add_long") "PRIM_ADD_LONG" idp (liftR64 "prim_add_long" "PRIM_ADD_LONG" coreAdd64 (\lam _ _ => idp)))
+  | 5 => (idp, valAt (rootKn "prim_mul_long") "PRIM_MUL_LONG" idp (liftR64 "prim_mul_long" "PRIM_MUL_LONG" coreMul64 (\lam _ _ => idp)))
+  | 6 => (idp, valAt (rootKn "prim_sub_long") "PRIM_SUB_LONG" idp (liftR64 "prim_sub_long" "PRIM_SUB_LONG" coreSub64 (\lam _ _ => idp)))
+  | 7 => (idp, valAt (rootKn "prim_eqb_long") "PRIM_EQB_LONG" idp (liftR64 "prim_eqb_long" "PRIM_EQB_LONG" coreEqb64 (\lam _ _ => idp)))
   | 8 => (idp, valAt (natKn "add") "PRIM_ADD_INT63" idp (liftNat "add" "PRIM_ADD_INT63" coreNatAdd))
   | 9 => (idp, valAt (natKn "mul") "PRIM_MUL_INT63" idp (liftNat "mul" "PRIM_MUL_INT63" coreNatMul))
   | 10 => (idp, valAt (natKn "sub") "NAT_SUB_LONG" idp (liftNat "sub" "NAT_SUB_LONG" coreNatSub))

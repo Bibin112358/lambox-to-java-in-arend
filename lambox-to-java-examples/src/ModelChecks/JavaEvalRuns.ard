@@ -84,7 +84,7 @@
   (primAddKn, constantDecl (\new ConstantBody nothing)) :: nil
 
 -- An int63 literal (payloads are built with `wrap63`).
-\func litT (i : Int) : LBTerm => prim (primInt63, wrap63 i)
+\func litT (i : Int) : LBTerm => prim (rocqUint63, wrap63 i)
 
 \func addT (a b : LBTerm) : LBTerm => app (app (const primAddKn) a) b
 

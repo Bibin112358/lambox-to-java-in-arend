@@ -148,8 +148,8 @@ public final class Rt {
   //     `PrimInt63.int`, lean-to-lambdabox's `BitVec 63`). Used for
   //     `prim_*_int` and `Nat.add`/`mul`/`beq` (lean-to-lambdabox erases `Nat`
   //     to this primitive int).
-  //   * `*_LONG`: Java's signed 64-bit `long`. Used for the `prim_*_int64`
-  //     operations introduced by `Compiler/Int64Rewrite.ard`, and for the other
+  //   * `*_LONG`: Java's signed 64-bit `long`. Used for the `prim_*_long`
+  //     operations introduced by `Compiler/LongRewrite.ard`, and for the other
   //     Lean `Nat`/`Int` operations below (on values in [0, 2^63) they agree
   //     with the 63-bit reading).
   private static long lng(Object x) { return ((Long) x).longValue(); }

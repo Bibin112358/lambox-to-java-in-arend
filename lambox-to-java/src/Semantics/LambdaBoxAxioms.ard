@@ -23,7 +23,7 @@
 --     wrap at 2^63 too, while `Nat.sub` truncates at zero (Lean's convention,
 --     realized by its own `Rt.NAT_SUB_*`) and `div`/`mod` follow Lean's
 --     by-zero conventions.
---   * The `prim_*_int64` family (produced only by `Compiler/Int64Rewrite.ard`)
+--   * The `prim_*_long` family (produced only by `Compiler/LongRewrite.ard`)
 --     is two's-complement 64-bit arithmetic on bit patterns in [0, 2^64).
 --
 -- Deliberate gaps (`nothing`, hence stuck), although `javaAxioms` realizes
@@ -47,15 +47,15 @@
   construct boolInd (\case b \with { | true => 1 | false => 0 }) nil
 
 -- An int63 result (normalized by construction).
-\func lbInt (i : Int) : LBTerm => prim (primInt63, wrap63 i)
+\func lbInt (i : Int) : LBTerm => prim (rocqUint63, wrap63 i)
 
 -- One primitive of each kind, decoded; `nothing` on anything else.
 \func int63Of (t : LBTerm) : Maybe Int \elim t
-  | prim (primInt63, x) => just x
+  | prim (rocqUint63, x) => just x
   | _ => nothing
 
-\func int64Of (t : LBTerm) : Maybe Int \elim t
-  | prim (primInt64, x) => just x
+\func longOf (t : LBTerm) : Maybe Int \elim t
+  | prim (javaLong, x) => just x
   | _ => nothing
 
 \func bothJust (m1 m2 : Maybe Int) : Maybe (\Sigma Int Int) \elim m1, m2
@@ -78,10 +78,10 @@
 
 -- The same for int64. An operation handed operands of the other kind is
 -- stuck, not converted.
-\func twoInts64 (args : Array LBTerm) : Maybe (\Sigma Int Int) => twoOf int64Of args
+\func twoInts64 (args : Array LBTerm) : Maybe (\Sigma Int Int) => twoOf longOf args
 
 -- An int64 result (normalized by construction).
-\func lbInt64 (i : Int) : LBTerm => prim (primInt64, wrap64u i)
+\func lbLong (i : Int) : LBTerm => prim (javaLong, wrap64u i)
 
 -- ---------------------------------------------------------------------------
 -- The table.
@@ -102,8 +102,8 @@
   natKn "mod" :: natKn "beq" :: natKn "ble" :: natKn "blt" ::
   rootKn "prim_add_int" :: rootKn "prim_sub_int" ::
   rootKn "prim_mul_int" :: rootKn "prim_eqb_int" ::
-  rootKn "prim_add_int64" :: rootKn "prim_sub_int64" ::
-  rootKn "prim_mul_int64" :: rootKn "prim_eqb_int64" :: nil
+  rootKn "prim_add_long" :: rootKn "prim_sub_long" ::
+  rootKn "prim_mul_long" :: rootKn "prim_eqb_long" :: nil
 
 -- One step of the walk. The test is a parameter, so that a proof holding
 -- `kernameEq kn k = b` can rewrite with it (as `StringUtil.lookupStep`).
@@ -177,19 +177,19 @@
     nothing } } } }
 
 -- The i64 family: two's-complement 64-bit arithmetic (a JVM `long`) on bit
--- patterns in [0, 2^64). Only programs rewritten by `Compiler/Int64Rewrite.ard`
+-- patterns in [0, 2^64). Only programs rewritten by `Compiler/LongRewrite.ard`
 -- use these names.
-\func int64Run (op : String) (x y : Int) : Maybe LBTerm =>
+\func longRun (op : String) (x y : Int) : Maybe LBTerm =>
   \let | a => wrap64u x
        | b => wrap64u y
   \in
-  \case op == "prim_add_int64" \with {
-    | true => just (lbInt64 (pos (a Nat.+ b))) | false =>
-  \case op == "prim_mul_int64" \with {
-    | true => just (lbInt64 (pos (a Nat.* b))) | false =>
-  \case op == "prim_sub_int64" \with {
-    | true => just (lbInt64 (a Nat.- b)) | false =>
-  \case op == "prim_eqb_int64" \with {
+  \case op == "prim_add_long" \with {
+    | true => just (lbLong (pos (a Nat.+ b))) | false =>
+  \case op == "prim_mul_long" \with {
+    | true => just (lbLong (pos (a Nat.* b))) | false =>
+  \case op == "prim_sub_long" \with {
+    | true => just (lbLong (a Nat.- b)) | false =>
+  \case op == "prim_eqb_long" \with {
     | true => just (lbBool (intEqB (pos a) (pos b))) | false =>
     nothing } } } }
 
@@ -215,10 +215,10 @@
 
 \func rootAt (op : String) (m63 m64 : Maybe (\Sigma Int Int)) : Maybe LBTerm \elim m63
   | just (x, y) => int63Run op x y
-  | nothing => int64At op m64
+  | nothing => longAt op m64
 
-\func int64At (op : String) (m : Maybe (\Sigma Int Int)) : Maybe LBTerm \elim m
-  | just (x, y) => int64Run op x y
+\func longAt (op : String) (m : Maybe (\Sigma Int Int)) : Maybe LBTerm \elim m
+  | just (x, y) => longRun op x y
   | nothing => nothing
 
 -- The oracle of the correctness theorem and of the model checks.

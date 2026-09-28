@@ -18,7 +18,7 @@
 -- are only used for non-recursive element types.
 --
 -- Our `ModPath` keeps MetaRocq's `mpBound`, which Lean's has not; its case is
--- an extension. `primInt64` has no wire format (see `toSExprPrimTag`).
+-- an extension. `javaLong` has no wire format (see `toSExprPrimTag`).
 
 
 -- ---------------------------------------------------------------------------
@@ -91,19 +91,19 @@
   listS (atomS ("projection") :: toSExprInductiveId p.projIndType
                                         :: toSExprNat p.projParamCount :: toSExprNat p.projFieldIdx :: nil)
 
--- Our `primInt63` is peregrine's `primInt`. `primInt64` is our extension and
+-- Our `rocqUint63` is peregrine's `primInt`. `javaLong` is our extension and
 -- has no wire name: it is exported as an atom peregrine rejects (like
 -- `tVar_UNREACHABLE`), rather than silently as a `primInt` of another meaning.
 \func toSExprPrimTag (t : PrimTag) : Sexpr \elim t
-  | primInt63 => atomS ("primInt")
-  | primInt64 => atomS ("primInt64_NOT_REPRESENTABLE")
+  | rocqUint63 => atomS ("primInt")
+  | javaLong => atomS ("javaLong_NOT_REPRESENTABLE")
 
 -- The payload is a bare number atom, as in peregrine's Ceres serializer
 -- (CeresSerialize.v); a quoted "1" (as Serialize.lean writes it) is rejected
 -- by peregrine's deserializer.
 \func toSExprPrimVal (pv : PrimVal) : Sexpr \elim pv
-  | (primInt63, i) => listS (toSExprPrimTag primInt63 :: atomS (natToStr i) :: nil)
-  | (primInt64, i) => listS (toSExprPrimTag primInt64 :: atomS (natToStr i) :: nil)
+  | (rocqUint63, i) => listS (toSExprPrimTag rocqUint63 :: atomS (natToStr i) :: nil)
+  | (javaLong, i) => listS (toSExprPrimTag javaLong :: atomS (natToStr i) :: nil)
 
 
 -- ---------------------------------------------------------------------------

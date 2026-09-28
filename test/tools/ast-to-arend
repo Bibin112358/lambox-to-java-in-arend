@@ -359,17 +359,16 @@ INT63_MOD = 1 << 63
 
 def prim_val(e):
     # The WIRE tag is peregrine's `primInt`; the Arend constructor is
-    # `primInt63`, which is the same kind under a name that states its width
-    # (LambdaBox.ard renamed it when a second kind, `primInt64`, was added).
-    # Nothing in peregrine's output can be a `primInt64`, so there is no case
-    # for it here -- that kind is reached only by a source-to-source rewrite.
+    # `rocqUint63`. Nothing in peregrine's output can be a `javaLong` (our
+    # extension, reached only by a source-to-source rewrite), so there is no
+    # case for it here.
     if not isinstance(e, list) or not e:
         raise ParseError("expected a primitive value, got %s" % show(e))
     if e[0] != 'primInt':
         raise Unsupported("primitive %s: LambdaBox.ard's PrimTag has only primInt"
                           % show(e[0]))
     payload, = tagged(e, 'primInt', 1)
-    # `PrimModel primInt63` is `Fin int63Mod`, so the emitted literal must be in
+    # `PrimModel rocqUint63` is `Fin int63Mod`, so the emitted literal must be in
     # [0, 2^63) or the generated module does not typecheck. Rejecting here turns
     # that into a clear importer error naming the value, rather than an Arend
     # type error in a generated file nobody wrote. Loud rather than normalized
@@ -381,8 +380,8 @@ def prim_val(e):
     n = int(payload)
     if not (0 <= n < INT63_MOD):
         raise Unsupported("primInt payload %d is outside [0, 2^63): LambdaBox.ard's "
-                          "PrimModel primInt63 is Fin int63Mod" % n)
-    return Tuple([Atom('primInt63'), Atom(str(n))])
+                          "PrimModel rocqUint63 is Fin int63Mod" % n)
+    return Tuple([Atom('rocqUint63'), Atom(str(n))])
 
 
 UNSUPPORTED_TERMS = {

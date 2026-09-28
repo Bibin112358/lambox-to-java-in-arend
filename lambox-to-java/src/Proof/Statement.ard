@@ -48,8 +48,8 @@
 
 \func agrees (t : LBTerm) (v : Value) : Bool \elim t, v
   | box, vBox => true
-  | prim (primInt63, i), vLong j => intEqB (pos i) j
-  | prim (primInt64, i), vLong j => intEqB (signed64 i) j
+  | prim (rocqUint63, i), vLong j => intEqB (pos i) j
+  | prim (javaLong, i), vLong j => intEqB (signed64 i) j
   | construct _ c args, vData tg fs => (c == tg) and allWith args.len fs (\lam i => agrees (args i))
   | _, _ => false
 

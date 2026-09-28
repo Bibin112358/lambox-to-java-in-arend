@@ -529,7 +529,7 @@
 
 -- A primitive integer is its own value.
 \func evalPrimSelf (spec : LBSpec)
-  : Eval spec nil (prim (primInt63, 7)) (prim (primInt63, 7)) => evalPrim idp
+  : Eval spec nil (prim (rocqUint63, 7)) (prim (rocqUint63, 7)) => evalPrim idp
 
 -- `fix { f := \lam x => x } 0` applied to `box`: exercises `fixSubst`,
 -- `substl` and `csubst`.
@@ -565,13 +565,13 @@
 
 -- Applied to one argument it is a stuck value (congruence).
 \func evalAxiomPartial
-  : Eval lbSnd sndEnv (app (const sndKn) (prim (primInt63, 1)))
-                      (app (const sndKn) (prim (primInt63, 1))) =>
+  : Eval lbSnd sndEnv (app (const sndKn) (prim (rocqUint63, 1)))
+                      (app (const sndKn) (prim (rocqUint63, 1))) =>
   evalAppCong evalAxiomIsValue idp (evalPrim idp) idp idp
 
 -- Applied to both, the oracle computes the second argument.
 \func evalAxiomFires
-  : Eval lbSnd sndEnv (app (app (const sndKn) (prim (primInt63, 1))) (prim (primInt63, 2)))
-                      (prim (primInt63, 2)) =>
-  evalAxiomApp sndKn (prim (primInt63, 1) :: prim (primInt63, 2) :: nil)
+  : Eval lbSnd sndEnv (app (app (const sndKn) (prim (rocqUint63, 1))) (prim (rocqUint63, 2)))
+                      (prim (rocqUint63, 2)) =>
+  evalAxiomApp sndKn (prim (rocqUint63, 1) :: prim (rocqUint63, 2) :: nil)
                evalAxiomPartial (evalPrim idp) idp idp

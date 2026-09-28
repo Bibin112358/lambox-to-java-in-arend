@@ -28,7 +28,7 @@
 -- `compile_value`, `CV w jv` says "`jv` is what the backend makes of `w`":
 --
 --   * `evBox`, a primitive, a constructor: `Rt.BOX`, the long of the literal
---     (read as `int63Lit`/`int64Lit` do), `Rt.Data` with related fields;
+--     (read as `int63Lit`/`longLit` do), `Rt.Data` with related fields;
 --   * `evClos na b rho`: the closure compiled from `b` at SOME path `p` under
 --     SOME compile-time environment `cenv`, capturing a Java environment that
 --     realizes `rho` along `cenv`. Which `p` and `cenv` does not matter -- the
@@ -90,8 +90,8 @@
 
 \data CV (rt : RtSpec) (cls : JClass) (w : EV) (jv : Value) \elim w
   | evBox => cvBox (jv = vBox)
-  | evPrim (primInt63, i) => cvP63 (jv = vLong (pos i))
-  | evPrim (primInt64, i) => cvP64 (jv = vLong (signed64 i))
+  | evPrim (rocqUint63, i) => cvP63 (jv = vLong (pos i))
+  | evPrim (javaLong, i) => cvP64 (jv = vLong (signed64 i))
   | evCon ind c ws => cvCon {fs : Array Value} (jv = vData c fs) (AllCV rt cls ws fs)
   | evClos na b rho => cvClos {cenv : Array JExpr} {E : Env} {p : Path}
       (jv = vClos (renderName nParam p) (lamBody cenv p b) E)

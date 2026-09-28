@@ -98,8 +98,8 @@
 \func cvValRel {rt : RtSpec} {cls : JClass} (w : EV) {jv : Value} (cv : CV rt cls w jv) (fo : FOVal (quote w))
   : ValRel (quote w) jv \elim w, cv
   | evBox, cvBox e => rewrite e idp
-  | evPrim (primInt63, i), cvP63 e => rewrite e (intEqB-refl (pos i))
-  | evPrim (primInt64, i), cvP64 e => rewrite e (intEqB-refl _)
+  | evPrim (rocqUint63, i), cvP63 e => rewrite e (intEqB-refl (pos i))
+  | evPrim (javaLong, i), cvP64 e => rewrite e (intEqB-refl _)
   | evCon ind c ws, cvCon {fs} e ac => rewrite e (pmap2 (\lam a b => a and b) (eqSelf c) (allValRel ws fs ac fo))
   | evClos na b rho, _ => absurd (transport FOVal (skLamF 0 (quoteEnv rho) na b) fo)
   | evFix defs idx rho, _ => absurd (transport FOVal (skFixF 0 (quoteEnv rho) defs idx) fo)
@@ -126,7 +126,7 @@
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
-\func p63Inv (i : Fin int63Mod) (jv : Value) (h : agrees (prim (primInt63, i)) jv = true) : jv = vLong (pos i) \elim jv
+\func p63Inv (i : Fin int63Mod) (jv : Value) (h : agrees (prim (rocqUint63, i)) jv = true) : jv = vLong (pos i) \elim jv
   | vBox => \case h
   | vData _ _ => \case h
   | vClos _ _ _ => \case h
@@ -139,7 +139,7 @@
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
-\func p64Inv (i : Fin int64Mod) (jv : Value) (h : agrees (prim (primInt64, i)) jv = true) : jv = vLong (signed64 i) \elim jv
+\func p64Inv (i : Fin int64Mod) (jv : Value) (h : agrees (prim (javaLong, i)) jv = true) : jv = vLong (signed64 i) \elim jv
   | vBox => \case h
   | vData _ _ => \case h
   | vClos _ _ _ => \case h
@@ -169,8 +169,8 @@
 \func agreesCV {rt : RtSpec} {cls : JClass} (r : LBTerm) (jv : Value) (fo : FOVal r) (h : agrees r jv = true)
   : CV rt cls (ofFO r) jv \elim r
   | box => cvBox (boxInv jv h)
-  | prim (primInt63, i) => cvP63 (p63Inv i jv h)
-  | prim (primInt64, i) => cvP64 (p64Inv i jv h)
+  | prim (rocqUint63, i) => cvP63 (p63Inv i jv h)
+  | prim (javaLong, i) => cvP64 (p64Inv i jv h)
   | construct ind c args =>
     \let s => conInv ind c args jv h
     \in cvCon s.2 (agreesAllCV args s.1 (\lam i v => agreesCV (args i) v (fo i)) s.3)

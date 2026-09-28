@@ -21,9 +21,9 @@
 --
 -- Design decisions for this translation:
 --
--- * Native primitive ints (`prim (primInt63, _)`), not a hand-rolled Peano Nat.
+-- * Native primitive ints (`prim (rocqUint63, _)`), not a hand-rolled Peano Nat.
 --   Consequence: `case` (which dispatches on a `construct`-tagged value) can
---   no longer structurally recurse on the *size* directly, since a primInt63
+--   no longer structurally recurse on the *size* directly, since a rocqUint63
 --   isn't construct-tagged. Every place the source recurred on `n`/`Fin n`
 --   structurally (funToVec's implicit loop bound, nth-style indexing) now
 --   needs explicit primitive comparison/subtraction, done via 4 arity-2
@@ -105,13 +105,13 @@
 
 \func buildVecBody : LBTerm =>
   lambda anon (lambda anon (lambda anon (
-    case boolInd 0 (app2 primEqbRef (bvar 1) (prim (primInt63, 0))) (
+    case boolInd 0 (app2 primEqbRef (bvar 1) (prim (rocqUint63, 0))) (
     -- tag 0 = false (remaining /= 0): cons (f idx) (buildVec f (sub remaining 1) (add idx 1))
       (nil,
        listConsC (app (bvar 2) (bvar 0))
            (app3 (bvar 3) (bvar 2)
-               (app2 primSubRef (bvar 1) (prim (primInt63, 1)))
-               (app2 primAddRef (bvar 0) (prim (primInt63, 1))))) ::
+               (app2 primSubRef (bvar 1) (prim (rocqUint63, 1)))
+               (app2 primAddRef (bvar 0) (prim (rocqUint63, 1))))) ::
       -- tag 1 = true (remaining == 0): nil
       (nil, listNilC) ::
       nil
@@ -132,7 +132,7 @@
 
 \func funToVecBody : LBTerm =>
   lambda anon (lambda anon (
-    app3 buildVecRef (bvar 0) (bvar 1) (prim (primInt63, 0))
+    app3 buildVecRef (bvar 0) (bvar 1) (prim (rocqUint63, 0))
   ))
 
 
@@ -156,10 +156,10 @@
 \func nthBody : LBTerm =>
   lambda anon (lambda anon (
     case listInd 0 (bvar 1) (
-      (nil, prim (primInt63, 0)) ::                                    -- nil: out of bounds, unreachable given SIZE invariants
+      (nil, prim (rocqUint63, 0)) ::                                    -- nil: out of bounds, unreachable given SIZE invariants
       ((anon :: anon :: nil),
-       case boolInd 0 (app2 primEqbRef (bvar 2) (prim (primInt63, 0))) (
-         (nil, app2 (bvar 4) (bvar 0) (app2 primSubRef (bvar 2) (prim (primInt63, 1)))) ::  -- c /= 0: nth tl (sub c 1)
+       case boolInd 0 (app2 primEqbRef (bvar 2) (prim (rocqUint63, 0))) (
+         (nil, app2 (bvar 4) (bvar 0) (app2 primSubRef (bvar 2) (prim (rocqUint63, 1)))) ::  -- c /= 0: nth tl (sub c 1)
          (nil, bvar 1) ::                                             -- c == 0: hd
          nil
        )) ::
@@ -300,21 +300,21 @@
 -- pair usable as a runtime benchmark -- a change to ToJava that shows up only at
 -- 250 is a change in the generated code's runtime, not in its compilation.
 -- See test/README.md ("Performance") for the sizes that were measured and why 250 won.
-\func sizeLitOf (n : Nat) : LBTerm => prim (primInt63, n)
+\func sizeLitOf (n : Nat) : LBTerm => prim (rocqUint63, n)
 
 \func randNatRef  : LBTerm => const (\new Kername (mpFile nil) "randNat")
 \func randVecRef  : LBTerm => const (\new Kername (mpFile nil) "randVec")
 \func randMatRef  : LBTerm => const (\new Kername (mpFile nil) "randMat")
 \func resRef      : LBTerm => const (\new Kername (mpFile nil) "res")
 
-\func randNatBody : LBTerm => prim (primInt63, 1)
+\func randNatBody : LBTerm => prim (rocqUint63, 1)
 
 \func randVecBodyOf (n : Nat) : LBTerm => app2 funToVecRef (sizeLitOf n) (lambda anon randNatRef)
 
 \func randMatBodyOf (n : Nat) : LBTerm => app2 funToVecRef (sizeLitOf n) (lambda anon randVecRef)
 
 \func resBodyOf (n : Nat) : LBTerm =>
-  app7 matMulRef (prim (primInt63, 0)) primAddRef primMulRef (sizeLitOf n) (sizeLitOf n) randMatRef randMatRef
+  app7 matMulRef (prim (rocqUint63, 0)) primAddRef primMulRef (sizeLitOf n) (sizeLitOf n) randMatRef randMatRef
 
 
 -- ---------------------------------------------------------------------------
@@ -333,7 +333,7 @@
 \func sumListBody : LBTerm =>
   lambda anon (
     case listInd 0 (bvar 0) (
-      (nil, prim (primInt63, 0)) ::
+      (nil, prim (rocqUint63, 0)) ::
       ((anon :: anon :: nil), app2 primAddRef (bvar 1) (app (bvar 3) (bvar 0))) ::
       nil
     )
@@ -359,7 +359,7 @@
 \func sumMatBody : LBTerm =>
   lambda anon (
     case listInd 0 (bvar 0) (
-      (nil, prim (primInt63, 0)) ::
+      (nil, prim (rocqUint63, 0)) ::
       ((anon :: anon :: nil), app2 primAddRef (app sumListRef (bvar 1)) (app (bvar 3) (bvar 0))) ::
       nil
     )
