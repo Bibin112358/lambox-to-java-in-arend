@@ -14,6 +14,11 @@
 # from runtime/Main.java.in; the generated class only exposes `body()`).
 #
 # run: runs Main; its output goes to stdout and to <outdir>/output.txt.
+#
+# With LAMBOX_NAMES=1 (`check run --names`), gen also writes the constructor
+# table <outdir>/Prog.names (Compiler/CtorNames.ard; one more Arend call), and
+# run passes it to the runtime, which then prints constructor names instead of
+# bare tags. Debugging only: the output no longer matches the expected value.
 set -euo pipefail
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
@@ -39,6 +44,10 @@ gen)
   require_tool "$PYTHON" "a Python 3 interpreter"
   run_cmd "$TOOLS_DIR/import-ast.sh" "$ast" "$module"
   run_cmd "$TOOLS_DIR/extract-arend.sh" "Imported.$module:progJava" "$outdir/Prog.java"
+  rm -f "$outdir/Prog.names"
+  if [ "${LAMBOX_NAMES-}" = 1 ]; then
+    run_cmd "$TOOLS_DIR/extract-arend.sh" "Imported.$module:progNames" "$outdir/Prog.names"
+  fi
   ;;
 
 build)
@@ -57,9 +66,14 @@ run)
   outdir=$(abs_dir "${1:?usage: java.sh run <outdir>}")
   [ -f "$outdir/Main.class" ] || die "nothing compiled in $outdir (run build first)"
   require_tool "$JAVA" "a JDK"
+  names=()
+  if [ "${LAMBOX_NAMES-}" = 1 ]; then
+    [ -f "$outdir/Prog.names" ] || die "no $outdir/Prog.names (run gen with LAMBOX_NAMES=1)"
+    names=("-Dlambox.names=$outdir/Prog.names")
+  fi
   # shellcheck disable=SC2086
   run_cmd_capture "$outdir/output.txt" \
-    "$JAVA" "$JAVA_RUN_STACK" $JAVA_RUN_FLAGS -cp "$outdir" Main
+    "$JAVA" "$JAVA_RUN_STACK" $JAVA_RUN_FLAGS "${names[@]}" -cp "$outdir" Main
   ;;
 
 *) die "unknown stage: $stage (gen|build|run)" ;;

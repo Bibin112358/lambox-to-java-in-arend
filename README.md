@@ -81,6 +81,7 @@ MetaRocq. Integers are Lean's machine integers as lean-to-lambdabox emits them
         Mangle.ard, NodePath.ard      Java names for constants / local variables
         Int63.ard, LongRewrite.ard    machine-integer helpers and a rewrite pass
         Serialize.ard, StringUtil.ard helpers
+        CtorNames.ard                 constructor-name table for readable output (debugging only)
       src/Semantics/                MODELS the proof is stated against
         LambdaBoxEval.ard             λ□ big-step semantics (MetaRocq's EWcbvEval)
         LambdaBoxEnv.ard              λ□ with environments (intermediate)

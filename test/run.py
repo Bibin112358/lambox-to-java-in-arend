@@ -5,6 +5,7 @@
     test/check run peano leanbench-unit   # run these on the java backend
     test/check run --all                  # every program (~25 min)
     test/check run --ref matmul           # also Peregrine's OCaml/C backends
+    test/check run --names peano          # print the value with constructor names
 
 For each program: stages/java.sh gen (import the .ast, generate Java with
 Arend), build (javac), run (java), then compare the printed value with the
@@ -12,6 +13,10 @@ program's `expected` value from its corpus. `--ref` also runs the reference
 backends a program declares (stages/ocaml.sh, stages/c.sh) and requires all
 backends to print the same value. Scratch goes to work/<program>/<backend>/,
 the result table to work/results.tsv.
+
+`--names` is for debugging: the java backend prints constructors by name
+(`Nat.succ(...)` rather than `1(...)`, see Compiler/CtorNames.ard), and the
+value is shown instead of compared.
 """
 
 import argparse
@@ -92,8 +97,14 @@ def main(argv=None):
     p.add_argument("--all", action="store_true", help="every program of every corpus")
     p.add_argument("--ref", action="store_true",
                    help="also run the OCaml/C reference backends the program declares")
+    p.add_argument("--names", action="store_true",
+                   help="print constructor names (java only) and show the value instead of comparing it")
     p.add_argument("--timeout", type=float, default=600, metavar="S", help="per stage (default 600)")
     args = p.parse_args(argv)
+    if args.names:
+        if args.ref:
+            p.error("--names and --ref cannot be combined")
+        os.environ["LAMBOX_NAMES"] = "1"      # read by stages/java.sh
 
     programs = c.load_corpora()
     if not args.programs and not args.all:
@@ -109,10 +120,14 @@ def main(argv=None):
         statuses, values, times = {}, {}, {}
         for backend in backends:
             statuses[backend], times[backend], value = run_backend(prog, backend, args.timeout)
+            if args.names and statuses[backend] in ("ok", "wrong"):
+                statuses[backend] = "ok"       # a named value never equals `expected`
+                print((c.WORK_DIR / prog.name / backend / "output.txt").read_text(), end="", flush=True)
             if statuses[backend] in ("ok", "wrong"):
                 values[backend] = value
         result = verdict(prog, statuses, values)
-        oracle = "expected" if prog.expected and values else "backends" if len(values) > 1 else "none"
+        oracle = ("shown" if args.names else "expected" if prog.expected and values
+                  else "backends" if len(values) > 1 else "none")
         # seconds per stage, gen/build/run
         took = " ".join(f"{b}=" + "/".join(f"{t[k]:.1f}" for k in KINDS if k in t)
                         for b, t in times.items())

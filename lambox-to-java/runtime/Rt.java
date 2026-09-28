@@ -25,7 +25,9 @@ public final class Rt {
   }
 
   // `toString` prints an indented `tag(\n  field,\n  field\n)` tree; a
-  // constructor without fields prints as its bare tag.
+  // constructor without fields prints as its bare tag. With
+  // `-Dlambox.names=<file>` the tag is replaced by a constructor name (see
+  // `Names` below).
   public static final class Data {
     public final int tag;
     public final Object[] fields;
@@ -41,7 +43,7 @@ public final class Rt {
     // Renders into one shared buffer: building a String per level would be
     // quadratic in the nesting depth (a long list is deeply nested).
     public void render(StringBuilder sb, int indent) {
-      sb.append(tag);
+      sb.append(Names.label(tag, fields.length));
       if (fields.length == 0) return;
       sb.append("(\n");
       for (int i = 0; i < fields.length; i++) {
@@ -57,6 +59,48 @@ public final class Rt {
 
     private static void indentBy(StringBuilder sb, int indent) {
       for (int j = 0; j < indent; j++) sb.append("  ");
+    }
+  }
+
+  // Constructor names, for debugging only; not modelled, not used by the
+  // generated code. A `Data` carries no inductive, so the table the harness
+  // writes next to the generated class (`Prog.names`, one line per constructor:
+  // `tag TAB npars TAB nargs TAB inductive TAB constructor`, from
+  // Compiler/CtorNames.ard) is looked up by tag and field count. The field
+  // count is `npars + nargs`, or `nargs` since some erasure output drops the
+  // parameters. Every matching constructor is listed, e.g. `Bool.false|Nat.zero`;
+  // with no match, or without `-Dlambox.names`, the bare tag is printed.
+  static final class Names {
+    private static final java.util.Map<String, String> LABELS = load(System.getProperty("lambox.names"));
+
+    static String label(int tag, int nfields) {
+      String l = LABELS.get(tag + "/" + nfields);
+      return l != null ? l : Integer.toString(tag);
+    }
+
+    private static java.util.Map<String, String> load(String file) {
+      java.util.Map<String, String> m = new java.util.HashMap<String, String>();
+      if (file == null) return m;
+      try {
+        for (String line : java.nio.file.Files.readAllLines(java.nio.file.Paths.get(file))) {
+          String[] c = line.split("\t");
+          if (c.length != 5) continue;
+          int tag = Integer.parseInt(c[0]), npars = Integer.parseInt(c[1]), nargs = Integer.parseInt(c[2]);
+          // Lean's constructor names are qualified already (`Nat.succ`), Rocq's not (`S`).
+          String name = c[4].indexOf('.') >= 0 ? c[4] : c[3] + "." + c[4];
+          add(m, tag + "/" + (npars + nargs), name);
+          if (npars > 0) add(m, tag + "/" + nargs, name);
+        }
+      } catch (java.io.IOException e) {
+        throw new IllegalArgumentException("cannot read -Dlambox.names file " + file, e);
+      }
+      return m;
+    }
+
+    private static void add(java.util.Map<String, String> m, String key, String name) {
+      String old = m.get(key);
+      if (old == null) m.put(key, name);
+      else if (!java.util.Arrays.asList(old.split("\\|")).contains(name)) m.put(key, old + "|" + name);
     }
   }
 

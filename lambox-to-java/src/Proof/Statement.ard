@@ -35,6 +35,15 @@
 -- here: the full proof relates closures by the code they were compiled from
 -- (`Proof/CompileValue.ard`), and this relation is what that yields for data.
 --
+-- The constructor's inductive is not compared: an `Rt.Data` carries only the
+-- tag, so `true`, `Nat.zero` and `List.nil` all become `Data(0, [])`. This is
+-- sound because λ□'s `case`/`proj` only fire on a constructor of the matched
+-- inductive (`evalIota`, `evalProj`), so a program λ□ evaluates never makes the
+-- Java branch on a constructor of the wrong type; and a Java caller knows the
+-- result's type, which together with the Java value determines the λ□ value.
+-- (MetaRocq's extraction to Malfunction drops it the same way.) For debugging,
+-- `Compiler/CtorNames.ard` lets the runtime print tags as constructor names.
+--
 -- `intEqB` is equality on `Int` (`Proof/OracleArith.ard`: `intEqB-sound`); it
 -- compares decimal strings, so that concrete instances with values near 2^63
 -- are still decided by `idp`.

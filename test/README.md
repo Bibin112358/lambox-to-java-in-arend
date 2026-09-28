@@ -31,12 +31,37 @@ meaningless, so any `[ERROR]` or `[GOAL]` line counts as a failure. Logs are in
     test/check run peano leanbench-unit peregrine-rocq-nat
     test/check run --all                      # all 56 programs (~30 min)
     test/check run --ref matmul               # also run Peregrine's OCaml / C backends
+    test/check run --names insertion-sort     # print the value with constructor names (debugging)
 
 `run` prints one line per program: its verdict (`ok`, `wrong`, `gen-fail`,
 `build-fail`, `run-fail`, `timeout`, `xfail`, `skip-no-tool`, or `disagree` with
 `--ref`), which oracle was used (`expected` = the corpus value, `backends` = only
 agreement between backends, `none` = only "did not crash") and the seconds for
 gen/build/run per backend. The table is also written to `work/results.tsv`.
+
+### Readable values (`--names`)
+
+A compiled constructor is an `Rt.Data(tag, fields)` without its inductive, so
+values normally print as bare tags (`1(\n  0\n)`). For debugging, `run --names`
+prints them by name and shows the value instead of comparing it:
+
+    List.cons(
+      Nat.suc(
+        List.nil|Bool.true|Nat.zero
+      ),
+      ...
+
+How: `gen` also writes `work/<p>/java/Prog.names`, one line per constructor of
+the program's inductives (`tag npars nargs inductive constructor`, from
+`Compiler/CtorNames.ard`; one more Arend run), and `run` starts Java with
+`-Dlambox.names=Prog.names`. `Rt` then names a `Data` by every constructor with
+its tag and field count. That can be ambiguous, mostly for constructors without
+fields (above: tag 0 with no fields), and all candidates are printed, separated
+by `|`. The table is not part of the generated class, so the generated Java, the
+Java model and the proofs are unaffected; without the property `Rt` prints bare
+tags as before. By hand: `LAMBOX_NAMES=1 stages/java.sh gen|build|run ...`, or
+`java -Dlambox.names=<file> ...` with a table printed by `progNames` of an
+imported module.
 
 ## Prerequisites
 

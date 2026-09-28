@@ -1,0 +1,37 @@
+\import Data.Array (map, mkArray, Big, ++ \as \infixr 5 ++A)
+\import Data.String
+\import Compiler.LambdaBox
+\import Compiler.StringUtil (joinStr, natToStr)
+
+-- The constructor-name table: debugging aid only, not part of the verified
+-- backend.
+--
+-- A compiled constructor is an `Rt.Data(tag, fields)`: the inductive it came
+-- from is dropped (see `agrees` in `Proof/Statement.ard` for why that is
+-- sound). To still print values readably, the harness writes this table next
+-- to the generated class as `Prog.names`, and `Rt` uses it when run with
+-- `-Dlambox.names=Prog.names` (see `test/README.md`). One line per
+-- constructor of every inductive the program declares:
+--
+--   <tag> TAB <npars> TAB <nargs> TAB <inductive> TAB <constructor>
+--
+-- A Java value only has a tag and a field count, so `Rt` names a `Data` by
+-- every constructor with that tag and `npars + nargs` (or `nargs`) fields;
+-- several matches are printed as `Bool.false|Nat.zero`.
+--
+-- `compileClass` does not use this module, so the generated Java, the Java
+-- model and the proofs are unaffected by it.
+
+\func ctorNames (p : LBProgram) : String =>
+  joinStr "\n" (Big (++A) nil (map declLines p.1))
+  \where {
+    \func declLines (d : \Sigma Kername GlobalDecl) : Array String \elim d
+      | (_, constantDecl _) => nil
+      | (_, inductiveDecl mib) => Big (++A) nil (map (bodyLines mib.indNpars) mib.indBodies)
+
+    \func bodyLines (npars : Nat) (b : OneInductiveBody) : Array String =>
+      mkArray (\lam (i : Fin b.indCtors.len) => ctorLine i npars (b.indCtors i).cstrNargs b.indName (b.indCtors i).cstrName)
+
+    \func ctorLine (tag npars nargs : Nat) (ind ctor : Ident) : String =>
+      natToStr tag ++ "\t" ++ natToStr npars ++ "\t" ++ natToStr nargs ++ "\t" ++ ind ++ "\t" ++ ctor
+  }
