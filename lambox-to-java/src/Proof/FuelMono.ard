@@ -78,7 +78,6 @@
     | eVal (vStaticRef _) => monoRefl
     | eVal (vLong _) => monoRefl
     | eVal (vStr _) => monoRefl
-    | eVal (vInt _) => monoRefl
     | eVal (vBool _) => monoRefl
     | eVal (vExcObj _ _) => monoRefl
   })
@@ -109,7 +108,6 @@
     | eVal (vStaticRef _) => monoRefl
     | eVal (vLong _) => monoRefl
     | eVal (vStr _) => monoRefl
-    | eVal (vInt _) => monoRefl
     | eVal (vExcObj _ _) => monoRefl
   })
 
@@ -133,7 +131,6 @@
   | suc n, vStaticRef _ => monoRefl
   | suc n, vLong _ => monoRefl
   | suc n, vStr _ => monoRefl
-  | suc n, vInt _ => monoRefl
   | suc n, vBool _ => monoRefl
   | suc n, vExcObj _ _ => monoRefl
 
@@ -156,7 +153,6 @@
   | suc n, vStaticRef _ => monoRefl
   | suc n, vLong _ => monoRefl
   | suc n, vStr _ => monoRefl
-  | suc n, vInt _ => monoRefl
   | suc n, vBool _ => monoRefl
   | suc n, vExcObj _ _ => monoRefl
 

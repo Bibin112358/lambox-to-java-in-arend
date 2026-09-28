@@ -53,8 +53,6 @@
   -- arithmetic is in the runtime model, which wraps like Java.
   | vLong JLong
   | vStr String
-  -- A decimal `int`: a constructor tag or a field index.
-  | vInt Nat
   -- `d.tag == n` (JLS 15.21.1). The fragment's only boolean, and it exists only
   -- to be the condition of a `jCond`.
   | vBool Bool
@@ -65,7 +63,6 @@
 -- What a literal denotes.
 \func litValue (l : JLit) : Value
   | litStr s => vStr s
-  | litInt n => vInt n
   | litLong i => vLong i
 
 \func Env => Array (\Sigma JIdent Value)

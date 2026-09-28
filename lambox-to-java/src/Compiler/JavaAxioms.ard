@@ -126,8 +126,8 @@
 -- well-formed erasure output; the generated code fails immediately (rather
 -- than returning `null`) and names the node by its `Path` (Compiler/NodePath.ard).
 
-\func rtUnbound (index : Nat) (path : Path) : JExpr =>
-  jCallStatic (runtimeQual ++ "unbound") (jLit (litInt index) :: jLit (litStr (renderPath path)) :: nil)
+\func rtUnbound (path : Path) : JExpr =>
+  jCallStatic (runtimeQual ++ "unbound") (jLit (litStr (renderPath path)) :: nil)
 
 \func rtFreeVar (name : String) (path : Path) : JExpr =>
   jCallStatic (runtimeQual ++ "freeVar") (jLit (litStr name) :: jLit (litStr (renderPath path)) :: nil)

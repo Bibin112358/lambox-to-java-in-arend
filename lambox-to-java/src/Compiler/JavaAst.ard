@@ -84,12 +84,10 @@
   | jQualThis JQIdent
   | jLit JLit
 
--- `litStr`: quoted but not escaped by the printer. `litInt`: an `int` (a
--- constructor tag, an index in a diagnostic). `litLong`: a `long` such as
--- `5L`, λ□'s primitive int; in range by construction (`Compiler/JavaLong.ard`).
+-- `litStr`: quoted but not escaped by the printer. `litLong`: a `long` such
+-- as `5L`, λ□'s primitive int; in range by construction (`Compiler/JavaLong.ard`).
 \data JLit
   | litStr String
-  | litInt Nat
   | litLong JLong
 
 \data JStmt

@@ -123,7 +123,6 @@
   | vStaticRef _ => \case h
   | vLong _ => \case h
   | vStr _ => \case h
-  | vInt _ => \case h
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
@@ -136,7 +135,6 @@
   | vStaticRef _ => \case h
   | vLong j => pmap vLong (longExt (inv (intEqB-sound h)))
   | vStr _ => \case h
-  | vInt _ => \case h
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
@@ -149,7 +147,6 @@
   | vStaticRef _ => \case h
   | vLong j => pmap vLong (longExt (inv (intEqB-sound h)))
   | vStr _ => \case h
-  | vInt _ => \case h
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
@@ -163,7 +160,6 @@
   | vStaticRef _ => \case h
   | vLong _ => \case h
   | vStr _ => \case h
-  | vInt _ => \case h
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 

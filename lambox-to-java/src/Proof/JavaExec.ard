@@ -289,10 +289,10 @@
   | x :: xs, 0 => idp
   | x :: xs, suc j => nthArrAt xs j
 
-\func nthVarAt {n : Nat} {cenv : Array JExpr} {e : JExpr} (h : nthArr n cenv = just e) (n0 : Nat) (p : Path)
-  : nthVar n cenv n0 p = e \elim n, cenv
+\func nthVarAt {n : Nat} {cenv : Array JExpr} {e : JExpr} (h : nthArr n cenv = just e) (p : Path)
+  : nthVar n cenv p = e \elim n, cenv
   | 0, x :: xs => just-injective h
-  | suc n, x :: xs => nthVarAt h n0 p
+  | suc n, x :: xs => nthVarAt h p
   | 0, nil => contradiction
   | suc _, nil => contradiction
 

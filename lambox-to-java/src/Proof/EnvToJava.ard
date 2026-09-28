@@ -102,7 +102,7 @@
   | box, eeBox e => pureOut (compileExpr cenv p box) idp (\lam X _ => (vBox, 1, idp, rewrite e (cvBox idp)))
   | bvar n, eeVar h =>
     \let r => erLookup er h
-    \in pureOut (compileExpr cenv p (bvar n)) idp (\lam X ix => \let s => r.3 X (indepNotAnc ix) \in (s.1, s.2, transport (\lam e => evalExpr rt cls s.2 (X ++ jenv) e = rOk (eVal s.1)) (inv (nthVarAt r.2 n p)) s.3, s.4))
+    \in pureOut (compileExpr cenv p (bvar n)) idp (\lam X ix => \let s => r.3 X (indepNotAnc ix) \in (s.1, s.2, transport (\lam e => evalExpr rt cls s.2 (X ++ jenv) e = rOk (eVal s.1)) (inv (nthVarAt r.2 p)) s.3, s.4))
   | lambda na b, eeLam e =>
     pureOut (compileExpr cenv p (lambda na b)) idp (\lam X ix => (vClos (renderName nParam p) (lamBody cenv p b) (X ++ jenv), 1, idp,
                                rewrite e (cvClos idp (erExtend er X (indepNotAnc ix)))))

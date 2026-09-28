@@ -40,11 +40,11 @@
 -- The environment maps a de Bruijn index (head = 0) to the expression denoting
 -- it: usually a variable (`jVar "p3"`), for a `fix` sibling a forwarding
 -- closure (`fixMethodRef`). An index beyond the environment compiles to
--- `rtUnbound`; `n0` is the original index, kept for its message.
-\func nthVar (n : Nat) (env : Array JExpr) (n0 : Nat) (path : Path) : JExpr \elim n, env
-  | _, nil => rtUnbound n0 path
+-- `rtUnbound`.
+\func nthVar (n : Nat) (env : Array JExpr) (path : Path) : JExpr \elim n, env
+  | _, nil => rtUnbound path
   | 0, x :: _ => x
-  | suc n, _ :: env => nthVar n env n0 path
+  | suc n, _ :: env => nthVar n env path
 
 -- Array append and flattening of per-child results.
 \func appendStmts (xs ys : Array JStmt) : Array JStmt => xs ++A ys
@@ -120,7 +120,7 @@
 \func compileExpr (env : Array JExpr) (path : Path) (t : LBTerm) : Out \elim t
   | box => (nil, jBox)
 
-  | bvar n => (nil, nthVar n env n path)
+  | bvar n => (nil, nthVar n env path)
 
   -- A free variable has no Java counterpart; see `rtFreeVar`.
   | fvar v => (nil, rtFreeVar v.varName path)

@@ -115,9 +115,9 @@ public final class Rt {
   // generator compiles them to a call of one of these, so the failure is
   // immediate and names the node (`path` is the generator's structural node id,
   // see `compileExpr` in ToJava.ard).
-  public static Object unbound(int index, String path) {
+  public static Object unbound(String path) {
     throw new IllegalStateException(
-      "ill-formed lambda-box: de Bruijn index " + index + " is out of scope (node " + path + ")");
+      "ill-formed lambda-box: de Bruijn index out of scope (node " + path + ")");
   }
 
   public static Object freeVar(String name, String path) {
