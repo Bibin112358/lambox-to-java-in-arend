@@ -45,7 +45,8 @@ sexpr_def() {
     matmul250) printf 'ExamplePrint:matMulSexpr250\n' ;;
     matmul300) printf 'ExamplePrint:matMulSexpr300\n' ;;
     letchain) printf 'ExamplePrint:letChainSexpr\n' ;;
-    *)       die "no Arend source for program: $1 (regenerable: example peano matmul matmul200 matmul250 matmul300 letchain)" ;;
+    insertion-sort) printf 'ExamplePrint:sortSexpr\n' ;;
+    *)       die "no Arend source for program: $1 (regenerable: example peano matmul matmul200 matmul250 matmul300 letchain insertion-sort)" ;;
   esac
 }
 
@@ -68,5 +69,5 @@ else
   # matmul200/matmul300 are known to sexpr_def but have no program directory:
   # 250 is the kept benchmark size (test/README.md "Performance"); either of
   # the others is one `mkdir` plus a `meta` away.
-  for prog in example peano matmul matmul250 letchain; do regen "$prog"; done
+  for prog in example peano matmul matmul250 letchain insertion-sort; do regen "$prog"; done
 fi

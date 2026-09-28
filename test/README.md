@@ -59,7 +59,7 @@ printed value. Each `corpora/<name>.sh` prints one tab-separated row per program
 
 | corpus | programs | source |
 |---|---|---|
-| `handwritten` | 16 | `corpora/handwritten/<p>/prog.ast`, checked in: exported from `lambox-to-java-examples` (`tools/regen-arend-asts.sh`) or extracted from Lean |
+| `handwritten` | 17 | `corpora/handwritten/<p>/prog.ast`, checked in: exported from `lambox-to-java-examples` (`tools/regen-arend-asts.sh`) or extracted from Lean |
 | `lean-benchmarks` | 26 | an upstream checkout of the Lean benchmark programs (`tools/extract-lean-benchmarks.sh`) |
 | `peregrine` | 14 | the Peregrine test suite's `.ast` files |
 

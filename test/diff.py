@@ -7,6 +7,8 @@ computed by the λ□ semantics (`runProgram lbAxioms`) and by the Java-fragment
 semantics (`runClass rtInt63`). Each Java class is then compiled and run on the
 JVM, and the three values must be equal (whitespace ignored). To add a program,
 add a `diff<Name> => putStrLn (dump "<name>" <program>)` line to DiffRuns.ard.
+A program printed with `dumpJavaOnly` has no λ□-model value (too costly to
+evaluate in Arend); for it the JVM and the Java model must agree.
 """
 
 import argparse
@@ -45,7 +47,7 @@ def main(argv=None):
             jvm = f"<{status}>"
         lb = c.normalize(parts.get(f"{name} lambdabox-model", "<missing>"))
         jm = c.normalize(parts.get(f"{name} java-model", "<missing>"))
-        ok = jvm == lb == jm
+        ok = jvm == jm and lb in (jvm, "<skipped>")
         print(f"{name:20s} {jvm:22s} {lb:22s} {jm:22s} {'ok' if ok else 'DIFFERS'}", flush=True)
         if not ok:
             failures.append(name)

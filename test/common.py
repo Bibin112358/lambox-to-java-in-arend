@@ -42,8 +42,10 @@ def arend(project, *targets, timeout=None):
 
 def problems(output):
     """The lines that make an Arend run a failure. The CLI's exit status is not
-    reliable; `[ERROR]` and `[GOAL]` (an unfinished proof) lines are."""
-    return [l for l in output.splitlines() if re.match(r"^\[(ERROR|GOAL)\]", l)]
+    reliable; `[ERROR]` and `[GOAL]` (an unfinished proof) lines are, and so is
+    a crashed JVM (e.g. `OutOfMemoryError`), which prints neither."""
+    return [l for l in output.splitlines()
+            if re.match(r"^\[(ERROR|GOAL)\]|^Exception in thread |^java\.lang\.\w*(Error|Exception)", l)]
 
 
 def sections(output, marker):

@@ -2,6 +2,7 @@
 \import Data.String
 \import Debug (putStrLn)
 \import ExamplePeano (addProgram)
+\import ExampleSort (sortProgram)
 \import ModelChecks.Agreement (twoProgram, predProgram, zeroCaseProgram, litProgram, addAxiomProgram,
                                natAddProgram, boolCaseProgram, boolProgram, natSubProgram, int63Program,
                                natDivProgram, axiomKn, subAxiomKn)
@@ -84,6 +85,17 @@
   showJRes (runClass rtInt63 (compileClass progClassName p) bodyMethodName diffFuel) ++
   "\n===== " ++ name ++ " end ====="
 
+-- The same without the λ□ model, for programs with deeper recursion: the
+-- substitution-based runner is evaluated by Arend's normalizer without
+-- sharing, and runs out of memory after two or three `fix` unfoldings
+-- (`add 2 1` already does), while `runClass` handles them in seconds.
+\func dumpJavaOnly (name : String) (p : LBProgram) : String =>
+  "===== " ++ name ++ " java =====\n" ++ compileProgram "Prog" p ++
+  "\n===== " ++ name ++ " lambdabox-model =====\n<skipped>" ++
+  "\n===== " ++ name ++ " java-model =====\n" ++
+  showJRes (runClass rtInt63 (compileClass progClassName p) bodyMethodName diffFuel) ++
+  "\n===== " ++ name ++ " end ====="
+
 -- Two int63 edge cases the JVM must wrap exactly like λ□'s `Uint63`.
 \func subZeroProgram : LBProgram =>
   ((subAxiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
@@ -94,6 +106,7 @@
    app (app (const axiomKn) (prim (primInt63, 9223372036854775806))) (prim (primInt63, 1)))
 
 \func diffPeano => putStrLn (dump "peano" addProgram)
+\func diffSort => putStrLn (dumpJavaOnly "insertion-sort" sortProgram)
 \func diffTwo => putStrLn (dump "two" twoProgram)
 \func diffPred => putStrLn (dump "pred" predProgram)
 \func diffZeroCase => putStrLn (dump "zero-case" zeroCaseProgram)

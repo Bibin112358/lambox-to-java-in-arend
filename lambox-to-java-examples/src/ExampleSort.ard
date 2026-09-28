@@ -1,0 +1,117 @@
+\import Data.Bool
+\import Compiler.LambdaBox
+\import Data.Maybe
+\import Data.String
+
+-- Example λ□ program: insertion sort on lists of Peano naturals, after the
+-- Arend tutorial (Part I, "Correctness of insertion sort",
+-- https://arend-lang.github.io/documentation/tutorial/PartI/universes):
+--
+--   \func sort {A : TotalPreorder} (xs : List A) : List A
+--     | nil => nil
+--     | cons a xs => insert a (sort xs)
+--   \func insert {A : TotalPreorder} (a : A) (xs : List A) : List A \elim xs
+--     | nil => cons a nil
+--     | cons x xs => \case totality x a \with {
+--       | inl _ => cons x (insert a xs)
+--       | inr _ => cons a (cons x xs)
+--     }
+--
+-- The `TotalPreorder` instance becomes an explicit argument, as erasure turns
+-- a class instance into an ordinary value: `sort` and `insert` take the
+-- comparison `le : Nat -> Nat -> Bool` (the computational content of
+-- `totality`: `true` for `inl`). The program sorts [3, 1, 4, 1, 2].
+--
+-- Exercises higher-order arguments, three constants whose bodies are `fix`es,
+-- nested `case`s over three inductives, and a constructor with two fields.
+-- All binder names are `anon`: the compiler only uses binder positions. In a
+-- `case` branch the LAST field is de Bruijn 0 (so in `cons x xs`, xs = 0,
+-- x = 1).
+
+\func kn (s : String) : Kername => \new Kername (mpFile nil) s
+\func ind (s : String) : InductiveId => \new InductiveId (kn s) 0
+
+-- Nat = zero | suc Nat.
+\func zero' : LBTerm => construct (ind "Nat") 0 nil
+\func suc' (n : LBTerm) : LBTerm => construct (ind "Nat") 1 (n :: nil)
+
+\func natLit (n : Nat) : LBTerm \elim n
+  | 0 => zero'
+  | suc n => suc' (natLit n)
+
+-- Bool = true | false (Rocq's order).
+\func true' : LBTerm => construct (ind "Bool") 0 nil
+\func false' : LBTerm => construct (ind "Bool") 1 nil
+
+-- List = nil | cons Nat List (monomorphic, so no type parameter to erase).
+\func nil' : LBTerm => construct (ind "List") 0 nil
+\func cons' (x xs : LBTerm) : LBTerm => construct (ind "List") 1 (x :: xs :: nil)
+
+\func listLit (xs : Array Nat) : LBTerm \elim xs
+  | nil => nil'
+  | x :: xs => cons' (natLit x) (listLit xs)
+
+\func natCase (d : LBTerm) (z s : LBTerm) : LBTerm => case (ind "Nat") 0 d ((nil, z) :: ((anon :: nil), s) :: nil)
+\func boolCase (d : LBTerm) (t f : LBTerm) : LBTerm => case (ind "Bool") 0 d ((nil, t) :: (nil, f) :: nil)
+\func listCase (d : LBTerm) (n c : LBTerm) : LBTerm => case (ind "List") 0 d ((nil, n) :: ((anon :: anon :: nil), c) :: nil)
+
+\func app2 (f a b : LBTerm) : LBTerm => app (app f a) b
+\func app3 (f a b c : LBTerm) : LBTerm => app (app (app f a) b) c
+
+\func fix1 (body : LBTerm) : LBTerm => fix ((\new FixDef LBTerm anon body 0) :: nil) 0
+
+-- le : Nat -> Nat -> Bool
+--   le zero     m        = true
+--   le (suc n') zero     = false
+--   le (suc n') (suc m') = le n' m'
+-- Environment (de Bruijn 0 first) at each point:
+--   at the outer case:  [m, n, le]
+--   suc n' branch:      [n', m, n, le]
+--   suc m' branch:      [m', n', m, n, le]
+\func leFix : LBTerm => fix1 (lambda anon (lambda anon (
+  natCase (bvar 1)
+    true'
+    (natCase (bvar 1)
+      false'
+      (app2 (bvar 4) (bvar 1) (bvar 0))))))
+
+-- insert : (Nat -> Nat -> Bool) -> Nat -> List -> List
+--   at the case on xs:  [xs, a, le, insert]
+--   cons x xs' branch:  [xs', x, xs, a, le, insert]
+\func insertFix : LBTerm => fix1 (lambda anon (lambda anon (lambda anon (
+  listCase (bvar 0)
+    (cons' (bvar 1) nil')                                         -- insert a nil = cons a nil
+    (boolCase (app2 (bvar 4) (bvar 1) (bvar 3))                   -- totality x a
+      (cons' (bvar 1) (app3 (bvar 5) (bvar 4) (bvar 3) (bvar 0)))  -- inl: cons x (insert a xs')
+      (cons' (bvar 3) (bvar 2)))))))                              -- inr: cons a (cons x xs')
+
+-- sort : (Nat -> Nat -> Bool) -> List -> List
+--   at the case on xs:  [xs, le, sort]
+--   cons a xs' branch:  [xs', a, xs, le, sort]
+\func sortFix : LBTerm => fix1 (lambda anon (lambda anon (
+  listCase (bvar 0)
+    nil'                                                                   -- sort nil = nil
+    (app3 (const (kn "insert")) (bvar 3) (bvar 1) (app2 (bvar 4) (bvar 3) (bvar 0)))))) -- insert a (sort xs')
+
+\func inductive (name : String) (ctors : Array ConstructorBody) : GlobalDecl =>
+  inductiveDecl (\new MutualInductiveBody finite 0 ((\new OneInductiveBody name false IntoAny ctors nil) :: nil))
+
+\func constant (t : LBTerm) : GlobalDecl => constantDecl (\new ConstantBody (just t))
+
+-- Dependents first (see `GlobalDeclarations`).
+\func decls : GlobalDeclarations =>
+  (kn "sort", constant sortFix) ::
+  (kn "insert", constant insertFix) ::
+  (kn "le", constant leFix) ::
+  (kn "List", inductive "List" ((\new ConstructorBody "nil" 0) :: (\new ConstructorBody "cons" 2) :: nil)) ::
+  (kn "Bool", inductive "Bool" ((\new ConstructorBody "true" 0) :: (\new ConstructorBody "false" 0) :: nil)) ::
+  (kn "Nat", inductive "Nat" ((\new ConstructorBody "zero" 0) :: (\new ConstructorBody "suc" 1) :: nil)) ::
+  nil
+
+\func input : Array Nat => 3 :: 1 :: 4 :: 1 :: 2 :: nil
+\func sorted : Array Nat => 1 :: 1 :: 2 :: 3 :: 4 :: nil
+
+-- `sort le xs`.
+\func sortProgramOf (xs : Array Nat) : LBProgram => (decls, app2 (const (kn "sort")) (const (kn "le")) (listLit xs))
+
+\func sortProgram : LBProgram => sortProgramOf input

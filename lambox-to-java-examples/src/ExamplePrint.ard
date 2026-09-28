@@ -4,6 +4,7 @@
 \import ExampleLetChain (letChainProgram)
 \import ExampleMatMul (matMulAttrsC, matMulAttrsOCaml, matMulProgram, matMulProgramOf)
 \import ExamplePeano (addProgram)
+\import ExampleSort (sortProgram)
 \import Compiler.Serialize
 \import Compiler.ToJava
 
@@ -21,6 +22,10 @@
 
 \func peanoJava => putStrLn (compileProgram "Prog" addProgram)
 \func peanoSexpr => putStrLn (LambdaBoxToString addProgram)
+
+-- Insertion sort (corpus program `insertion-sort`); see ExampleSort.ard.
+\func sortJava => putStrLn (compileProgram "Prog" sortProgram)
+\func sortSexpr => putStrLn (LambdaBoxToString sortProgram)
 
 \func matMulJava => putStrLn (compileProgram "Prog" matMulProgram)
 \func matMulSexpr => putStrLn (LambdaBoxToString matMulProgram)

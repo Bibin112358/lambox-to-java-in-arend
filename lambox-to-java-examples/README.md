@@ -3,9 +3,11 @@
 Sample input for the `lambox-to-java` compiler, kept in its own Arend project
 (it depends on `lambox-to-java` and `arend-lib`, see `arend.yaml`).
 
-- `Example.ard`, `ExamplePeano.ard`, `ExampleMatMul.ard`, `ExampleLetChain.ard`:
-  hand-written λ□ programs. They are the source of `test`'s handwritten corpus
-  programs `example`, `peano`, `matmul` (and its size variants) and `letchain`.
+- `Example.ard`, `ExamplePeano.ard`, `ExampleMatMul.ard`, `ExampleLetChain.ard`,
+  `ExampleSort.ard`: hand-written λ□ programs. They are the source of `test`'s
+  handwritten corpus programs `example`, `peano`, `matmul` (and its size
+  variants), `letchain` and `insertion-sort` (the Arend tutorial's insertion
+  sort, with the comparison passed as an argument).
 - `ExamplePrint.ard`: printing entry points (`*Java` prints the generated Java,
   `*Sexpr` the peregrine export). `test/tools/regen-arend-asts.sh` typechecks
   them to regenerate the checked-in `test/corpora/handwritten/<name>/prog.ast`

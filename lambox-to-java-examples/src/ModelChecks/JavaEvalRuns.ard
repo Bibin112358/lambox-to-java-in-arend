@@ -5,6 +5,7 @@
 \import Semantics.RtInt63
 \import Semantics.RtLong
 \import ExamplePeano
+\import ExampleSort (sortProgram)
 \import Compiler.JavaAst
 \import Semantics.JavaEval
 \import Semantics.Res
@@ -52,6 +53,21 @@
 -- The same under `rtLong`: a runtime that can answer does not change a program
 -- that never asks.
 \func peanoUnderRtLong : runClass rtLong peanoClass bodyMethodName 2000 = rOk (rvValue four)
+  => idp
+
+-- Insertion sort (`ExampleSort.ard`, corpus program `insertion-sort`):
+-- `sort le [3, 1, 4, 1, 2]` is [1, 1, 2, 3, 4]. `List` is nil = tag 0 and
+-- cons = tag 1 with fields (head, tail).
+\func natV (n : Nat) : Value \elim n
+  | 0 => zeroV
+  | suc n => sucV (natV n)
+
+\func listV (xs : Array Nat) : Value \elim xs
+  | nil => vData 0 nil
+  | x :: xs => vData 1 (natV x :: listV xs :: nil)
+
+\func sortEvaluates
+  : runClass rtNone (compileClass "Prog" sortProgram) bodyMethodName 5000 = rOk (rvValue (listV (1 :: 1 :: 2 :: 3 :: 4 :: nil)))
   => idp
 
 -- ---------------------------------------------------------------------------
