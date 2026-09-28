@@ -4,7 +4,7 @@
 \import Algebra.Ring
 \import Arith.Int
 \import Arith.Nat
-\import Semantics.RtLong (pow2_63, pow2_64, wrap64, readS64, readSigned, negModU64, modU64)
+\import Compiler.JavaLong
 \import Compiler.Int63 (int63Mod, int64Mod, signed64, wrap64u)
 \import Logic
 \import Meta
@@ -18,7 +18,7 @@
 -- =============================================================================
 -- Arithmetic modulo 2^64, for the i64 entries of `Proof/OracleShipped.ard`.
 --
--- The JVM (`RtLong.wrap64`) and λ□ (`Int63.signed64` of a `wrap64u` bit
+-- The JVM (`JavaLong.wrap64`) and λ□ (`Int63.signed64` of a `wrap64u` bit
 -- pattern) both read an integer modulo 2^64, by different functions. This
 -- file shows they agree (`signed-wrapu`) and that `wrap64` ignores multiples
 -- of 2^64 (`wrap64-cong`), so `signed a + signed b` wraps to the same `long`
@@ -31,28 +31,9 @@
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- Reduction modulo `M`, and its two defining properties.
+-- Reduction modulo `M` (`modU`, defined in `Compiler/JavaLong.ard` with its
+-- bound `modU<`) and its other defining property.
 -- ---------------------------------------------------------------------------
-
-\func negMod (M r : Nat) : Nat \elim r
-  | 0 => 0
-  | suc k => iabs (M Nat.- suc k)
-
-\func modU (M : Nat) (x : Int) : Nat \elim x
-  | pos n => n Nat.mod M
-  | neg (suc n) => negMod M (suc n Nat.mod M)
-
-\lemma negMod< (m r : Nat) (hr : r < suc m) : negMod (suc m) r < suc m \elim r
-  | 0 => NatOrder.zero<suc
-  | suc k =>
-    \let | ex : k Nat.+ (m -' k) = m => <=_exists (<=-less (NatOrder.unsuc< hr))
-         | ei : iabs (suc m Nat.- suc k) = m -' k => pmap iabs (inv (-'=- (<=-less hr)))
-    \in transportInv (__ < suc m) ei (transport (\lam z => m -' k < suc z) ex
-          (transport (\lam z => m -' k < suc z) NatSemiring.+-comm (NatSemiring.<=_+ <=-refl zero<=_ <∘r id<suc)))
-
-\lemma modU< (m : Nat) (x : Int) : modU (suc m) x < suc m \elim x
-  | pos n => fin_< (n Nat.mod suc m)
-  | neg (suc n) => negMod< m _ (fin_< (suc n Nat.mod suc m))
 
 \func negDecomp (M N r d : Nat) (e : M Nat.* d Nat.+ r = N) (hr : r <= M)
   : \Sigma (q : Int) (neg N = pos (negMod M r) + q * pos M) \elim r
@@ -120,33 +101,12 @@
 -- ---------------------------------------------------------------------------
 -- At 2^64.
 --
--- `m64` is 2^64 - 1, so that the lemmas above, stated for `suc m`, apply;
--- `suc m64` and `pow2_64` are the same literal to the checker.
--- ---------------------------------------------------------------------------
-
-\func m64 : Nat => 18446744073709551615
-
-\lemma negModU64-eq (r : Nat) : negModU64 r = negMod pow2_64 r \elim r
-  | 0 => idp
-  | suc k => idp
-
-\lemma modU64-eq (x : Int) : modU64 x = modU pow2_64 x \elim x
-  | pos n => idp
-  | neg (suc n) => negModU64-eq _
-
 -- `wrap64` ignores multiples of 2^64: the JVM's arithmetic is modular.
 \lemma wrap64-cong (x k : Int) : wrap64 (x + k * pos pow2_64) = wrap64 x =>
   pmap (\lam r => readS64 r (r Nat.- pow2_63)) (modU64-eq _ *> modU-cong m64 x k *> inv (modU64-eq x))
 
 \lemma modU64-cong (x k : Int) : modU64 (x + k * pos pow2_64) = modU64 x =>
   modU64-eq _ *> modU-cong m64 x k *> inv (modU64-eq x)
-
--- `signed64` with its `\case` turned into `readSigned`, so it can be rewritten.
-\lemma signed64-read (i : Fin int64Mod) : signed64 i = readSigned pow2_64 i ((i : Nat) Nat.- int63Mod) =>
-  unfold signed64 (cases ((i : Nat) Nat.- int63Mod) \with {
-    | pos _ => idp
-    | neg (suc _) => idp
-  })
 
 \lemma wuNeg (r : Nat) (hr : r < pow2_64) : (finMod {m64} (iabs (int64Mod Nat.- r)) : Nat) = negModU64 r \elim r
   | 0 => id_mod {suc m64}
@@ -163,18 +123,11 @@
 
 \lemma wu-id (a : Fin int64Mod) : (wrap64u (pos a) : Nat) = a => fin_mod_id a
 
-\lemma signed-wrap (a : Fin int64Mod) : signed64 a = wrap64 (pos a) =>
-  signed64-read a *> pmap (\lam (r : Nat) => readSigned pow2_64 r (r Nat.- int63Mod)) (inv (mod_< (fin_< a)))
-
 \func signed-off (a : Fin int64Mod) : \Sigma (k : Int) (signed64 a = pos a + k * pos pow2_64) =>
   \let o => readOff pow2_64 a ((a : Nat) Nat.- int63Mod)
   \in (o.1, signed64-read a *> o.2)
 
--- `wrap64` is the identity on a signed reading...
-\lemma wrap-signed (a : Fin int64Mod) : wrap64 (signed64 a) = signed64 a =>
-  pmap wrap64 (signed-off a).2 *> wrap64-cong (pos a) (signed-off a).1 *> inv (signed-wrap a)
-
--- ... and the reading loses nothing.
+-- The signed reading loses nothing.
 \lemma modU64-signed (a : Fin int64Mod) : modU64 (signed64 a) = a =>
   pmap modU64 (signed-off a).2 *> modU64-cong (pos a) (signed-off a).1 *> mod_< (fin_< a)
 

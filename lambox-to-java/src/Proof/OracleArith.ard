@@ -5,7 +5,7 @@
 \import Data.Bool
 \import Data.String (Byte, String, stringExt, ++ \as \infixr 5 ++S)
 \import Proof.NodePathUnique (horner, horner_natToStr, NoByte, noByte_natToStr)
-\import Semantics.RtLong (pow2_63, pow2_64, wrap64, readS64, readSigned, negModU64, modU64)
+\import Compiler.JavaLong
 \import Compiler.Int63 (int63Mod, wrap63)
 \import Logic
 \import Order.Biordered
@@ -18,7 +18,7 @@
 
 -- =============================================================================
 -- Meaning of the Boolean deciders and normal forms the runtimes compute with
--- (`==` on a `DecSet`, `StringUtil.intEqB`, `Int63.wrap63`, `RtLong.wrap64`),
+-- (`==` on a `DecSet`, `StringUtil.intEqB`, `Int63.wrap63`, `JavaLong.wrap64`),
 -- for `Proof/OracleShipped.ard` and the backend proof. They are Boolean so that
 -- concrete instances run by `idp`; a proof about all values needs to know what
 -- `true` means.
@@ -79,10 +79,6 @@
 -- `Nat.-` into `Int`: its sign, and bounds on what it returns.
 -- ---------------------------------------------------------------------------
 
-\func minusLt {a m : Nat} (p : a < m) : \Sigma (k : Nat) (a Nat.- m = neg (suc k)) \elim a, m, p
-  | 0, suc m, NatOrder.zero<suc => (m, idp)
-  | suc a, suc m, NatOrder.suc<suc p => minusLt p
-
 -- `t - (s + t) = -s`, by the recursion `Nat.-` itself uses.
 \lemma minusSum (t s : Nat) : t Nat.- (s Nat.+ t) = neg s \elim t
   | 0 => idp
@@ -94,25 +90,10 @@
   | suc a, 0 => transport (\lam z => z <= suc a) (pmap iabs e) <=-refl
   | suc a, suc b => <=-transitive (minusPos<= e) (<=-less id<suc)
 
-\lemma minusNeg<= {a b k : Nat} (e : a Nat.- b = neg (suc k)) : suc k <= b \elim a, b
-  | 0, 0 => \case pmap signB e \with {}
-  | 0, suc b => transport (\lam z => suc k <= z) (pmap iabs (inv e)) <=-refl
-  | suc a, 0 => \case pmap signB e \with {}
-  | suc a, suc b => <=-transitive (minusNeg<= e) (<=-less id<suc)
-
--- A sign test, to tell `pos` from `neg (suc _)` apart in a path.
-\func signB (x : Int) : Bool
-  | pos _ => true
-  | neg (suc _) => false
-
 -- `(m + a) - a = m`, and cancelling a common summand.
 \lemma minusPos (m a : Nat) : (m Nat.+ a) Nat.- a = pos m \elim a
   | 0 => \case \elim m \with { | 0 => idp | suc _ => idp }
   | suc a => minusPos m a
-
-\lemma minusCancel (x y c : Nat) : (x Nat.+ c) Nat.- (y Nat.+ c) = x Nat.- y \elim c
-  | 0 => idp
-  | suc c => minusCancel x y c
 
 -- `2^63 < 2^64`, via the generic `P < P + P`: a proof term checked against the
 -- literals directly would make the checker peel 2^63 `suc`s.

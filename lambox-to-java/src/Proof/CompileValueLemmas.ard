@@ -16,6 +16,7 @@
 \import Semantics.Res
 \import Compiler.Int63
 \import Compiler.JavaAst
+\import Compiler.JavaLong
 \import Compiler.LambdaBox
 \import Logic
 \import Logic.Meta
@@ -126,27 +127,27 @@
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
-\func p63Inv (i : Fin int63Mod) (jv : Value) (h : agrees (prim (rocqUint63, i)) jv = true) : jv = vLong (pos i) \elim jv
+\func p63Inv (i : Fin int63Mod) (jv : Value) (h : agrees (prim (rocqUint63, i)) jv = true) : jv = vLong (longOfUint63 i) \elim jv
   | vBox => \case h
   | vData _ _ => \case h
   | vClos _ _ _ => \case h
   | vObj _ _ _ => \case h
   | vBuiltin _ _ => \case h
   | vStaticRef _ => \case h
-  | vLong j => pmap vLong (inv (intEqB-sound h))
+  | vLong j => pmap vLong (longExt (inv (intEqB-sound h)))
   | vStr _ => \case h
   | vInt _ => \case h
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
-\func p64Inv (i : Fin int64Mod) (jv : Value) (h : agrees (prim (javaLong, i)) jv = true) : jv = vLong (signed64 i) \elim jv
+\func p64Inv (i : Fin int64Mod) (jv : Value) (h : agrees (prim (javaLong, i)) jv = true) : jv = vLong (longOfBits i) \elim jv
   | vBox => \case h
   | vData _ _ => \case h
   | vClos _ _ _ => \case h
   | vObj _ _ _ => \case h
   | vBuiltin _ _ => \case h
   | vStaticRef _ => \case h
-  | vLong j => pmap vLong (inv (intEqB-sound h))
+  | vLong j => pmap vLong (longExt (inv (intEqB-sound h)))
   | vStr _ => \case h
   | vInt _ => \case h
   | vBool _ => \case h

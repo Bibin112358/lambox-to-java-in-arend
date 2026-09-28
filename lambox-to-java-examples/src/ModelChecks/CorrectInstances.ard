@@ -257,8 +257,8 @@
 \func int63NowAgrees
   : \Sigma (EvalProgram lbAxioms int63Program int63Value)
            (runClass rtInt63 (compileClass progClassName int63Program) bodyMethodName 200
-            = rOk (rvValue (vLong 9223372036854775807)))
-           (agrees int63Value (vLong 9223372036854775807) = true)
+            = rOk (rvValue (vLong (9223372036854775807, ()))))
+           (agrees int63Value (vLong (9223372036854775807, ())) = true)
   => (lbInt63, int63InJava, idp)
 
 -- ---------------------------------------------------------------------------
@@ -278,15 +278,15 @@
 
 \func natOverflowInJava
   : runClass rtInt63 (compileClass progClassName natOverflowProgram) bodyMethodName 200
-  = rOk (rvValue (vLong 0))
+  = rOk (rvValue (vLong (0, ())))
   => idp
 
 -- The three facts, as for the int63 case above.
 \func natOverflowNowAgrees
   : \Sigma (EvalProgram lbAxioms natOverflowProgram natOverflowValue)
            (runClass rtInt63 (compileClass progClassName natOverflowProgram) bodyMethodName 200
-            = rOk (rvValue (vLong 0)))
-           (agrees natOverflowValue (vLong 0) = true)
+            = rOk (rvValue (vLong (0, ()))))
+           (agrees natOverflowValue (vLong (0, ())) = true)
   => (lbNatOverflow, natOverflowInJava, idp)
 
 -- `Nat.add` is realized by the int63 family.
@@ -320,7 +320,7 @@
 \func rewrittenCompiles
   : runClass rtInt63 (compileClass progClassName (rewriteProgram addAxiomProgram))
       bodyMethodName 200
-  = rOk (rvValue (vLong 5))
+  = rOk (rvValue (vLong (5, ())))
   => idp
 
 -- It does not preserve the value once an operation crosses 2^63:

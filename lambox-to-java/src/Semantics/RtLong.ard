@@ -1,10 +1,15 @@
 \import Algebra.Group
 \import Algebra.Monoid
 \import Arith.Int
+\import Arith.Nat
 \import Data.Bool
 \import Data.Maybe
 \import Data.String
 \import Compiler.JavaAst
+\import Compiler.JavaLong
+\import Order.Biordered
+\import Order.PartialOrder
+\import Order.StrictOrder
 \import Semantics.Res
 \import Semantics.JavaValue
 \import Set
@@ -18,48 +23,16 @@
 --
 -- Not modelled (stuck): the `ARRAY_*`, `DEC_*`, `INT_*` and `EQ_REC` families.
 --
--- 64-bit wraparound. Arend's `Int` is unbounded, while `+`, `-`, `*` on `long`
--- silently wrap (JLS 4.2.2) in the range -2^63 .. 2^63-1 (JLS 4.2.1): the
--- result is the mathematical one mod 2^64, read as signed two's complement.
--- That is `wrap64`, written against the JLS text since this is where hand
--- models tend to go wrong (cf. the unsoundness CertiCoq-Wasm found in its
--- primitive integers, CPP 2025).
+-- Longs are `JLong`s (`Compiler/JavaLong.ard`): in range by construction, so
+-- `lng(x)` is just the value `x.1`, and every result is built by `wrapLong`
+-- (64-bit wraparound, JLS 4.2.2) or shown to stay in range.
 --
 -- Performance: Arend computes `Nat.+`/`-`/`*` and `Nat.divMod` natively on big
 -- literals, but never compare by peeling `suc`s (2^63 steps here); signs are
 -- tested via `Nat.-` (an `Int`) and equality via `intEqB`.
 --
 -- Small helpers take the value they test as a parameter (rather than a
--- `\case`), so that proofs (`Proof/OracleArith.ard`) can rewrite with it.
-
-\func pow2_63 : Nat => 9223372036854775808
-
-\func pow2_64 : Nat => 18446744073709551616
-
--- `x` reduced modulo 2^64 into [0, 2^64): the unsigned bit pattern.
---
--- The `neg` clause is `2^64 - (n mod 2^64)`, guarded on 0 (`2^64 - 0` is not
--- in range); `neg 0` is definitionally `pos 0`, and the clauses agree there.
-\func modU64 (x : Int) : Nat \elim x
-  | pos n => n Nat.mod pow2_64
-  | neg n => negModU64 (n Nat.mod pow2_64)
-
-\func negModU64 (m : Nat) : Nat \elim m
-  | 0 => 0
-  | suc k => iabs (pow2_64 Nat.- suc k)
-
--- The unsigned bit pattern read back as a signed `long`: the top half of the
--- range denotes the negatives, so `r >= 2^63` becomes `r - 2^64`.
-\func wrap64 (x : Int) : Int => readS64 (modU64 x) (modU64 x Nat.- pow2_63)
-
--- `d` is `r - 2^63`, whose sign says which half `r` is in.
-\func readS64 (r : Nat) (d : Int) : Int => readSigned pow2_64 r d
-
--- The modulus is a parameter so that a proof can keep it abstract (a symbolic
--- `j + 2^63` normalized in full is 2^63 `suc`s).
-\func readSigned (m r : Nat) (d : Int) : Int \elim d
-  | pos _ => r Nat.- m      -- `pos _` is `r >= 2^63`, equality included
-  | neg (suc _) => pos r
+-- `\case`), so that proofs (`Proof/OracleShipped.ard`) can rewrite with it.
 
 -- `Rt.FALSE`/`Rt.TRUE` are `Data(0, {})`/`Data(1, {})`. They are not in
 -- `rtField`: generated code only receives them from comparisons.
@@ -106,8 +79,20 @@
 -- JLS 15.17.3: the dividend's sign, the magnitudes' remainder.
 \func javaRem (x y : Int) : Int => signedL (isNegL x) (iabs x Nat.mod iabs y)
 
+-- `%` is no larger than its dividend, so it stays a `long`.
+\func remLong (x : JLong) (y : Int) : JLong => (javaRem x.1 y, range-inLong (remIn y (inLong-range x.2)))
+  \where {
+    \lemma remIn {a : Int} (b : Int) (h : InRange pow2_63 a) : InRange pow2_63 (javaRem a b) \elim a
+      | pos n => mod<=left <∘r h
+      | neg (suc n) => negIn (mod<=left <=∘ h)
+
+    \lemma negIn {m : Nat} (h : m <= pow2_63) : InRange pow2_63 (neg m) \elim m
+      | 0 => NatOrder.zero<suc
+      | suc m => h
+  }
+
 -- `Rt.java`'s zero guard: `y == 0 ? onZero : other`.
-\func ifZeroL (isZero : Bool) (onZero other : Int) : Int \elim isZero
+\func ifZeroL {A : \Type} (isZero : Bool) (onZero other : A) : A \elim isZero
   | true => onZero
   | false => other
 
@@ -121,6 +106,12 @@
 \func clampL (d : Int) : Int
   | pos k => pos k
   | neg (suc _) => 0
+
+\func clampLong (d : JLong) : JLong => (clampL d.1, clampIn d.1 d.2)
+  \where
+    \lemma clampIn (d : Int) (h : InLong d) : InLong (clampL d) \elim d
+      | pos k => h
+      | neg (suc k) => ()
 
 -- Every one of these is binary in `Rt.java` (`Fn -> Fn -> result`).
 \func builtinArityLong (f : JIdent) : Maybe Nat =>
@@ -145,30 +136,27 @@
 \func builtinRunLong (f : JIdent) (vs : Array Value) : Res Value =>
   \case vs \with {
     | vLong x :: vLong y :: nil =>
+      -- `lng(x)` and `lng(y)`.
+      \let | a => x.1
+           | b => y.1
+      \in
       -- `long` arithmetic wraps modulo 2^64 (JLS 4.2.2).
-      \case f == "PRIM_ADD_LONG" \with { | true => rOk (vLong (wrap64 (x + y))) | false =>
-      \case f == "PRIM_SUB_LONG" \with { | true => rOk (vLong (wrap64 (x - y))) | false =>
-      \case f == "PRIM_MUL_LONG" \with { | true => rOk (vLong (wrap64 (x * y))) | false =>
-      -- `lng(x) == lng(y)`. The `wrap64`s keep the clause correct even for an
-      -- unwrapped `vLong`; they are the identity otherwise.
-      \case f == "PRIM_EQB_LONG" \with {
-        | true => rOk (mkBool (intEqB (wrap64 x) (wrap64 y))) | false =>
+      \case f == "PRIM_ADD_LONG" \with { | true => rOk (vLong (wrapLong (a + b))) | false =>
+      \case f == "PRIM_SUB_LONG" \with { | true => rOk (vLong (wrapLong (a - b))) | false =>
+      \case f == "PRIM_MUL_LONG" \with { | true => rOk (vLong (wrapLong (a * b))) | false =>
+      \case f == "PRIM_EQB_LONG" \with { | true => rOk (mkBool (intEqB a b)) | false =>
       -- Lean's truncating `Nat.sub`. `Rt.java` is
       --     long d = lng(x) - lng(y);  return d < 0L ? 0L : d;
       -- so the wrap comes BEFORE the sign test; the orders differ, e.g. at
       -- x = -2^63, y = 1 (0 versus 2^63-1).
       \case f == "NAT_SUB_LONG" \with {
-        | true => rOk (vLong (clampL (wrap64 (x - y)))) | false =>
-      -- Operands are read as `long`s first (`lng(x)`).
-      \let | a => wrap64 x
-           | b => wrap64 y
-      \in
+        | true => rOk (vLong (clampLong (wrapLong (a - b)))) | false =>
       -- `lng(y) == 0L ? 0L : lng(x) / lng(y)`, wrapped for `Long.MIN_VALUE / -1`.
       \case f == "PRIM_DIV_LONG" \with {
-        | true => rOk (vLong (ifZeroL (isZeroL b) 0 (wrap64 (javaDiv a b)))) | false =>
+        | true => rOk (vLong (ifZeroL (isZeroL b) zeroLong (wrapLong (javaDiv a b)))) | false =>
       -- `lng(y) == 0L ? lng(x) : lng(x) % lng(y)`. No wrap: `%` cannot overflow.
       \case f == "PRIM_MOD_LONG" \with {
-        | true => rOk (vLong (ifZeroL (isZeroL b) a (javaRem a b))) | false =>
+        | true => rOk (vLong (ifZeroL (isZeroL b) x (remLong x b))) | false =>
       -- Signed `lng(x) <= lng(y)` and `lng(x) < lng(y)`, by the sign of an exact
       -- difference (`x < y` iff `x + 1 <= y`).
       \case f == "PRIM_BLE_LONG" \with {

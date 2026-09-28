@@ -13,6 +13,7 @@
 \import Semantics.Res
 \import Compiler.Int63
 \import Compiler.JavaAst
+\import Compiler.JavaLong
 \import Compiler.JavaAxioms
 \import Compiler.LambdaBox
 \import Compiler.Mangle
@@ -90,8 +91,8 @@
 
 \data CV (rt : RtSpec) (cls : JClass) (w : EV) (jv : Value) \elim w
   | evBox => cvBox (jv = vBox)
-  | evPrim (rocqUint63, i) => cvP63 (jv = vLong (pos i))
-  | evPrim (javaLong, i) => cvP64 (jv = vLong (signed64 i))
+  | evPrim (rocqUint63, i) => cvP63 (jv = vLong (longOfUint63 i))
+  | evPrim (javaLong, i) => cvP64 (jv = vLong (longOfBits i))
   | evCon ind c ws => cvCon {fs : Array Value} (jv = vData c fs) (AllCV rt cls ws fs)
   | evClos na b rho => cvClos {cenv : Array JExpr} {E : Env} {p : Path}
       (jv = vClos (renderName nParam p) (lamBody cenv p b) E)
@@ -159,7 +160,7 @@
       -> \Sigma (m : JMethod) (lookupMethod cls (mangleKername kn) = just m) (JMethod.mBody {m} = jReturn impl :: nil)
   | hValueOf : lookupMethod cls "Long.valueOf" = nothing
   -- The runtime.
-  | hRtValueOf (x : Int) : rtStaticCall {rt} "Long.valueOf" (vLong x :: nil) = just (rOk (eVal (vLong x)))
+  | hRtValueOf (x : JLong) : rtStaticCall {rt} "Long.valueOf" (vLong x :: nil) = just (rOk (eVal (vLong x)))
   | hRtField (nm : JIdent) (k : Nat) : builtinArity {rt} nm = just k -> rtField {rt} nm = just (vBuiltin nm nil)
   -- The axiom table.
   | hImpl (kn : Kername) (impl : JExpr) : axiomImpl kn = just impl -> \Sigma (nm : JIdent) (impl = jField rtRef nm)

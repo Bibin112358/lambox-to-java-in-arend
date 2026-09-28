@@ -12,7 +12,7 @@
 \import Semantics.LambdaBoxAxioms
 \import Semantics.Res
 \import Semantics.RtInt63
-\import Semantics.RtLong (builtinRunLong, wrap64)
+\import Semantics.RtLong (builtinRunLong)
 \import Compiler.JavaAst
 \import Compiler.Int63 (wrap63)
 \import Compiler.LambdaBox
@@ -113,7 +113,7 @@
 
 \func axiomRunsInJava
   : runClass rtInt63 (compileClass progClassName addAxiomProgram) bodyMethodName 200
-  = rOk (rvValue (vLong 5))
+  = rOk (rvValue (vLong (5, ())))
   => idp
 
 -- An `Eval` derivation through `evalAxiom` and `evalAxiomApp`.
@@ -155,7 +155,7 @@
 
 \func partialRunsInJava
   : runClass rtInt63 (compileClass progClassName partialProgram) bodyMethodName 200
-  = rOk (rvValue (vBuiltin "PRIM_ADD_INT63" (vLong 20 :: nil))) => idp
+  = rOk (rvValue (vBuiltin "PRIM_ADD_INT63" (vLong (20, ()) :: nil))) => idp
 
 \func partialIsNotCompared : bothAgree partialProgram 200 = false => idp
 
@@ -240,13 +240,13 @@
 
 \func int63InJava
   : runClass rtInt63 (compileClass progClassName int63Program) bodyMethodName 200
-  = rOk (rvValue (vLong 9223372036854775807))
+  = rOk (rvValue (vLong (9223372036854775807, ())))
   => idp
 
 -- For contrast: the `long` family (`rtLong`'s `PRIM_SUB_LONG`) gives -1, a
 -- different number.
 \func longWouldHaveSaid
-  : builtinRunLong "PRIM_SUB_LONG" (vLong 1 :: vLong 2 :: nil) = rOk (vLong (neg 1))
+  : builtinRunLong "PRIM_SUB_LONG" (vLong (1, ()) :: vLong (2, ()) :: nil) = rOk (vLong (neg 1, ()))
   => idp
 
 \func theTwoAnswersDiffer
@@ -284,7 +284,7 @@
 -- rejected.
 \func agreesRejectsArity : agrees (suc' zero') (vData 1 nil) = false => idp
 
-\func agreesRejectsShape : agrees box (vLong 0) = false => idp
+\func agreesRejectsShape : agrees box (vLong (0, ())) = false => idp
 
 \func agreesRejectsTag : agrees zero' (vData 1 nil) = false => idp
 
@@ -299,10 +299,10 @@
 
 -- ... which agrees with the Java value 0 exactly ...
 \func int63NormalizedAgrees
-  : agrees (prim (rocqUint63, wrap63 (pos 9223372036854775808))) (vLong 0) = true => idp
+  : agrees (prim (rocqUint63, wrap63 (pos 9223372036854775808))) (vLong (0, ())) = true => idp
 
 -- ... and not with -2^63.
 \func int63NormalizedRejectsOld
   : agrees (prim (rocqUint63, wrap63 (pos 9223372036854775808)))
-              (vLong (neg 9223372036854775808)) = false
+              (vLong (neg 9223372036854775808, ())) = false
   => idp

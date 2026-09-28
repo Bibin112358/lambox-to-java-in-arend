@@ -1,0 +1,225 @@
+\import Algebra.Meta
+\import Arith.Int
+\import Arith.Nat
+\import Data.Bool
+\import Logic
+\import Meta
+\import Order.Biordered
+\import Order.PartialOrder
+\import Order.StrictOrder
+\import Paths
+\import Paths.Meta
+\import Compiler.Int63 (int63Mod, int64Mod, signed64)
+
+-- Java's `long`: an integer in [-2^63, 2^63), carried with a proof.
+--
+-- `JLong` is the type of a long literal in the Java AST (`Compiler/JavaAst.ard`)
+-- and of a boxed long in the Java model (`vLong`, `Semantics/JavaValue.ard`),
+-- so an out-of-range long cannot be written, just as λ□'s primitive payloads
+-- are `Fin`s (`Compiler/LambdaBox.ard`). There are three ways to make one:
+--   * `longOfUint63`: a Rocq `Uint63` literal, in [0, 2^63);
+--   * `longOfBits`: a `javaLong` literal, the signed reading of 64 bits;
+--   * `wrapLong`: any integer, wrapped as the JVM's arithmetic does (JLS
+--     4.2.2), which is how the runtime model builds its results.
+--
+-- The range is a Boolean check (`inRangeB`), so that on a concrete number the
+-- proof is `()` and concrete checks still run by `idp`; `inLong-range` and
+-- `range-inLong` show it means exactly -2^63 <= x < 2^63.
+--
+-- Arend pitfall: never let a concrete 2^63/2^64 meet a symbolic summand or a
+-- `<` proof term -- the checker then peels 2^63 `suc`s and hangs. Bounds are
+-- proved for an abstract `P` (and `M = P + P`) and instantiated at the end.
+
+\func pow2_63 : Nat => 9223372036854775808
+
+\func pow2_64 : Nat => 18446744073709551616
+
+-- ---------------------------------------------------------------------------
+-- The type.
+-- ---------------------------------------------------------------------------
+
+-- `-P <= x < P`, decided by the sign of a `Nat.-` (computed natively on big
+-- literals; comparing by peeling `suc`s would take 2^63 steps).
+\func inRangeB (P : Nat) (x : Int) : Bool \elim x
+  | pos n => isNeg (n Nat.- P)
+  | neg (suc n) => not (isNeg (P Nat.- suc n))
+  \where
+    \func isNeg (d : Int) : Bool
+      | pos _ => false
+      | neg (suc _) => true
+
+\func InLong (x : Int) : \Prop => So (inRangeB pow2_63 x)
+
+\func JLong : \Set0 => \Sigma (x : Int) (InLong x)
+
+-- Two longs with the same value are equal.
+\lemma longExt {a b : JLong} (e : a.1 = b.1) : a = b => ext e
+
+-- `-P <= x < P`, as a proposition.
+\func InRange (P : Nat) (x : Int) : \Prop \elim x
+  | pos n => n < P
+  | neg (suc n) => suc n <= P
+
+-- The check means what it says.
+\lemma inLong-range {P : Nat} {x : Int} (s : So (inRangeB P x)) : InRange P x \elim x
+  | pos n => posCase (n Nat.- P) idp s
+  | neg (suc n) => negCase (P Nat.- suc n) idp s
+  \where {
+    \lemma posCase {n P : Nat} (d : Int) (e : n Nat.- P = d) (s : So (inRangeB.isNeg d)) : n < P \elim d
+      | pos _ => \case s \with {}
+      | neg (suc _) => minusNegLt e
+
+    \lemma negCase {n P : Nat} (d : Int) (e : P Nat.- suc n = d) (s : So (not (inRangeB.isNeg d))) : suc n <= P \elim d
+      | pos _ => minusPosGe e
+      | neg (suc _) => \case s \with {}
+  }
+
+\lemma range-inLong {P : Nat} {x : Int} (h : InRange P x) : So (inRangeB P x) \elim x
+  | pos n => transportInv (\lam d => So (inRangeB.isNeg d)) (minusLt h).2 ()
+  | neg (suc n) => \case P Nat.- suc n \as d, idp : P Nat.- suc n = d \return So (not (inRangeB.isNeg d)) \with {
+    | pos _, _ => ()
+    | neg (suc _), e => absurd (<-irreflexive (h <∘r minusNegLt e))
+  }
+
+-- ---------------------------------------------------------------------------
+-- The JVM's wraparound (JLS 4.2.1, 4.2.2): the mathematical result modulo
+-- 2^64, read as signed two's complement.
+-- ---------------------------------------------------------------------------
+
+-- `x` reduced modulo 2^64 into [0, 2^64): the unsigned bit pattern. The `neg`
+-- clause is `2^64 - (n mod 2^64)`, guarded on 0 (`2^64 - 0` is not in range);
+-- `neg 0` is definitionally `pos 0`, and the clauses agree there.
+\func modU64 (x : Int) : Nat \elim x
+  | pos n => n Nat.mod pow2_64
+  | neg n => negModU64 (n Nat.mod pow2_64)
+
+\func negModU64 (m : Nat) : Nat \elim m
+  | 0 => 0
+  | suc k => iabs (pow2_64 Nat.- suc k)
+
+-- The bit pattern read back as signed: `r >= 2^63` becomes `r - 2^64`.
+\func wrap64 (x : Int) : Int => readS64 (modU64 x) (modU64 x Nat.- pow2_63)
+
+-- `d` is `r - 2^63`, whose sign says which half `r` is in.
+\func readS64 (r : Nat) (d : Int) : Int => readSigned pow2_64 r d
+
+-- The modulus is a parameter so that a proof can keep it abstract.
+\func readSigned (m r : Nat) (d : Int) : Int \elim d
+  | pos _ => r Nat.- m      -- `pos _` is `r >= 2^63`, equality included
+  | neg (suc _) => pos r
+
+-- ---------------------------------------------------------------------------
+-- The three ways to make a long.
+-- ---------------------------------------------------------------------------
+
+\func wrapLong (z : Int) : JLong => (wrap64 z, range-inLong (wrap64In z))
+
+\func longOfUint63 (i : Fin int63Mod) : JLong => (pos i, range-inLong {pow2_63} {pos i} (fin_< i))
+
+\func longOfBits (i : Fin int64Mod) : JLong =>
+  (signed64 i, range-inLong (transportInv (InRange pow2_63) (signed64-read i) (readIn pow2_63 pow2_64 i idp (fin_< i))))
+
+\func zeroLong : JLong => (0, ())
+
+-- ---------------------------------------------------------------------------
+-- Proofs: reading a residue signed lands in range.
+-- ---------------------------------------------------------------------------
+
+-- A residue `r < M`, read signed modulo `M = P + P`, is in [-P, P).
+\lemma readIn (P M r : Nat) (hM : M = P Nat.+ P) (hr : r < M) : InRange P (readSigned M r (r Nat.- P)) =>
+  \case r Nat.- P \as d, idp : r Nat.- P = d \return InRange P (readSigned M r d) \with {
+    | pos k, p =>
+      \let | er : r = k Nat.+ P => minusPosEq p
+           | t : k Nat.+ P < P Nat.+ P => transport2 (<) er hM hr
+           | kP : k < P => linarith
+           | lt => minusLt kP
+           | e : r Nat.- M = neg (suc lt.1) => pmap2 (Nat.-) er hM *> minusCancel k P P *> lt.2
+      \in transportInv (InRange P) e (minusNeg<= lt.2)
+    | neg (suc k), p => minusNegLt p
+  }
+
+-- `wrap64` always lands in range: `long` arithmetic cannot leave a `long`.
+\lemma wrap64In (z : Int) : InRange pow2_63 (wrap64 z) =>
+  readIn pow2_63 pow2_64 (modU64 z) idp (transportInv (__ < pow2_64) (modU64-eq z) (modU< m64 z))
+
+-- `signed64` with its `\case` turned into `readSigned`, so it can be rewritten.
+\lemma signed64-read (i : Fin int64Mod) : signed64 i = readSigned pow2_64 i ((i : Nat) Nat.- int63Mod) =>
+  unfold signed64 (cases ((i : Nat) Nat.- int63Mod) \with {
+    | pos _ => idp
+    | neg (suc _) => idp
+  })
+
+-- ---------------------------------------------------------------------------
+-- Proofs: `Nat.-` into `Int`, its sign and bounds.
+-- ---------------------------------------------------------------------------
+
+\func minusLt {a m : Nat} (p : a < m) : \Sigma (k : Nat) (a Nat.- m = neg (suc k)) \elim a, m, p
+  | 0, suc m, NatOrder.zero<suc => (m, idp)
+  | suc a, suc m, NatOrder.suc<suc p => minusLt p
+
+-- `a - b` is negative only if `a < b`.
+\lemma minusNegLt {a b k : Nat} (e : a Nat.- b = neg (suc k)) : a < b \elim a, b
+  | 0, 0 => \case pmap signB e \with {}
+  | 0, suc b => NatOrder.zero<suc
+  | suc a, 0 => \case pmap signB e \with {}
+  | suc a, suc b => NatOrder.suc<suc (minusNegLt e)
+
+-- `a - b = k` means `a = k + b`.
+\lemma minusPosEq {a b k : Nat} (e : a Nat.- b = pos k) : a = k Nat.+ b \elim a, b
+  | 0, 0 => pmap iabs e
+  | 0, suc b => \case pmap signB e \with {}
+  | suc a, 0 => pmap iabs e
+  | suc a, suc b => pmap suc (minusPosEq e)
+
+\lemma minusPosGe {a b k : Nat} (e : a Nat.- b = pos k) : b <= a => rewrite (minusPosEq e) linarith
+
+\lemma minusNeg<= {a b k : Nat} (e : a Nat.- b = neg (suc k)) : suc k <= b \elim a, b
+  | 0, 0 => \case pmap signB e \with {}
+  | 0, suc b => transport (\lam z => suc k <= z) (pmap iabs (inv e)) <=-refl
+  | suc a, 0 => \case pmap signB e \with {}
+  | suc a, suc b => <=-transitive (minusNeg<= e) (<=-less id<suc)
+
+\lemma minusCancel (x y c : Nat) : (x Nat.+ c) Nat.- (y Nat.+ c) = x Nat.- y \elim c
+  | 0 => idp
+  | suc c => minusCancel x y c
+
+-- A sign test, to tell `pos` from `neg (suc _)` apart in a path.
+\func signB (x : Int) : Bool
+  | pos _ => true
+  | neg (suc _) => false
+
+-- ---------------------------------------------------------------------------
+-- Proofs: reduction modulo an abstract `M = suc m` stays below `M`.
+-- ---------------------------------------------------------------------------
+
+\func negMod (M r : Nat) : Nat \elim r
+  | 0 => 0
+  | suc k => iabs (M Nat.- suc k)
+
+\func modU (M : Nat) (x : Int) : Nat \elim x
+  | pos n => n Nat.mod M
+  | neg (suc n) => negMod M (suc n Nat.mod M)
+
+\lemma negMod< (m r : Nat) (hr : r < suc m) : negMod (suc m) r < suc m \elim r
+  | 0 => NatOrder.zero<suc
+  | suc k =>
+    \let | ex : k Nat.+ (m -' k) = m => <=_exists (<=-less (NatOrder.unsuc< hr))
+         | ei : iabs (suc m Nat.- suc k) = m -' k => pmap iabs (inv (-'=- (<=-less hr)))
+    \in transportInv (__ < suc m) ei (transport (\lam z => m -' k < suc z) ex
+          (transport (\lam z => m -' k < suc z) NatSemiring.+-comm (NatSemiring.<=_+ <=-refl zero<=_ <∘r id<suc)))
+
+\lemma modU< (m : Nat) (x : Int) : modU (suc m) x < suc m \elim x
+  | pos n => fin_< (n Nat.mod suc m)
+  | neg (suc n) => negMod< m _ (fin_< (suc n Nat.mod suc m))
+
+-- `m64` is 2^64 - 1, so that the lemmas above, stated for `suc m`, apply;
+-- `suc m64` and `pow2_64` are the same literal to the checker.
+\func m64 : Nat => 18446744073709551615
+
+\lemma negModU64-eq (r : Nat) : negModU64 r = negMod pow2_64 r \elim r
+  | 0 => idp
+  | suc k => idp
+
+\lemma modU64-eq (x : Int) : modU64 x = modU pow2_64 x \elim x
+  | pos n => idp
+  | neg (suc n) => negModU64-eq _

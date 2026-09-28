@@ -45,10 +45,10 @@ The generic result (`Proof/BackendCorrect.ard`) holds for any runtime model and
 them for the shipped ones. Among those facts: the two axiom oracles agree
 (`Proof/OracleShipped.ard`), mangled Java names are injective
 (`Proof/MangleInj.ard`) and generated local names are unique
-(`Proof/NodePathUnique.ard`, `Proof/PathFresh.ard`). Separately,
-`Proof/LongRange.ard` shows that the Java model's `vLong`, although an
-unbounded `Int`, only ever holds real Java `long`s: every literal the compiler
-emits and every result of the runtime model lies in [-2^63, 2^63).
+(`Proof/NodePathUnique.ard`, `Proof/PathFresh.ard`). A Java `long` is a
+`JLong` (`Compiler/JavaLong.ard`), an integer with a proof that it lies in
+[-2^63, 2^63), both in the Java AST's literals and in the model's `vLong`, so
+an out-of-range long cannot even be written.
 
 **Trusted, not proved:**
 - the printer from the Java AST to text (`Compiler/JavaPrint.ard`);
@@ -77,6 +77,7 @@ MetaRocq. Integers are Lean's machine integers as lean-to-lambdabox emits them
         ToJava.ard                    the generator λ□ -> JavaAst  (start here)
         JavaPrint.ard                 JavaAst -> text (trusted)
         JavaAxioms.ard                axioms realized by the runtime
+        JavaLong.ard                  Java's `long`: an Int in range, and wraparound
         Mangle.ard, NodePath.ard      Java names for constants / local variables
         Int63.ard, LongRewrite.ard    machine-integer helpers and a rewrite pass
         Serialize.ard, StringUtil.ard helpers

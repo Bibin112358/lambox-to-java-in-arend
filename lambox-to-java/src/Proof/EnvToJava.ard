@@ -16,6 +16,7 @@
 \import Semantics.Res
 \import Compiler.Int63
 \import Compiler.JavaAst
+\import Compiler.JavaLong
 \import Compiler.JavaAxioms
 \import Compiler.LambdaBox
 \import Logic
@@ -75,7 +76,7 @@
 
 -- A literal: `Long.valueOf` is not generated, so it falls through to the runtime.
 \func valueOfEval {spec : LBSpec} {rt : RtSpec} {cls : JClass} {genv : GlobalDeclarations} (H : SimHyps spec rt cls genv)
-                  (env : Env) (x : Int)
+                  (env : Env) (x : JLong)
   : evalExpr rt cls 4 env (jCallStatic "Long.valueOf" (jLit (litLong x) :: nil)) = rOk (eVal (vLong x)) =>
   rewrite (H.hValueOf, H.hRtValueOf x) idp
 
@@ -120,9 +121,9 @@
                                *> lookupSkip ix nFixInst (\lam ind => indepNotSelf ind idp) (ext0 ++ jenv)
                                *> lookupHead inst obj ((cn, obj) :: jenv)))))))
   | prim (rocqUint63, i), eePrim e =>
-    pureOut (compileExpr cenv p (prim (rocqUint63, i))) idp (\lam X _ => (vLong (pos i), 4, valueOfEval H (X ++ jenv) (pos i), rewrite e (cvP63 idp)))
+    pureOut (compileExpr cenv p (prim (rocqUint63, i))) idp (\lam X _ => (vLong (longOfUint63 i), 4, valueOfEval H (X ++ jenv) (longOfUint63 i), rewrite e (cvP63 idp)))
   | prim (javaLong, i), eePrim e =>
-    pureOut (compileExpr cenv p (prim (javaLong, i))) idp (\lam X _ => (vLong (signed64 i), 4, valueOfEval H (X ++ jenv) (signed64 i), rewrite e (cvP64 idp)))
+    pureOut (compileExpr cenv p (prim (javaLong, i))) idp (\lam X _ => (vLong (longOfBits i), 4, valueOfEval H (X ++ jenv) (longOfBits i), rewrite e (cvP64 idp)))
   | const kn, eeDelta {cb} {body} lk cbb dbody =>
     \let | r => simE H dbody {nil} {nil} {nil} erNil
          | v => r.5 nil ()

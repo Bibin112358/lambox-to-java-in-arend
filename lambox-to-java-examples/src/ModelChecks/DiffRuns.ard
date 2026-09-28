@@ -56,7 +56,7 @@
   | 0 => "<too deep>"
   | suc n => \case v \with {
     | vBox => "BOX"
-    | vLong j => intToStr j
+    | vLong j => intToStr j.1
     | vData tg fs => wrapFields (natToStr tg) (showVs n fs)
     | _ => "<not first-order>"
   }

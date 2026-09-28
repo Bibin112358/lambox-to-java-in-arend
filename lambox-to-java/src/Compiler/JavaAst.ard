@@ -24,6 +24,7 @@
 -- printer outside the proof), Featherweight Java (the expression core).
 
 \import Data.String
+\import Compiler.JavaLong (JLong)
 
 -- A simple and a possibly dotted Java identifier (`Rt.Fn`, `Long.valueOf`).
 -- Both are already valid Java: mangling happens once, in `mangleKername`.
@@ -85,11 +86,11 @@
 
 -- `litStr`: quoted but not escaped by the printer. `litInt`: an `int` (a
 -- constructor tag, an index in a diagnostic). `litLong`: a `long` such as
--- `5L`, λ□'s primitive int (signed, hence `Int`).
+-- `5L`, λ□'s primitive int; in range by construction (`Compiler/JavaLong.ard`).
 \data JLit
   | litStr String
   | litInt Nat
-  | litLong Int
+  | litLong JLong
 
 \data JStmt
   -- `final Object l3 = e;`: names a value used more than once.

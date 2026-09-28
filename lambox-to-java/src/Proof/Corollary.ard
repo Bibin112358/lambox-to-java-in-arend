@@ -14,6 +14,7 @@
 \import Semantics.LambdaBoxEval
 \import Semantics.RtInt63 (rtInt63)
 \import Compiler.Int63 (signed64)
+\import Compiler.JavaLong (longOfUint63, longOfBits)
 \import Compiler.LambdaBox
 \import Compiler.ToJava
 \import Logic
@@ -180,8 +181,8 @@
 -- The `Rt` encoding of a first-order λ□ value (the other cases are never used).
 \func foJava (t : LBTerm) : Value \elim t
   | box => vBox
-  | prim (rocqUint63, i) => vLong (pos i)
-  | prim (javaLong, i) => vLong (signed64 i)
+  | prim (rocqUint63, i) => vLong (longOfUint63 i)
+  | prim (javaLong, i) => vLong (longOfBits i)
   | construct _ c args => vData c (mkArray {Value} {args.len} (\lam i => foJava (args i)))
   | _ => vBox
 

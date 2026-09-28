@@ -7,6 +7,7 @@
 \import Semantics.RtLong (mkBool, rtStaticCallLong, builtinArityLong, builtinRunLong)
 \import Compiler.Int63
 \import Compiler.JavaAst
+\import Compiler.JavaLong (longOfUint63)
 \import Set
 \import Compiler.StringUtil (intEqB)
 
@@ -52,20 +53,20 @@
   }
 
 -- Arguments and result are normalized, mirroring `u63()` and the trailing mask
--- in `Rt.java`, so each constant is correct even on un-normalized input.
+-- in `Rt.java`: a negative `long` is read modulo 2^63.
 \func builtinRunInt63 (f : JIdent) (vs : Array Value) : Res Value =>
   \case vs \with {
     | vLong x :: vLong y :: nil =>
-      \let | a => wrap63 x
-           | b => wrap63 y
+      \let | a => wrap63 x.1
+           | b => wrap63 y.1
       \in
       \case f == "PRIM_ADD_INT63" \with {
-        | true => rOk (vLong (norm63 (pos (a Nat.+ b)))) | false =>
+        | true => rOk (vLong (longOfUint63 (wrap63 (pos (a Nat.+ b))))) | false =>
       \case f == "PRIM_MUL_INT63" \with {
-        | true => rOk (vLong (norm63 (pos (a Nat.* b)))) | false =>
+        | true => rOk (vLong (longOfUint63 (wrap63 (pos (a Nat.* b))))) | false =>
       -- Unsigned wraparound: 1 - 2 is 2^63-1.
       \case f == "PRIM_SUB_INT63" \with {
-        | true => rOk (vLong (norm63 (a Nat.- b))) | false =>
+        | true => rOk (vLong (longOfUint63 (wrap63 (a Nat.- b)))) | false =>
       \case f == "PRIM_EQB_INT63" \with {
         | true => rOk (mkBool (intEqB (pos a) (pos b))) | false => rStuck
       } } } }

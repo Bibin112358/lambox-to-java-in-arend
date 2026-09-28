@@ -33,20 +33,20 @@
 \func betaReturns : Returns betaProgram vBox => correctChecked idp (lbBeta lbAxioms) idp
 
 -- `prim_add_int 2 3` returns `5L`: the axiom oracle and `Rt.PRIM_ADD_INT63`.
-\func addAxiomReturns : Returns addAxiomProgram (vLong 5) => correctChecked idp lbAxiom idp
+\func addAxiomReturns : Returns addAxiomProgram (vLong (5, ())) => correctChecked idp lbAxiom idp
 
 -- `Nat.sub 3 5` returns `0L`: Lean's truncating subtraction, `Rt.NAT_SUB_LONG`.
-\func natSubReturns : Returns natSubProgram (vLong 0) =>
+\func natSubReturns : Returns natSubProgram (vLong (0, ())) =>
   correctChecked idp (evalT-sound lbAxioms 200 idp : EvalProgram lbAxioms natSubProgram (prim (rocqUint63, 0))) idp
 
 -- `Nat.add (2^63-1) 1` returns `0L`: both sides wrap at 2^63.
-\func natOverflowReturns : Returns natOverflowProgram (vLong 0) => correctChecked idp lbNatOverflow idp
+\func natOverflowReturns : Returns natOverflowProgram (vLong (0, ())) => correctChecked idp lbNatOverflow idp
 
 -- Projection of field 1 of a pair returns `21L`.
-\func projReturns : Returns projProgram (vLong 21) => correctChecked idp (lbProj lbAxioms) idp
+\func projReturns : Returns projProgram (vLong (21, ())) => correctChecked idp (lbProj lbAxioms) idp
 
 -- A two-definition `fix` block, selecting definition 1 (the identity), returns `5L`.
-\func fix2Returns : Returns fix2Program (vLong 5) => correctChecked idp (lbFix2 lbAxioms) idp
+\func fix2Returns : Returns fix2Program (vLong (5, ())) => correctChecked idp (lbFix2 lbAxioms) idp
 
 -- Peano `add 1 3`: a constant whose body is a `fix` with a `case`. The result
 -- is the `Rt.Data` encoding of the numeral 4.

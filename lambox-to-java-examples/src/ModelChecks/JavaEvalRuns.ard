@@ -93,7 +93,7 @@
 -- `rtInt63`, which models the `_INT63` family (under `rtLong` it is stuck).
 \func addClass : JClass => compileClass "Prog" (axiomDecls, addT (litT 2) (litT 3))
 
-\func addEvaluates : runClass rtInt63 addClass bodyMethodName 100 = rOk (rvValue (vLong 5))
+\func addEvaluates : runClass rtInt63 addClass bodyMethodName 100 = rOk (rvValue (vLong (5, ())))
   => idp
 
 -- At the edge of the range: (2^63-1) + 1 is 0, since a λ□ primitive int is a
@@ -102,14 +102,14 @@
   compileClass "Prog" (axiomDecls, addT (litT 9223372036854775807) (litT 1))
 
 \func wrapEvaluates
-  : runClass rtInt63 wrapClass bodyMethodName 100 = rOk (rvValue (vLong 0))
+  : runClass rtInt63 wrapClass bodyMethodName 100 = rOk (rvValue (vLong (0, ())))
   => idp
 
 -- For contrast: JVM `long` addition (`PRIM_ADD_LONG`) wraps signed at 2^64
 -- and gives -2^63.
 \func longWouldHaveSaid
-  : builtinRunLong "PRIM_ADD_LONG" (vLong 9223372036854775807 :: vLong 1 :: nil)
-  = rOk (vLong (neg 9223372036854775808))
+  : builtinRunLong "PRIM_ADD_LONG" (vLong (9223372036854775807, ()) :: vLong (1, ()) :: nil)
+  = rOk (vLong (neg 9223372036854775808, ()))
   => idp
 
 -- `proj`: field 0 of a one-field constructor, with no inductive parameters.
@@ -120,7 +120,7 @@
   compileClass "Prog"
     (nil, proj (\new ProjectionInfo boxInd 0 0) (construct boxInd 0 (litT 7 :: nil)))
 
-\func projEvaluates : runClass rtLong projClass bodyMethodName 100 = rOk (rvValue (vLong 7))
+\func projEvaluates : runClass rtLong projClass bodyMethodName 100 = rOk (rvValue (vLong (7, ())))
   => idp
 
 -- With one inductive parameter stored ahead of the fields, field 0 is physical
@@ -131,7 +131,7 @@
     (nil, proj (\new ProjectionInfo boxInd 1 0) (construct boxInd 0 (litT 5 :: litT 7 :: nil)))
 
 \func projParamEvaluates
-  : runClass rtLong projParamClass bodyMethodName 100 = rOk (rvValue (vLong 7))
+  : runClass rtLong projParamClass bodyMethodName 100 = rOk (rvValue (vLong (7, ())))
   => idp
 
 -- A `case` with no branches (an erased `Empty`): the scrutinee is evaluated

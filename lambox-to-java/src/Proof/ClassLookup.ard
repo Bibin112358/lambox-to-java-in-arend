@@ -5,6 +5,7 @@
 \import Data.Maybe
 \import Data.String (String, Byte, ++ \as ++S)
 \import Compiler.JavaAst
+\import Compiler.JavaLong
 \import Compiler.JavaAxioms
 \import Compiler.LambdaBox
 \import Compiler.Mangle
@@ -237,13 +238,13 @@
    idp)
 
 \func RtOK (rt : RtSpec) : \Type => \Sigma
-  (\Pi (x : Int) -> rtStaticCall {rt} "Long.valueOf" (vLong x :: nil) = just (rOk (eVal (vLong x))))
+  (\Pi (x : JLong) -> rtStaticCall {rt} "Long.valueOf" (vLong x :: nil) = just (rOk (eVal (vLong x))))
   (\Pi (nm : JIdent) (k : Nat) -> builtinArity {rt} nm = just k -> rtField {rt} nm = just (vBuiltin nm nil))
 
 \func fieldOK (nm : JIdent) (k : Nat) (h : builtinArityShipped nm = just k) : rtFieldInt63 nm = just (vBuiltin nm nil) =>
   unfold rtFieldInt63 (rewrite h idp)
 
-\func valueOfOK (x : Int) : rtStaticCallLong "Long.valueOf" (vLong x :: nil) = just (rOk (eVal (vLong x))) => idp
+\func valueOfOK (x : JLong) : rtStaticCallLong "Long.valueOf" (vLong x :: nil) = just (rOk (eVal (vLong x))) => idp
 
 \func rtOKShipped : RtOK rtInt63 =>
   (valueOfOK, fieldOK)

@@ -4,6 +4,7 @@
 \import Data.String
 \import Compiler.JavaAst
 \import Compiler.Int63
+\import Compiler.JavaLong (longOfUint63, longOfBits)
 \import Compiler.LambdaBox
 \import Compiler.Mangle
 \import Compiler.NodePath
@@ -27,12 +28,12 @@
 
 -- A `Uint63` literal (the payload is already normalized).
 \func int63Lit (i : Fin int63Mod) : JExpr =>
-  jCallStatic "Long.valueOf" (jLit (litLong (pos i)) :: nil)
+  jCallStatic "Long.valueOf" (jLit (litLong (longOfUint63 i)) :: nil)
 
 -- A 64-bit literal: the payload is the unsigned bit pattern, emitted with the
 -- signed reading a JVM `long` gives it.
 \func longLit (i : Fin int64Mod) : JExpr =>
-  jCallStatic "Long.valueOf" (jLit (litLong (signed64 i)) :: nil)
+  jCallStatic "Long.valueOf" (jLit (litLong (longOfBits i)) :: nil)
 
 -- Runtime family implementing λ□'s `Uint63` operations.
 \func primOpSuffix : String => "INT63"

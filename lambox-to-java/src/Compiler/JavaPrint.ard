@@ -32,7 +32,7 @@
 \func printLit (l : JLit) : String
   | litStr s => "\"" ++ s ++ "\""
   | litInt n => natToStr n
-  | litLong i => intToStr i ++ "L"
+  | litLong i => intToStr i.1 ++ "L"
 
 -- `ind` is the indentation of the current line; only `jClosure`, whose body
 -- spans further lines, uses it.

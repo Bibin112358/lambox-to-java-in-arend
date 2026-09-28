@@ -21,6 +21,7 @@
 \import Compiler.Int63
 \import Compiler.JavaAst
 \import Compiler.JavaAxioms
+\import Compiler.JavaLong
 \import Compiler.LambdaBox
 \import Logic
 \import Meta
@@ -153,11 +154,16 @@
 \func Rel (args : Array LBTerm) (jargs : Array Value args.len) : \Type =>
   \Pi (i : Fin args.len) -> ValRel (args i) (jargs i)
 
+-- The Java values of λ□'s two kinds of literal.
+\func u63 (a : Fin int63Mod) : Value => vLong (longOfUint63 a)
+
+\func s64 (a : Fin int64Mod) : Value => vLong (longOfBits a)
+
 \func Dec63 (x y : Int) (jargs : Array Value) : \Type =>
-  \Sigma (a b : Fin int63Mod) (x = pos a) (y = pos b) (jargs = vLong a :: vLong b :: nil)
+  \Sigma (a b : Fin int63Mod) (x = pos a) (y = pos b) (jargs = u63 a :: u63 b :: nil)
 
 \func Dec64 (x y : Int) (jargs : Array Value) : \Type =>
-  \Sigma (a b : Fin int64Mod) (x = pos a) (y = pos b) (jargs = vLong (signed64 a) :: vLong (signed64 b) :: nil)
+  \Sigma (a b : Fin int64Mod) (x = pos a) (y = pos b) (jargs = s64 a :: s64 b :: nil)
 
 \func decode63 (args : Array LBTerm) (jargs : Array Value args.len) (rel : Rel args jargs) {x y : Int}
                (h : twoInts args = just (x, y)) : Dec63 x y jargs \elim args, jargs
@@ -168,8 +174,8 @@
     \let | hb => invBoth h
          | dt => inv63 hb.1
          | du => inv63 hb.2
-         | ej : j = vLong dt.1 => p63Inv dt.1 j (transport (\lam s => agrees s j = true) dt.2 (rel 0))
-         | ek : k = vLong du.1 => p63Inv du.1 k (transport (\lam s => agrees s k = true) du.2 (rel 1))
+         | ej : j = u63 dt.1 => p63Inv dt.1 j (transport (\lam s => agrees s j = true) dt.2 (rel 0))
+         | ek : k = u63 du.1 => p63Inv du.1 k (transport (\lam s => agrees s k = true) du.2 (rel 1))
     \in (dt.1, du.1, dt.3, du.3, pmap2 (\lam p q => p :: q :: nil) ej ek)
 
 \func decode64 (args : Array LBTerm) (jargs : Array Value args.len) (rel : Rel args jargs) {x y : Int}
@@ -181,8 +187,8 @@
     \let | hb => invBoth h
          | dt => inv64 hb.1
          | du => inv64 hb.2
-         | ej : j = vLong (signed64 dt.1) => p64Inv dt.1 j (transport (\lam s => agrees s j = true) dt.2 (rel 0))
-         | ek : k = vLong (signed64 du.1) => p64Inv du.1 k (transport (\lam s => agrees s k = true) du.2 (rel 1))
+         | ej : j = s64 dt.1 => p64Inv dt.1 j (transport (\lam s => agrees s j = true) dt.2 (rel 0))
+         | ek : k = s64 du.1 => p64Inv du.1 k (transport (\lam s => agrees s k = true) du.2 (rel 1))
     \in (dt.1, du.1, dt.3, du.3, pmap2 (\lam p q => p :: q :: nil) ej ek)
 
 -- ---------------------------------------------------------------------------
@@ -203,7 +209,7 @@
 -- `Nat.*`: the arguments are i63, read as naturals by `natAt`.
 \func NatCore (op : String) (nm : JIdent) : \Type =>
   \Pi (a b : Fin int63Mod) (v : LBTerm) -> natRun op (wrap63 (pos a)) (wrap63 (pos b)) = just v
-    -> Goal nm (vLong a :: vLong b :: nil) v
+    -> Goal nm (u63 a :: u63 b :: nil) v
 
 \func liftNatAt (op : String) (nm : JIdent) (core : NatCore op nm) (args : Array LBTerm) (jargs : Array Value args.len)
                 (v : LBTerm) (rel : Rel args jargs) (m : Maybe (\Sigma Int Int)) (em : twoInts args = m)
@@ -221,7 +227,7 @@
 -- `prim_*_int`: i63 arguments; an i64 pair gets nowhere.
 \func R63Core (op : String) (nm : JIdent) : \Type =>
   \Pi (a b : Fin int63Mod) (v : LBTerm) -> int63Run op (pos a) (pos b) = just v
-    -> Goal nm (vLong a :: vLong b :: nil) v
+    -> Goal nm (u63 a :: u63 b :: nil) v
 
 \func liftR63At (op : String) (nm : JIdent) (core : R63Core op nm) (no64 : \Pi (x y : Int) -> longRun op x y = nothing)
                 (args : Array LBTerm) (jargs : Array Value args.len) (v : LBTerm) (rel : Rel args jargs)
@@ -241,7 +247,7 @@
 -- `prim_*_long`: i64 arguments, read signed by the JVM.
 \func R64Core (op : String) (nm : JIdent) : \Type =>
   \Pi (a b : Fin int64Mod) (v : LBTerm) -> longRun op (pos a) (pos b) = just v
-    -> Goal nm (vLong (signed64 a) :: vLong (signed64 b) :: nil) v
+    -> Goal nm (s64 a :: s64 b :: nil) v
 
 \func liftR64At (op : String) (nm : JIdent) (core : R64Core op nm) (no63 : \Pi (x y : Int) -> int63Run op x y = nothing)
                 (args : Array LBTerm) (jargs : Array Value args.len) (v : LBTerm) (rel : Rel args jargs)
@@ -273,13 +279,17 @@
 -- The values.
 -- ---------------------------------------------------------------------------
 
-\func relNorm (z : Int) : ValRel (lbInt z) (vLong (norm63 z)) => intEqB-refl (pos (wrap63 z))
+-- `lbInt Z` is related to a Java long with value `z`: what `ValRel (lbInt Z)
+-- (vLong J)` unfolds to when `J.1` is `z`.
+\func IRel (Z z : Int) : \Prop => intEqB (pos (wrap63 Z)) z = true
+
+\lemma relNorm (z : Int) : IRel z (pos (wrap63 z)) => intEqB-refl (pos (wrap63 z))
 
 \func relBool (b : Bool) : ValRel (lbBool b) (mkBool b) \elim b
   | true => idp
   | false => idp
 
-\func relPos (q : Nat) (hq : q < pow2_63) : ValRel (lbInt (pos q)) (vLong (pos q)) =>
+\func relPos (q : Nat) (hq : q < pow2_63) : IRel (pos q) (pos q) =>
   transportInv (\lam (z : Nat) => intEqB (pos z) (pos q) = true) (wrap63-lt hq) (intEqB-refl (pos q))
 
 \lemma le+ (x y : Nat) : x <= x Nat.+ y => NatSemiring.<=_+ <=-refl zero<=_
@@ -293,23 +303,23 @@
     | neg (suc k), e => wrap64-neg (<=-less (minusNeg<= e <∘r hb))
   }
 
-\func relTrunc (a b : Nat) (ha : a < pow2_63) : ValRel (lbInt (truncLb (a Nat.- b))) (vLong (clampL (a Nat.- b))) =>
-  \case a Nat.- b \as d, idp : a Nat.- b = d \return ValRel (lbInt (truncLb d)) (vLong (clampL d)) \with {
+\func relTrunc (a b : Nat) (ha : a < pow2_63) : IRel (truncLb (a Nat.- b)) (clampL (a Nat.- b)) =>
+  \case a Nat.- b \as d, idp : a Nat.- b = d \return IRel (truncLb d) (clampL d) \with {
     | pos k, e => relPos k (minusPos<= e <∘r ha)
     | neg (suc k), _ => idp
   }
 
-\func relDiv (a b : Nat) (ha : a < pow2_63)
-  : ValRel (lbInt (pos (leanDiv a b))) (vLong (ifZeroL (isZeroL (pos b)) 0 (wrap64 (javaDiv (pos a) (pos b))))) \elim b
+\func relDiv (a : Fin int63Mod) (b : Nat)
+  : ValRel (lbInt (pos (leanDiv a b))) (vLong (ifZeroL (isZeroL (pos b)) zeroLong (wrapLong (javaDiv (pos a) (pos b))))) \elim b
   | 0 => idp
   | suc b =>
-    \let hq : a Nat.div suc b < pow2_63 => div<=left a b <∘r ha
-    \in transportInv (\lam z => ValRel (lbInt (pos (a Nat.div suc b))) (vLong z)) (wrap64-pos hq) (relPos _ hq)
+    \let hq : a Nat.div suc b < pow2_63 => div<=left a b <∘r fin_< a
+    \in transportInv (IRel (pos (a Nat.div suc b))) (wrap64-pos hq) (relPos _ hq)
 
-\func relMod (a b : Nat) (ha : a < pow2_63)
-  : ValRel (lbInt (pos (leanMod a b))) (vLong (ifZeroL (isZeroL (pos b)) (pos a) (javaRem (pos a) (pos b)))) \elim b
-  | 0 => relPos a ha
-  | suc b => relPos (a Nat.mod suc b) (mod<=left <∘r ha)
+\func relMod (a : Fin int63Mod) (b : Nat)
+  : ValRel (lbInt (pos (leanMod a b))) (vLong (ifZeroL (isZeroL (pos b)) (longOfUint63 a) (remLong (longOfUint63 a) (pos b)))) \elim b
+  | 0 => relPos a (fin_< a)
+  | suc b => relPos (a Nat.mod suc b) (mod<=left <∘r fin_< a)
 
 \lemma nonNeg-eq (d : Int) : nonNegL d = nonNegLb d \elim d
   | pos _ => idp
@@ -317,81 +327,69 @@
 
 \lemma w63 (a : Fin int63Mod) : wrap63 (pos a) = {Nat} a => wrap63-lt (fin_< a)
 
-\lemma w64 (a : Fin int63Mod) : wrap64 (pos a) = pos a => wrap64-pos (fin_< a)
-
 -- The int63 family: both sides compute the same normal form.
 \func coreAdd63 : R63Core "prim_add_int" "PRIM_ADD_INT63" =>
-  \lam a b v r => goalOf "PRIM_ADD_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.+ wrap63 (pos b))))
+  \lam a b v r => goalOf "PRIM_ADD_INT63" (u63 a :: u63 b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.+ wrap63 (pos b))))
 
 \func coreMul63 : R63Core "prim_mul_int" "PRIM_MUL_INT63" =>
-  \lam a b v r => goalOf "PRIM_MUL_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.* wrap63 (pos b))))
+  \lam a b v r => goalOf "PRIM_MUL_INT63" (u63 a :: u63 b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.* wrap63 (pos b))))
 
 \func coreSub63 : R63Core "prim_sub_int" "PRIM_SUB_INT63" =>
-  \lam a b v r => goalOf "PRIM_SUB_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relNorm (wrap63 (pos a) Nat.- wrap63 (pos b)))
+  \lam a b v r => goalOf "PRIM_SUB_INT63" (u63 a :: u63 b :: nil) _ r _ idp (relNorm (wrap63 (pos a) Nat.- wrap63 (pos b)))
 
 \func coreEqb63 : R63Core "prim_eqb_int" "PRIM_EQB_INT63" =>
-  \lam a b v r => goalOf "PRIM_EQB_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relBool (intEqB (pos (wrap63 (pos a))) (pos (wrap63 (pos b)))))
+  \lam a b v r => goalOf "PRIM_EQB_INT63" (u63 a :: u63 b :: nil) _ r _ idp (relBool (intEqB (pos (wrap63 (pos a))) (pos (wrap63 (pos b)))))
 
 \func coreNatAdd : NatCore "add" "PRIM_ADD_INT63" =>
-  \lam a b v r => goalOf "PRIM_ADD_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.+ wrap63 (pos b))))
+  \lam a b v r => goalOf "PRIM_ADD_INT63" (u63 a :: u63 b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.+ wrap63 (pos b))))
 
 \func coreNatMul : NatCore "mul" "PRIM_MUL_INT63" =>
-  \lam a b v r => goalOf "PRIM_MUL_INT63" (vLong a :: vLong b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.* wrap63 (pos b))))
+  \lam a b v r => goalOf "PRIM_MUL_INT63" (u63 a :: u63 b :: nil) _ r _ idp (relNorm (pos (wrap63 (pos a) Nat.* wrap63 (pos b))))
 
 -- The `_LONG` family on i63 arguments: `wrap64` is the identity on them.
 \func coreNatBeq : NatCore "beq" "PRIM_EQB_LONG" =>
   \lam a b v r =>
     \let B => intEqB (pos a) (pos b)
-    \in goalOf "PRIM_EQB_LONG" (vLong a :: vLong b :: nil) (lbBool B) (pmap2 (\lam (p q : Nat) => just (lbBool (intEqB (pos p) (pos q)))) (inv (w63 a)) (inv (w63 b)) *> r)
-               (mkBool B) (pmap2 (\lam p q => rOk (mkBool (intEqB p q))) (w64 a) (w64 b)) (relBool B)
+    \in goalOf "PRIM_EQB_LONG" (u63 a :: u63 b :: nil) (lbBool B) (pmap2 (\lam (p q : Nat) => just (lbBool (intEqB (pos p) (pos q)))) (inv (w63 a)) (inv (w63 b)) *> r)
+               (mkBool B) idp (relBool B)
 
 \func coreNatSub : NatCore "sub" "NAT_SUB_LONG" =>
   \lam a b v r =>
-    goalOf "NAT_SUB_LONG" (vLong a :: vLong b :: nil) (lbInt (truncLb (a Nat.- b)))
+    goalOf "NAT_SUB_LONG" (u63 a :: u63 b :: nil) (lbInt (truncLb (a Nat.- b)))
            (pmap2 (\lam (p q : Nat) => just (lbInt (truncLb (p Nat.- q)))) (inv (w63 a)) (inv (w63 b)) *> r)
-           (vLong (clampL (a Nat.- b)))
-           (pmap (\lam z => rOk (vLong (clampL z))) (wrap64-diff a b (fin_< a) (fin_< b)))
-           (relTrunc a b (fin_< a))
+           (vLong (clampLong (wrapLong (pos a - pos b)))) idp
+           (transportInv (\lam z => IRel (truncLb (a Nat.- b)) (clampL z)) (wrap64-diff a b (fin_< a) (fin_< b)) (relTrunc a b (fin_< a)))
 
 \func coreNatDiv : NatCore "div" "PRIM_DIV_LONG" =>
   \lam a b v r =>
-    goalOf "PRIM_DIV_LONG" (vLong a :: vLong b :: nil) (lbInt (pos (leanDiv a b)))
+    goalOf "PRIM_DIV_LONG" (u63 a :: u63 b :: nil) (lbInt (pos (leanDiv a b)))
            (pmap2 (\lam (p q : Nat) => just (lbInt (pos (leanDiv p q)))) (inv (w63 a)) (inv (w63 b)) *> r)
-           (vLong (ifZeroL (isZeroL (pos b)) 0 (wrap64 (javaDiv (pos a) (pos b)))))
-           (pmap2 (\lam p q => rOk (vLong (ifZeroL (isZeroL q) 0 (wrap64 (javaDiv p q))))) (w64 a) (w64 b))
-           (relDiv a b (fin_< a))
+           (vLong (ifZeroL (isZeroL (pos b)) zeroLong (wrapLong (javaDiv (pos a) (pos b))))) idp (relDiv a b)
 
 \func coreNatMod : NatCore "mod" "PRIM_MOD_LONG" =>
   \lam a b v r =>
-    goalOf "PRIM_MOD_LONG" (vLong a :: vLong b :: nil) (lbInt (pos (leanMod a b)))
+    goalOf "PRIM_MOD_LONG" (u63 a :: u63 b :: nil) (lbInt (pos (leanMod a b)))
            (pmap2 (\lam (p q : Nat) => just (lbInt (pos (leanMod p q)))) (inv (w63 a)) (inv (w63 b)) *> r)
-           (vLong (ifZeroL (isZeroL (pos b)) (pos a) (javaRem (pos a) (pos b))))
-           (pmap2 (\lam p q => rOk (vLong (ifZeroL (isZeroL q) p (javaRem p q)))) (w64 a) (w64 b))
-           (relMod a b (fin_< a))
+           (vLong (ifZeroL (isZeroL (pos b)) (longOfUint63 a) (remLong (longOfUint63 a) (pos b)))) idp (relMod a b)
 
 \func coreNatBle : NatCore "ble" "PRIM_BLE_LONG" =>
   \lam a b v r =>
     \let B => nonNegLb (b Nat.- a)
-    \in goalOf "PRIM_BLE_LONG" (vLong a :: vLong b :: nil) (lbBool B) (pmap2 (\lam (p q : Nat) => just (lbBool (natLeB p q))) (inv (w63 a)) (inv (w63 b)) *> r)
-               (mkBool B)
-               (pmap2 (\lam p q => rOk (mkBool (nonNegL (q - p)))) (w64 a) (w64 b) *> pmap (\lam t => rOk (mkBool t)) (nonNeg-eq (b Nat.- a)))
-               (relBool B)
+    \in goalOf "PRIM_BLE_LONG" (u63 a :: u63 b :: nil) (lbBool B) (pmap2 (\lam (p q : Nat) => just (lbBool (natLeB p q))) (inv (w63 a)) (inv (w63 b)) *> r)
+               (mkBool B) (pmap (\lam t => rOk (mkBool t)) (nonNeg-eq (b Nat.- a))) (relBool B)
 
 \func coreNatBlt : NatCore "blt" "PRIM_BLT_LONG" =>
   \lam a b v r =>
     \let B => nonNegLb (b Nat.- suc a)
-    \in goalOf "PRIM_BLT_LONG" (vLong a :: vLong b :: nil) (lbBool B) (pmap2 (\lam (p q : Nat) => just (lbBool (natLeB (suc p) q))) (inv (w63 a)) (inv (w63 b)) *> r)
-               (mkBool B)
-               (pmap2 (\lam p q => rOk (mkBool (nonNegL (q - (p + 1))))) (w64 a) (w64 b) *> pmap (\lam t => rOk (mkBool t)) (nonNeg-eq (b Nat.- suc a)))
-               (relBool B)
+    \in goalOf "PRIM_BLT_LONG" (u63 a :: u63 b :: nil) (lbBool B) (pmap2 (\lam (p q : Nat) => just (lbBool (natLeB (suc p) q))) (inv (w63 a)) (inv (w63 b)) *> r)
+               (mkBool B) (pmap (\lam t => rOk (mkBool t)) (nonNeg-eq (b Nat.- suc a))) (relBool B)
 
 -- The i64 family. λ□ computes on bit patterns and reads the result signed;
 -- the JVM computes on the signed readings and wraps. `Proof/Mod64.ard`'s
 -- `signed-wrapu` equates the two readings, and `wrap64-cong` says the JVM's
 -- wrap cannot see the multiples of 2^64 by which the readings differ.
-\func relI64 (Z : Int) (J : Value) (jz : Int) (eJ : J = vLong jz) (E : wrap64 Z = jz) : ValRel (lbLong Z) J =>
-  transportInv (\lam (w : Value) => agrees (lbLong Z) w = true) eJ
-    (transportInv (\lam z => intEqB z jz = true) (signed-wrapu Z *> E) (intEqB-refl jz))
+\func relI64 (Z : Int) (J : JLong) (E : wrap64 Z = J.1) : ValRel (lbLong Z) (vLong J) =>
+  transportInv (\lam z => intEqB z J.1 = true) (signed-wrapu Z *> E) (intEqB-refl J.1)
 
 \func coreAdd64 : R64Core "prim_add_long" "PRIM_ADD_LONG" =>
   \lam a b v r =>
@@ -403,7 +401,7 @@
            pmap2 (\lam (p q : Nat) => wrap64 (pos (p Nat.+ q))) (wu-id a) (wu-id b) *>
            inv (wrap64-cong (pos a + pos b) (sa.1 + sb.1)) *>
            pmap wrap64 (inv (addRe (pos a) (pos b) sa.1 sb.1 (pos pow2_64)) *> pmap2 (+) (inv sa.2) (inv sb.2))
-    \in goalOf "PRIM_ADD_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbLong Z) r (vLong jz) idp (relI64 Z _ jz idp E)
+    \in goalOf "PRIM_ADD_LONG" (s64 a :: s64 b :: nil) (lbLong Z) r (vLong (wrapLong _)) idp (relI64 Z (wrapLong _) E)
 
 \func coreSub64 : R64Core "prim_sub_long" "PRIM_SUB_LONG" =>
   \lam a b v r =>
@@ -415,7 +413,7 @@
            pmap2 (\lam (p q : Nat) => wrap64 (p Nat.- q)) (wu-id a) (wu-id b) *>
            inv (wrap64-cong (pos a - pos b) (sa.1 - sb.1)) *>
            pmap wrap64 (inv (subRe (pos a) (pos b) sa.1 sb.1 (pos pow2_64)) *> pmap2 (-) (inv sa.2) (inv sb.2))
-    \in goalOf "PRIM_SUB_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbLong Z) r (vLong jz) idp (relI64 Z _ jz idp E)
+    \in goalOf "PRIM_SUB_LONG" (s64 a :: s64 b :: nil) (lbLong Z) r (vLong (wrapLong _)) idp (relI64 Z (wrapLong _) E)
 
 \func coreMul64 : R64Core "prim_mul_long" "PRIM_MUL_LONG" =>
   \lam a b v r =>
@@ -427,7 +425,7 @@
            pmap2 (\lam (p q : Nat) => wrap64 (pos (p Nat.* q))) (wu-id a) (wu-id b) *>
            inv (wrap64-cong (pos a * pos b) (sa.1 * pos b + sb.1 * pos a + sa.1 * sb.1 * pos pow2_64)) *>
            pmap wrap64 (inv (mulRe (pos a) (pos b) sa.1 sb.1 (pos pow2_64)) *> pmap2 (*) (inv sa.2) (inv sb.2))
-    \in goalOf "PRIM_MUL_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbLong Z) r (vLong jz) idp (relI64 Z _ jz idp E)
+    \in goalOf "PRIM_MUL_LONG" (s64 a :: s64 b :: nil) (lbLong Z) r (vLong (wrapLong _)) idp (relI64 Z (wrapLong _) E)
 
 \lemma boolIff {p q : Bool} (f : p = true -> q = true) (g : q = true -> p = true) : p = q \elim p, q
   | true, true => idp
@@ -447,9 +445,8 @@
     \let | B => intEqB (signed64 a) (signed64 b)
          | X : intEqB (pos (wrap64u (pos a))) (pos (wrap64u (pos b))) = B =>
            pmap2 (\lam (p q : Nat) => intEqB (pos p) (pos q)) (wu-id a) (wu-id b) *> eqb64 a b
-    \in goalOf "PRIM_EQB_LONG" (vLong (signed64 a) :: vLong (signed64 b) :: nil) (lbBool B)
-               (pmap (\lam t => just (lbBool t)) (inv X) *> r) (mkBool B)
-               (pmap2 (\lam p q => rOk (mkBool (intEqB p q))) (wrap-signed a) (wrap-signed b)) (relBool B)
+    \in goalOf "PRIM_EQB_LONG" (s64 a :: s64 b :: nil) (lbBool B)
+               (pmap (\lam t => just (lbBool t)) (inv X) *> r) (mkBool B) idp (relBool B)
 
 -- ---------------------------------------------------------------------------
 -- The table, entry by entry.

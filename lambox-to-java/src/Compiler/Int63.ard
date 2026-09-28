@@ -11,10 +11,10 @@
 -- One shared definition is used by the compiler (`Compiler/JavaAxioms.ard`,
 -- to emit literals), the λ□ oracle (`Semantics/LambdaBoxAxioms.ard`) and the
 -- model of the Java runtime (`Semantics/RtInt63.ard`), so that "mod 2^63"
--- means the same thing on both sides of the translation. `Semantics/RtLong.ard`
+-- means the same thing on both sides of the translation. `Compiler/JavaLong.ard`
 -- has its own `wrap64`, on purpose: it models the JVM's rule (JLS 4.2.2).
 
--- Named for its role: `Semantics/RtLong.ard`'s `pow2_63` is the same number.
+-- Named for its role: `Compiler/JavaLong.ard`'s `pow2_63` is the same number.
 \func int63Mod : Nat => 9223372036854775808
 
 \func int64Mod : Nat => 18446744073709551616
@@ -39,6 +39,3 @@
 \func wrap63 (x : Int) : Fin int63Mod \elim x
   | pos n => finMod n
   | neg n => finMod (iabs (int63Mod Nat.- (n Nat.mod int63Mod)))
-
--- `wrap63` as a (non-negative) `Int`, the form the Java side and printers use.
-\func norm63 (x : Int) : Int => pos (wrap63 x)
