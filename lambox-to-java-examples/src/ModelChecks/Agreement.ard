@@ -42,7 +42,7 @@
 \func bothAgree (p : LBProgram) (fuel : Nat) : Bool =>
   \case runProgram lbAxioms p fuel,
         runClass rtInt63 (compileClass progClassName p) bodyMethodName fuel \with {
-    | rOk t, rOk (rvValue v) => agrees fuel t v
+    | rOk t, rOk (rvValue v) => agrees t v
     | _, _ => false
   }
 
@@ -282,11 +282,11 @@
 
 -- `agrees` is not constant-true: wrong fields, wrong shape and wrong tag are
 -- rejected.
-\func agreesRejectsArity : agrees 20 (suc' zero') (vData 1 nil) = false => idp
+\func agreesRejectsArity : agrees (suc' zero') (vData 1 nil) = false => idp
 
-\func agreesRejectsShape : agrees 20 box (vLong 0) = false => idp
+\func agreesRejectsShape : agrees box (vLong 0) = false => idp
 
-\func agreesRejectsTag : agrees 20 zero' (vData 1 nil) = false => idp
+\func agreesRejectsTag : agrees zero' (vData 1 nil) = false => idp
 
 -- The edge of the range. 2^63 is not an int63 value: as a `long` bit pattern
 -- it reads -2^63, a different integer.
@@ -299,10 +299,10 @@
 
 -- ... which agrees with the Java value 0 exactly ...
 \func int63NormalizedAgrees
-  : agrees 20 (prim (primInt63, wrap63 (pos 9223372036854775808))) (vLong 0) = true => idp
+  : agrees (prim (primInt63, wrap63 (pos 9223372036854775808))) (vLong 0) = true => idp
 
 -- ... and not with -2^63.
 \func int63NormalizedRejectsOld
-  : agrees 20 (prim (primInt63, wrap63 (pos 9223372036854775808)))
+  : agrees (prim (primInt63, wrap63 (pos 9223372036854775808)))
               (vLong (neg 9223372036854775808)) = false
   => idp

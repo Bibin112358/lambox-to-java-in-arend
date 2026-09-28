@@ -1,10 +1,8 @@
 \import Proof.BackendCorrect
-\import Proof.CSubst (LCf)
 \import Proof.ClassLookup
 \import Proof.CompileValue
 \import Proof.Statement (CorrectClosedFO, progClassName)
 \import Semantics.LambdaBoxEnv
-\import Proof.SubstToEnv (GlobClosed)
 \import Semantics.JavaEval
 \import Semantics.JavaValue
 \import Semantics.LambdaBoxEval

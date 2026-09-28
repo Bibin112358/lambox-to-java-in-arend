@@ -2,12 +2,11 @@
 \import Data.Array (mkArray)
 \import Data.Bool
 \import Data.Maybe
-\import Proof.CSubst (LCf, extArr)
+\import Proof.CSubst (extArr)
 \import Proof.CompileValueLemmas (boxInv, p63Inv, p64Inv, conInv)
 \import Proof.MainTheorem (correctClosedFO)
 \import Proof.OracleShipped (noJust)
-\import Proof.Statement (agrees, agreesAll, ValRel, progClassName)
-\import Proof.SubstToEnv (GlobClosed)
+\import Proof.Statement (agrees, allWith, ValRel, progClassName)
 \import Semantics.JavaEval
 \import Semantics.JavaValue
 \import Semantics.LambdaBoxAxioms (lbAxioms)
@@ -195,36 +194,37 @@
   | 0 => idp
   | suc j => idp
 
-\func agreesFun (n : Nat) (t : LBTerm) (j : Value) (fo : FOVal t) (h : agrees n t j = true) : j = foJava t \elim n, t
-  | 0, _ => \case h
-  | suc n, box => boxInv j h
-  | suc n, prim (primInt63, i) => p63Inv i j h
-  | suc n, prim (primInt64, i) => p64Inv i j h
-  | suc n, construct ind c args =>
+\func agreesFun (t : LBTerm) (j : Value) (fo : FOVal t) (h : agrees t j = true) : j = foJava t \elim t
+  | box => boxInv j h
+  | prim (primInt63, i) => p63Inv i j h
+  | prim (primInt64, i) => p64Inv i j h
+  | construct ind c args =>
     \let s => conInv ind c args j h
-    \in s.2 *> pmap (vData c) (agreesAllFun n args s.1 fo s.3)
-  | suc n, bvar _ => \case fo
-  | suc n, fvar _ => \case fo
-  | suc n, lambda _ _ => \case fo
-  | suc n, letIn _ _ _ => \case fo
-  | suc n, app _ _ => \case fo
-  | suc n, const _ => \case fo
-  | suc n, case _ _ _ _ => \case fo
-  | suc n, proj _ _ => \case fo
-  | suc n, fix _ _ => \case fo
+    \in s.2 *> pmap (vData c) (agreesAllFun args s.1 (\lam i v => agreesFun (args i) v (fo i)) s.3)
+  | bvar _ => \case fo
+  | fvar _ => \case fo
+  | lambda _ _ => \case fo
+  | letIn _ _ _ => \case fo
+  | app _ _ => \case fo
+  | const _ => \case fo
+  | case _ _ _ _ => \case fo
+  | proj _ _ => \case fo
+  | fix _ _ => \case fo
+  \where
+    -- The fields, given the claim for each field.
+    \func agreesAllFun (ts : Array LBTerm) (fs : Array Value)
+                       (ih : \Pi (i : Fin ts.len) (v : Value) -> agrees (ts i) v = true -> v = foJava (ts i))
+                       (h : allWith ts.len fs (\lam i => agrees (ts i)) = true)
+      : fs = {Array Value} mkArray {Value} {ts.len} (\lam i => foJava (ts i)) \elim ts, fs
+      | nil, nil => inv (extArr nil (\lam i => foJava (nil i)) (\lam i => \case i \with {}))
+      | t :: ts, v :: vs =>
+        pmap2 (\lam (x : Value) (xs : Array Value) => x :: xs) (ih 0 v (and.toSigma h).1)
+              (agreesAllFun ts vs (\lam i => ih (suc i)) (and.toSigma h).2)
+          *> consMk (\lam i => foJava ((t :: ts) i))
+      | nil, _ :: _ => \case h
+      | _ :: _, nil => \case h
 
-\func agreesAllFun (n : Nat) (ts : Array LBTerm) (fs : Array Value)
-                   (fo : \Pi (i : Fin ts.len) -> FOVal (ts i)) (h : agreesAll n ts fs = true)
-  : fs = {Array Value} mkArray {Value} {ts.len} (\lam i => foJava (ts i)) \elim ts, fs
-  | nil, nil => inv (extArr nil (\lam i => foJava (nil i)) (\lam i => \case i \with {}))
-  | t :: ts, v :: vs =>
-    pmap2 (\lam (x : Value) (xs : Array Value) => x :: xs) (agreesFun n t v (fo 0) (and.toSigma h).1)
-               (agreesAllFun n ts vs (\lam i => fo (suc i)) (and.toSigma h).2)
-      *> consMk (\lam i => foJava ((t :: ts) i))
-  | nil, _ :: _ => \case h
-  | _ :: _, nil => \case h
-
-\func valRelFun {t : LBTerm} {j : Value} (fo : FOVal t) (r : ValRel t j) : j = foJava t => agreesFun r.1 t j fo r.2
+\func valRelFun {t : LBTerm} {j : Value} (fo : FOVal t) (r : ValRel t j) : j = foJava t => agreesFun t j fo r
 
 -- ---------------------------------------------------------------------------
 -- The corollary.

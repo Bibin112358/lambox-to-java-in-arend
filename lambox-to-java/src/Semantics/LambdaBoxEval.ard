@@ -42,6 +42,7 @@
 \import Data.Bool
 \import Data.Maybe
 \import Data.String
+\import Logic (Empty)
 \import Set
 \import Compiler.StringUtil (nthArr)
 
@@ -475,6 +476,36 @@
 -- Running a program: evaluating its term in its declarations.
 \func EvalProgram (spec : LBSpec) (p : LBProgram) (v : LBTerm) : \Type =>
   Eval spec p.1 p.2 v
+
+
+-- ---------------------------------------------------------------------------
+-- Closed programs: the well-formedness the correctness theorem assumes
+-- (MetaRocq: `closedn`, and `wf_glob` for the declarations). `csubst` never
+-- lifts, so evaluation by substitution captures free variables; no
+-- scope-respecting compiler can imitate that.
+-- ---------------------------------------------------------------------------
+
+-- `LCf k t`: every free de Bruijn index of `t` is below `k`; `LCf 0 t` is
+-- "`t` is closed". `case` branches and `fix` bodies bind their extra indices
+-- on the left (`L + k`), where `csubst` puts them. A closed program has no
+-- `fvar`.
+\func LCf (k : Nat) (t : LBTerm) : \Set0 \elim t
+  | box => \Sigma
+  | bvar n => natCompare k n = cGt
+  | fvar _ => Empty
+  | lambda _ b => LCf (suc k) b
+  | letIn _ b0 b1 => \Sigma (LCf k b0) (LCf (suc k) b1)
+  | app f a => \Sigma (LCf k f) (LCf k a)
+  | const _ => \Sigma
+  | construct _ _ args => \Pi (i : Fin args.len) -> LCf k (args i)
+  | case _ _ discr brs => \Sigma (LCf k discr) (\Pi (i : Fin brs.len) -> LCf ((brs i).1.len Nat.+ k) (brs i).2)
+  | proj _ discr => LCf k discr
+  | fix defs _ => \Pi (j : Fin defs.len) -> LCf (defs.len Nat.+ k) (defs j).defBody
+  | prim _ => \Sigma
+
+-- Every constant body in the declarations is closed.
+\func GlobClosed (genv : GlobalDeclarations) : \Type =>
+  \Pi (kn : Kername) (cb : ConstantBody) (body : LBTerm) -> lookupConstant genv kn = just cb -> cb.cstBody = just body -> LCf 0 body
 
 
 -- ---------------------------------------------------------------------------

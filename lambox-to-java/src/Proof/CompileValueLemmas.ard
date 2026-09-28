@@ -5,7 +5,7 @@
 \import Data.Maybe
 \import Proof.CSubst (skLamF, skFixF)
 \import Proof.CompileValue
-\import Proof.Statement (ValRel, agrees, agreesAll)
+\import Proof.Statement (ValRel, agrees, allWith)
 \import Semantics.LambdaBoxEnv
 \import Semantics.JavaEval
 \import Semantics.JavaValue
@@ -91,52 +91,29 @@
 -- The first-order bridge.
 -- ---------------------------------------------------------------------------
 
--- Agreement from some fuel on (the recursion goes through an array of
--- fields, whose members each need their own fuel).
-\func AgreesFrom (t : LBTerm) (v : Value) : \Type => \Sigma (N : Nat) (\Pi (n : Nat) -> N <= n -> agrees n t v = true)
-
-\func AllAgreesFrom (ts : Array LBTerm) (vs : Array Value) : \Type =>
-  \Sigma (N : Nat) (\Pi (n : Nat) -> N <= n -> agreesAll n ts vs = true)
-
-\func agreeAtom {t : LBTerm} {v : Value} (h : \Pi (n : Nat) -> agrees (suc n) t v = true) : AgreesFrom t v =>
-  (1, \lam n le => \case \elim n, le \with {
-    | 0, le => absurd (linarith : Empty)
-    | suc n, _ => h n
-  })
-
 \func quoteAxNotFO (kn : Kername) (qs : Array LBTerm) (fo : FOVal (quoteAx kn qs)) : Empty \elim qs
   | nil => fo
   | q :: qs => fo
 
-\func cvAgrees {rt : RtSpec} {cls : JClass} (w : EV) {jv : Value} (cv : CV rt cls w jv) (fo : FOVal (quote w))
-  : AgreesFrom (quote w) jv \elim w, cv
-  | evBox, cvBox e => rewrite e (agreeAtom (\lam n => idp))
-  | evPrim (primInt63, i), cvP63 e => rewrite e (agreeAtom (\lam n => intEqB-refl (pos i)))
-  | evPrim (primInt64, i), cvP64 e => rewrite e (agreeAtom (\lam n => intEqB-refl _))
-  | evCon ind c ws, cvCon {fs} e ac =>
-    \let r => allAgrees ws fs ac fo
-    \in rewrite e (suc r.1, \lam n le => \case \elim n, le \with {
-      | 0, le => absurd (linarith : Empty)
-      | suc n, le => path (\lam i => (eqSelf c @ i) and (r.2 n linarith @ i))
-    })
+\func cvValRel {rt : RtSpec} {cls : JClass} (w : EV) {jv : Value} (cv : CV rt cls w jv) (fo : FOVal (quote w))
+  : ValRel (quote w) jv \elim w, cv
+  | evBox, cvBox e => rewrite e idp
+  | evPrim (primInt63, i), cvP63 e => rewrite e (intEqB-refl (pos i))
+  | evPrim (primInt64, i), cvP64 e => rewrite e (intEqB-refl _)
+  | evCon ind c ws, cvCon {fs} e ac => rewrite e (pmap2 (\lam a b => a and b) (eqSelf c) (allValRel ws fs ac fo))
   | evClos na b rho, _ => absurd (transport FOVal (skLamF 0 (quoteEnv rho) na b) fo)
   | evFix defs idx rho, _ => absurd (transport FOVal (skFixF 0 (quoteEnv rho) defs idx) fo)
   | evAx kn args, _ => absurd (quoteAxNotFO kn (quoteEnv args) fo)
 
-\func allAgrees {rt : RtSpec} {cls : JClass} (ws : Array EV) (fs : Array Value) (ac : AllCV rt cls ws fs)
-                (fo : \Pi (i : Fin ws.len) -> FOVal (quote (ws i)))
-  : AllAgreesFrom (mkArray {LBTerm} {ws.len} (\lam i => quote (ws i))) fs \elim ws, fs, ac
-  | nil, nil, acNil => (0, \lam n _ => idp)
+\func allValRel {rt : RtSpec} {cls : JClass} (ws : Array EV) (fs : Array Value) (ac : AllCV rt cls ws fs)
+                 (fo : \Pi (i : Fin ws.len) -> FOVal (quote (ws i)))
+  : allWith ws.len fs (\lam i => agrees (quote (ws i))) = true \elim ws, fs, ac
+  | nil, nil, acNil => idp
   | w :: ws, f :: fs, acCons cv ac =>
-    \let | h => cvAgrees w cv (fo 0)
-         | t => allAgrees ws fs ac (\lam i => fo (suc i))
-    \in (h.1 Nat.+ t.1, \lam n le => path (\lam i => (h.2 n linarith @ i) and (t.2 n linarith @ i)))
-
-\func cvValRel {rt : RtSpec} {cls : JClass} (w : EV) {jv : Value} (cv : CV rt cls w jv) (fo : FOVal (quote w))
-  : ValRel (quote w) jv => \let r => cvAgrees w cv fo \in (r.1, r.2 r.1 <=-refl)
+    pmap2 (\lam a b => a and b) (cvValRel w cv (fo 0)) (allValRel ws fs ac (\lam i => fo (suc i)))
 
 -- The converse, for what the oracle returns.
-\func boxInv {n : Nat}  (jv : Value) (h : agrees (suc n) box jv = true) : jv = vBox \elim jv
+\func boxInv (jv : Value) (h : agrees box jv = true) : jv = vBox \elim jv
   | vBox => idp
   | vData _ _ => \case h
   | vClos _ _ _ => \case h
@@ -149,7 +126,7 @@
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
-\func p63Inv {n : Nat} (i : Fin int63Mod) (jv : Value) (h : agrees (suc n) (prim (primInt63, i)) jv = true) : jv = vLong (pos i) \elim jv
+\func p63Inv (i : Fin int63Mod) (jv : Value) (h : agrees (prim (primInt63, i)) jv = true) : jv = vLong (pos i) \elim jv
   | vBox => \case h
   | vData _ _ => \case h
   | vClos _ _ _ => \case h
@@ -162,7 +139,7 @@
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
-\func p64Inv {n : Nat} (i : Fin int64Mod) (jv : Value) (h : agrees (suc n) (prim (primInt64, i)) jv = true) : jv = vLong (signed64 i) \elim jv
+\func p64Inv (i : Fin int64Mod) (jv : Value) (h : agrees (prim (primInt64, i)) jv = true) : jv = vLong (signed64 i) \elim jv
   | vBox => \case h
   | vData _ _ => \case h
   | vClos _ _ _ => \case h
@@ -175,7 +152,8 @@
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
-\func conInv {n : Nat} (ind : InductiveId) (c : Nat) (args : Array LBTerm) (jv : Value) (h : agrees (suc n) (construct ind c args) jv = true) : \Sigma (fs : Array Value) (jv = vData c fs) (agreesAll n args fs = true) \elim jv
+\func conInv (ind : InductiveId) (c : Nat) (args : Array LBTerm) (jv : Value) (h : agrees (construct ind c args) jv = true)
+  : \Sigma (fs : Array Value) (jv = vData c fs) (allWith args.len fs (\lam i => agrees (args i)) = true) \elim jv
   | vBox => \case h
   | vData tg fs => \let s => and.toSigma h \in (fs, pmap (vData __ fs) (inv (eqTrue s.1)), s.2)
   | vClos _ _ _ => \case h
@@ -188,35 +166,37 @@
   | vBool _ => \case h
   | vExcObj _ _ => \case h
 
-\func agreesCV {rt : RtSpec} {cls : JClass} (n : Nat) (r : LBTerm) (jv : Value) (fo : FOVal r) (h : agrees n r jv = true)
-  : CV rt cls (ofFO r) jv \elim n, r
-  | 0, _ => \case h
-  | suc n, box => cvBox (boxInv jv h)
-  | suc n, prim (primInt63, i) => cvP63 (p63Inv i jv h)
-  | suc n, prim (primInt64, i) => cvP64 (p64Inv i jv h)
-  | suc n, construct ind c args =>
+\func agreesCV {rt : RtSpec} {cls : JClass} (r : LBTerm) (jv : Value) (fo : FOVal r) (h : agrees r jv = true)
+  : CV rt cls (ofFO r) jv \elim r
+  | box => cvBox (boxInv jv h)
+  | prim (primInt63, i) => cvP63 (p63Inv i jv h)
+  | prim (primInt64, i) => cvP64 (p64Inv i jv h)
+  | construct ind c args =>
     \let s => conInv ind c args jv h
-    \in cvCon s.2 (agreesAllCV n args s.1 fo s.3)
-  | suc n, bvar _ => \case fo
-  | suc n, fvar _ => \case fo
-  | suc n, lambda _ _ => \case fo
-  | suc n, letIn _ _ _ => \case fo
-  | suc n, app _ _ => \case fo
-  | suc n, const _ => \case fo
-  | suc n, case _ _ _ _ => \case fo
-  | suc n, proj _ _ => \case fo
-  | suc n, fix _ _ => \case fo
-
-\func agreesAllCV {rt : RtSpec} {cls : JClass} (n : Nat) (ts : Array LBTerm) (vs : Array Value)
-                  (fo : \Pi (i : Fin ts.len) -> FOVal (ts i)) (h : agreesAll n ts vs = true)
-  : AllCV rt cls (mkArray {EV} {ts.len} (\lam i => ofFO (ts i))) vs \elim ts, vs
-  | nil, nil => acNil
-  | t :: ts, v :: vs => \let s => and.toSigma h \in acCons (agreesCV n t v (fo 0) s.1) (agreesAllCV n ts vs (\lam i => fo (suc i)) s.2)
-  | nil, _ :: _ => \case h
-  | _ :: _, nil => \case h
+    \in cvCon s.2 (agreesAllCV args s.1 (\lam i v => agreesCV (args i) v (fo i)) s.3)
+  | bvar _ => \case fo
+  | fvar _ => \case fo
+  | lambda _ _ => \case fo
+  | letIn _ _ _ => \case fo
+  | app _ _ => \case fo
+  | const _ => \case fo
+  | case _ _ _ _ => \case fo
+  | proj _ _ => \case fo
+  | fix _ _ => \case fo
+  \where
+    -- The fields, given the claim for each field (so that the recursion
+    -- above is on `args i`, which the termination checker accepts).
+    \func agreesAllCV (ts : Array LBTerm) (vs : Array Value)
+                      (ih : \Pi (i : Fin ts.len) (v : Value) -> agrees (ts i) v = true -> CV rt cls (ofFO (ts i)) v)
+                      (h : allWith ts.len vs (\lam i => agrees (ts i)) = true)
+      : AllCV rt cls (mkArray {EV} {ts.len} (\lam i => ofFO (ts i))) vs \elim ts, vs
+      | nil, nil => acNil
+      | t :: ts, v :: vs => \let s => and.toSigma h \in acCons (ih 0 v s.1) (agreesAllCV ts vs (\lam i => ih (suc i)) s.2)
+      | nil, _ :: _ => \case h
+      | _ :: _, nil => \case h
 
 \func valRelCV {rt : RtSpec} {cls : JClass} {r : LBTerm} {jv : Value} (fo : FOVal r) (vr : ValRel r jv) : CV rt cls (ofFO r) jv =>
-  agreesCV vr.1 r jv fo vr.2
+  agreesCV r jv fo vr
 
 -- ---------------------------------------------------------------------------
 -- The axiom spine.

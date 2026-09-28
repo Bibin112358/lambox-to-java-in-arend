@@ -2,8 +2,6 @@
 \import Data.Bool
 \import Data.Maybe
 \import Data.String (String)
-\import Proof.CSubst (LCf)
-\import Proof.SubstToEnv (GlobClosed)
 \import Semantics.JavaEval
 \import Semantics.JavaValue
 \import Semantics.LambdaBoxAxioms (lbAxioms)
@@ -24,7 +22,8 @@
 --
 -- Read this file first. `CorrectClosedFO` at the bottom is the headline claim;
 -- `Proof/MainTheorem.ard` proves it (`correctClosedFO`). Everything it
--- mentions is defined here or in `Semantics/`.
+-- mentions is defined here, in `Semantics/` (the models of λ□, Java and the
+-- runtime) or in `Compiler/` (the compiler being verified).
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -36,37 +35,36 @@
 -- here: the full proof relates closures by the code they were compiled from
 -- (`Proof/CompileValue.ard`), and this relation is what that yields for data.
 --
--- A `Bool` with fuel, so that concrete instances are decided by `idp`.
+-- `intEqB` is equality on `Int` (`Proof/OracleArith.ard`: `intEqB-sound`); it
+-- compares decimal strings, so that concrete instances with values near 2^63
+-- are still decided by `idp`.
 -- ---------------------------------------------------------------------------
 
-\func agrees (n : Nat) (t : LBTerm) (v : Value) : Bool \elim n
-  | 0 => false
-  | suc n => \case t, v \with {
-    | box, vBox => true
-    | prim (primInt63, i), vLong j => intEqB (pos i) j
-    | prim (primInt64, i), vLong j => intEqB (signed64 i) j
-    | construct _ c args, vData tg fs => (c == tg) and agreesAll n args fs
-    | _, _ => false
-  }
-
-\func agreesAll (n : Nat) (ts : Array LBTerm) (vs : Array Value) : Bool \elim ts, vs
-  | nil, nil => true
-  | t :: ts, v :: vs => agrees n t v and agreesAll n ts vs
+-- `allWith n vs f`: `vs` has length `n` and `f i (vs i)` holds for every `i`.
+\func allWith (n : Nat) (vs : Array Value) (f : Fin n -> Value -> Bool) : Bool \elim n, vs
+  | 0, nil => true
+  | suc n, v :: vs => f 0 v and allWith n vs (\lam i => f (suc i))
   | _, _ => false
 
-\func ValRel (t : LBTerm) (v : Value) : \Type => \Sigma (n : Nat) (agrees n t v = true)
+\func agrees (t : LBTerm) (v : Value) : Bool \elim t, v
+  | box, vBox => true
+  | prim (primInt63, i), vLong j => intEqB (pos i) j
+  | prim (primInt64, i), vLong j => intEqB (signed64 i) j
+  | construct _ c args, vData tg fs => (c == tg) and allWith args.len fs (\lam i => agrees (args i))
+  | _, _ => false
+
+\func ValRel (t : LBTerm) (v : Value) : \Prop => agrees t v = true
 
 -- ---------------------------------------------------------------------------
 -- The two axiom oracles agree.
 --
 -- Both semantics take their axioms as a parameter: λ□ an `LBSpec` keyed by
 -- `Kername`, Java an `RtSpec` keyed by the runtime constant's name. The
--- backend links them through its axiom table (`axiomRtName`: `nothing` means
--- the axiom compiles to a throwing stub). `OracleAgree` says that, through
--- this link,
---   1. arities match,
---   2. on related arguments, both compute related results, and
---   3. an axiom compiled to a stub is one λ□ cannot compute either.
+-- backend links them through its axiom table: `axiomRtName kn` is the `Rt`
+-- constant the axiom `kn` compiles to, or `nothing` for a throwing stub.
+-- `OracleAgree` asks, for every axiom:
+--   * compiled to `Rt.nm`: `AxiomAgree` (arities match, results agree);
+--   * compiled to a stub: λ□ cannot compute it either.
 --
 -- Proved for the shipped pair in `Proof/OracleShipped.ard` (`oracleShipped`).
 -- ---------------------------------------------------------------------------
@@ -76,17 +74,19 @@
   | _ => nothing
 }
 
-\func OracleAgree (spec : LBSpec) (rt : RtSpec) : \Type =>
+-- Axiom `kn`, compiled to `Rt.nm`: the arities match, and on related
+-- arguments both sides compute related results.
+\func AxiomAgree (spec : LBSpec) (rt : RtSpec) (kn : Kername) (nm : JIdent) : \Type =>
   \Sigma
-    (\Pi (kn : Kername) (nm : JIdent)
-      -> axiomRtName kn = just nm
-      -> axiomArity {spec} kn = builtinArity {rt} nm)
-    (\Pi (kn : Kername) (nm : JIdent) (args : Array LBTerm) (jargs : Array Value args.len)
-         (v : LBTerm)
-      -> axiomRtName kn = just nm
+    (axiomArity {spec} kn = builtinArity {rt} nm)
+    (\Pi (args : Array LBTerm) (jargs : Array Value args.len) (v : LBTerm)
       -> (\Pi (i : Fin args.len) -> ValRel (args i) (jargs i))
       -> axiomRun {spec} kn args = just v
       -> \Sigma (jv : Value) (builtinRun {rt} nm jargs = rOk jv) (ValRel v jv))
+
+\func OracleAgree (spec : LBSpec) (rt : RtSpec) : \Type =>
+  \Sigma
+    (\Pi (kn : Kername) (nm : JIdent) -> axiomRtName kn = just nm -> AxiomAgree spec rt kn nm)
     (\Pi (kn : Kername) -> axiomRtName kn = nothing -> axiomArity {spec} kn = nothing)
 
 -- ---------------------------------------------------------------------------

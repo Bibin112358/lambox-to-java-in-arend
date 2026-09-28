@@ -748,10 +748,6 @@
 -- The simulation.
 -- ---------------------------------------------------------------------------
 
--- Every constant body is closed (MetaRocq: part of `wf_glob`).
-\func GlobClosed (genv : GlobalDeclarations) : \Type =>
-  \Pi (kn : Kername) (cb : ConstantBody) (body : LBTerm) -> lookupConstant genv kn = just cb -> cb.cstBody = just body -> LCf 0 body
-
 \func varOut {spec : LBSpec} {genv : GlobalDeclarations} {rho : Array EV} {b v : LBTerm} {i : Nat}
              (eb : b = bvar i) (o : Out1 spec genv rho (bvar i) v) : Out1 spec genv rho b v =>
   transport (\lam x => Out1 spec genv rho x v) (inv eb) o

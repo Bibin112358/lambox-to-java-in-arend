@@ -253,12 +253,12 @@
   : SimOut rt cls cenv jenv p (const kn) w \elim mi
   | nothing =>
     \let | rn : axiomRtName kn = nothing => unfold axiomRtName (rewrite em idp)
-         | an => H.hAgree.3 kn rn
+         | an => H.hAgree.2 kn rn
     \in absurd (\case inv an *> ar \with {})
   | just impl =>
     \let | s => H.hImpl kn impl em
          | rn : axiomRtName kn = just s.1 => unfold axiomRtName (rewrite (em *> pmap just s.2) idp)
-         | ba : builtinArity {rt} s.1 = just arity => inv (H.hAgree.1 kn s.1 rn) *> ar
+         | ba : builtinArity {rt} s.1 = just arity => inv (H.hAgree.1 kn s.1 rn).1 *> ar
          | rf => H.hRtField s.1 arity ba
          | m => H.hAxiom kn cb impl lk cbn em
          | ex : execStmts rt cls 4 nil (jReturn impl :: nil) = rOk (oReturn (vBuiltin s.1 nil)) =>
@@ -321,14 +321,14 @@
   | evAx kn args, apAxRun kn' xs {r} sat run ew => \case \elim cf \with {
     | cvAx {nm} {got} {k} ej rn ba rc =>
       \let | XS => revAppendArr (quoteEnv args) (quote wa :: nil)
-           | ar : axiomArity {spec} kn = just k => H.hAgree.1 kn nm rn *> ba
+           | ar : axiomArity {spec} kn = just k => (H.hAgree.1 kn nm rn).1 *> ba
            | sb => satBInv (inv (satEq spec kn args wa ar) *> sat)
            | run' : axiomRun {spec} kn XS = just r =>
              transport (\lam (pr : \Sigma Kername (Array LBTerm)) => axiomRun {spec} pr.1 pr.2 = just r) sb.2 run
            | q : QRel rt cls XS (snocArr got ja) => qRev rc (quote wa :: nil) (ja :: nil) (qCons wa idp ca qNil)
            | lt : ((snocArr got ja).len == k) = true => pmap (__ == k) (inv (qLen q)) *> sb.1
            | jq => qJargs q (H.hArgsFO kn XS r run')
-           | og => H.hAgree.2 kn nm XS jq.1 r rn jq.3 run'
+           | og => (H.hAgree.1 kn nm rn).2 XS jq.1 r jq.3 run'
            | bro : builtinRun {rt} nm (snocArr got ja) = rOk og.1 =>
              transport (\lam (g : Array Value) => builtinRun {rt} nm g = rOk og.1) jq.2 og.2
       \in (og.1, 1, rewrite ej (builtinFire {rt} {cls} ba lt bro), rewrite ew (valRelCV (H.hFO kn XS r run') og.3))
@@ -336,7 +336,7 @@
   | evAx kn args, apAxPart nsat ew => \case \elim cf \with {
     | cvAx {nm} {got} {k} ej rn ba rc =>
       \let | XS => revAppendArr (quoteEnv args) (quote wa :: nil)
-           | ar : axiomArity {spec} kn = just k => H.hAgree.1 kn nm rn *> ba
+           | ar : axiomArity {spec} kn = just k => (H.hAgree.1 kn nm rn).1 *> ba
            | lf0 => satBNothing (inv (satEq spec kn args wa ar) *> nsat)
            | q : QRel rt cls XS (snocArr got ja) => qRev rc (quote wa :: nil) (ja :: nil) (qCons wa idp ca qNil)
            | lf : ((snocArr got ja).len == k) = false => pmap (__ == k) (inv (qLen q)) *> lf0

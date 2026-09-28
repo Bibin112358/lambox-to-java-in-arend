@@ -12,10 +12,8 @@
 -- (`Semantics/LambdaBoxEval.ard`), used by `Proof/SubstToEnv.ard` to relate
 -- evaluation by substitution to evaluation in an environment.
 --
---   * `LCf k t`: `t` has its free de Bruijn indices below `k`; `LCf 0` is
---     "closed". `case` branches and `fix` bodies sit under `|binders|` resp.
---     `|defs|` extra indices, on the LEFT (`L + k`), exactly where `csubst`
---     puts them. `fvar` is out of scope: a closed λ□ program has none.
+--   * Scope is `LCf k t` (`Semantics/LambdaBoxEval.ard`): the free de Bruijn
+--     indices of `t` are below `k`; `LCf 0` is "closed".
 --   * `csClosedF`: a term in scope `k` is untouched by a substitution at `k`
 --     or above. `csScopeF`: substituting a closed term at `k` removes `k`.
 --   * `csCommGen`: two closed substitutions at depths `k <= K` commute. It
@@ -82,22 +80,8 @@
   => path (\lam i => \new Array A l.len (\lam j => p j i))
 
 -- ---------------------------------------------------------------------------
--- Scope.
+-- Scope (`LCf`, in `Semantics/LambdaBoxEval.ard`).
 -- ---------------------------------------------------------------------------
-
-\func LCf (k : Nat) (t : LBTerm) : \Set0 \elim t
-  | box => \Sigma
-  | bvar n => natCompare k n = cGt
-  | fvar _ => Empty
-  | lambda _ b => LCf (suc k) b
-  | letIn _ b0 b1 => \Sigma (LCf k b0) (LCf (suc k) b1)
-  | app f a => \Sigma (LCf k f) (LCf k a)
-  | const _ => \Sigma
-  | construct _ _ args => \Pi (i : Fin args.len) -> LCf k (args i)
-  | case _ _ discr brs => \Sigma (LCf k discr) (\Pi (i : Fin brs.len) -> LCf ((brs i).1.len Nat.+ k) (brs i).2)
-  | proj _ discr => LCf k discr
-  | fix defs _ => \Pi (j : Fin defs.len) -> LCf (defs.len Nat.+ k) (defs j).defBody
-  | prim _ => \Sigma
 
 -- Every entry of `s` is closed.
 \func AllCf (s : Array LBTerm) : \Set0 \elim s

@@ -1,11 +1,10 @@
 \import Data.Maybe
-\import Proof.CSubst (LCf)
 \import Proof.CompileValue
 \import Proof.CompileValueLemmas (cvValRel)
 \import Proof.Statement (ValRel, progClassName)
 \import Proof.EnvToJava
 \import Semantics.LambdaBoxEnv
-\import Proof.SubstToEnv (evalToEvalEnv, GlobClosed)
+\import Proof.SubstToEnv (evalToEvalEnv)
 \import Semantics.JavaEval
 \import Proof.JavaExec (execRetApp, bindOk)
 \import Semantics.JavaValue

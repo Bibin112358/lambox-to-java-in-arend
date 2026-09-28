@@ -10,6 +10,7 @@
 \import Semantics.JavaValue
 \import Semantics.LambdaBoxEval
 \import Semantics.LambdaBoxAxioms
+\import Proof.CompileValueLemmas (p63Inv, p64Inv)
 \import Proof.LambdaBoxSound (kernameEq-eq)
 \import Proof.MangleInj (mangleKername-inj)
 \import Proof.Mod64
@@ -149,35 +150,6 @@
   | just _, nothing => absurd (noJust h)
   | nothing, _ => absurd (noJust h)
 
--- What a related Java value is, for each kind of primitive.
-\func rel63 {n : Nat} {a : Fin int63Mod} {j : Value} (h : agrees n (prim (primInt63, a)) j = true) : j = vLong (pos a) \elim n, j
-  | 0, _ => \case h \with {}
-  | suc n, vLong k => inv (pmap vLong (intEqB-sound h))
-  | suc n, vBox => \case h \with {}
-  | suc n, vData _ _ => \case h \with {}
-  | suc n, vClos _ _ _ => \case h \with {}
-  | suc n, vObj _ _ _ => \case h \with {}
-  | suc n, vBuiltin _ _ => \case h \with {}
-  | suc n, vStaticRef _ => \case h \with {}
-  | suc n, vStr _ => \case h \with {}
-  | suc n, vInt _ => \case h \with {}
-  | suc n, vBool _ => \case h \with {}
-  | suc n, vExcObj _ _ => \case h \with {}
-
-\func rel64 {n : Nat} {a : Fin int64Mod} {j : Value} (h : agrees n (prim (primInt64, a)) j = true) : j = vLong (signed64 a) \elim n, j
-  | 0, _ => \case h \with {}
-  | suc n, vLong k => inv (pmap vLong (intEqB-sound h))
-  | suc n, vBox => \case h \with {}
-  | suc n, vData _ _ => \case h \with {}
-  | suc n, vClos _ _ _ => \case h \with {}
-  | suc n, vObj _ _ _ => \case h \with {}
-  | suc n, vBuiltin _ _ => \case h \with {}
-  | suc n, vStaticRef _ => \case h \with {}
-  | suc n, vStr _ => \case h \with {}
-  | suc n, vInt _ => \case h \with {}
-  | suc n, vBool _ => \case h \with {}
-  | suc n, vExcObj _ _ => \case h \with {}
-
 \func Rel (args : Array LBTerm) (jargs : Array Value args.len) : \Type =>
   \Pi (i : Fin args.len) -> ValRel (args i) (jargs i)
 
@@ -196,8 +168,8 @@
     \let | hb => invBoth h
          | dt => inv63 hb.1
          | du => inv63 hb.2
-         | ej : j = vLong dt.1 => rel63 (transport (\lam s => agrees (rel 0).1 s j = true) dt.2 (rel 0).2)
-         | ek : k = vLong du.1 => rel63 (transport (\lam s => agrees (rel 1).1 s k = true) du.2 (rel 1).2)
+         | ej : j = vLong dt.1 => p63Inv dt.1 j (transport (\lam s => agrees s j = true) dt.2 (rel 0))
+         | ek : k = vLong du.1 => p63Inv du.1 k (transport (\lam s => agrees s k = true) du.2 (rel 1))
     \in (dt.1, du.1, dt.3, du.3, pmap2 (\lam p q => p :: q :: nil) ej ek)
 
 \func decode64 (args : Array LBTerm) (jargs : Array Value args.len) (rel : Rel args jargs) {x y : Int}
@@ -209,8 +181,8 @@
     \let | hb => invBoth h
          | dt => inv64 hb.1
          | du => inv64 hb.2
-         | ej : j = vLong (signed64 dt.1) => rel64 (transport (\lam s => agrees (rel 0).1 s j = true) dt.2 (rel 0).2)
-         | ek : k = vLong (signed64 du.1) => rel64 (transport (\lam s => agrees (rel 1).1 s k = true) du.2 (rel 1).2)
+         | ej : j = vLong (signed64 dt.1) => p64Inv dt.1 j (transport (\lam s => agrees s j = true) dt.2 (rel 0))
+         | ek : k = vLong (signed64 du.1) => p64Inv du.1 k (transport (\lam s => agrees s k = true) du.2 (rel 1))
     \in (dt.1, du.1, dt.3, du.3, pmap2 (\lam p q => p :: q :: nil) ej ek)
 
 -- ---------------------------------------------------------------------------
@@ -301,14 +273,14 @@
 -- The values.
 -- ---------------------------------------------------------------------------
 
-\func relNorm (z : Int) : ValRel (lbInt z) (vLong (norm63 z)) => (1, intEqB-refl (pos (wrap63 z)))
+\func relNorm (z : Int) : ValRel (lbInt z) (vLong (norm63 z)) => intEqB-refl (pos (wrap63 z))
 
 \func relBool (b : Bool) : ValRel (lbBool b) (mkBool b) \elim b
-  | true => (2, idp)
-  | false => (2, idp)
+  | true => idp
+  | false => idp
 
 \func relPos (q : Nat) (hq : q < pow2_63) : ValRel (lbInt (pos q)) (vLong (pos q)) =>
-  (1, transportInv (\lam (z : Nat) => intEqB (pos z) (pos q) = true) (wrap63-lt hq) (intEqB-refl (pos q)))
+  transportInv (\lam (z : Nat) => intEqB (pos z) (pos q) = true) (wrap63-lt hq) (intEqB-refl (pos q))
 
 \lemma le+ (x y : Nat) : x <= x Nat.+ y => NatSemiring.<=_+ <=-refl zero<=_
 
@@ -324,12 +296,12 @@
 \func relTrunc (a b : Nat) (ha : a < pow2_63) : ValRel (lbInt (truncLb (a Nat.- b))) (vLong (clampL (a Nat.- b))) =>
   \case a Nat.- b \as d, idp : a Nat.- b = d \return ValRel (lbInt (truncLb d)) (vLong (clampL d)) \with {
     | pos k, e => relPos k (minusPos<= e <∘r ha)
-    | neg (suc k), _ => (1, idp)
+    | neg (suc k), _ => idp
   }
 
 \func relDiv (a b : Nat) (ha : a < pow2_63)
   : ValRel (lbInt (pos (leanDiv a b))) (vLong (ifZeroL (isZeroL (pos b)) 0 (wrap64 (javaDiv (pos a) (pos b))))) \elim b
-  | 0 => (1, idp)
+  | 0 => idp
   | suc b =>
     \let hq : a Nat.div suc b < pow2_63 => div<=left a b <∘r ha
     \in transportInv (\lam z => ValRel (lbInt (pos (a Nat.div suc b))) (vLong z)) (wrap64-pos hq) (relPos _ hq)
@@ -418,8 +390,8 @@
 -- `signed-wrapu` equates the two readings, and `wrap64-cong` says the JVM's
 -- wrap cannot see the multiples of 2^64 by which the readings differ.
 \func relI64 (Z : Int) (J : Value) (jz : Int) (eJ : J = vLong jz) (E : wrap64 Z = jz) : ValRel (lbInt64 Z) J =>
-  (1, transportInv (\lam (w : Value) => agrees 1 (lbInt64 Z) w = true) eJ
-        (transportInv (\lam z => intEqB z jz = true) (signed-wrapu Z *> E) (intEqB-refl jz)))
+  transportInv (\lam (w : Value) => agrees (lbInt64 Z) w = true) eJ
+    (transportInv (\lam z => intEqB z jz = true) (signed-wrapu Z *> E) (intEqB-refl jz))
 
 \func coreAdd64 : R64Core "prim_add_int64" "PRIM_ADD_LONG" =>
   \lam a b v r =>
@@ -571,6 +543,5 @@
   \in tableInv Entry javaAxioms (\lam i => entries i) kn ri.1 ri.2
 
 \func oracleShipped : OracleAgree lbAxioms rtInt63 =>
-  (\lam kn nm h => (entryOf h).1 *> pmap rtArityOf h,
-   \lam kn nm args jargs v h rel r => (entryOf h).2 nm h args jargs v rel r,
+  (\lam kn nm h => ((entryOf h).1 *> pmap rtArityOf h, (entryOf h).2 nm h),
    \lam kn h => notIn h lbAxiomNames allNamed)

@@ -45,7 +45,7 @@
 -- or running out of fuel are all failures.
 \func relatedTo (p : LBProgram) (n : Nat) (v : LBTerm) : Bool =>
   \case runClass rtInt63 (compileClass progClassName p) bodyMethodName n \with {
-    | rOk (rvValue jv) => agrees 20 v jv
+    | rOk (rvValue jv) => agrees v jv
     | _ => false
   }
 
@@ -258,7 +258,7 @@
   : \Sigma (EvalProgram lbAxioms int63Program int63Value)
            (runClass rtInt63 (compileClass progClassName int63Program) bodyMethodName 200
             = rOk (rvValue (vLong 9223372036854775807)))
-           (agrees 20 int63Value (vLong 9223372036854775807) = true)
+           (agrees int63Value (vLong 9223372036854775807) = true)
   => (lbInt63, int63InJava, idp)
 
 -- ---------------------------------------------------------------------------
@@ -286,7 +286,7 @@
   : \Sigma (EvalProgram lbAxioms natOverflowProgram natOverflowValue)
            (runClass rtInt63 (compileClass progClassName natOverflowProgram) bodyMethodName 200
             = rOk (rvValue (vLong 0)))
-           (agrees 20 natOverflowValue (vLong 0) = true)
+           (agrees natOverflowValue (vLong 0) = true)
   => (lbNatOverflow, natOverflowInJava, idp)
 
 -- `Nat.add` is realized by the int63 family.
