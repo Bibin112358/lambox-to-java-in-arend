@@ -47,7 +47,11 @@
   -- The class `Rt` as a receiver (`jStatic "Rt"`). Not a first-class value in
   -- Java either -- it only ever appears to the left of a field access.
   | vStaticRef JQIdent
-  -- `Long.valueOf(5L)`: a boxed machine integer, signed, hence `Int`.
+  -- `Long.valueOf(5L)`: a boxed machine integer, signed, hence `Int`. The
+  -- type is unbounded, but the fragment never computes on longs; all
+  -- arithmetic is in the runtime model, which wraps like Java
+  -- (`Semantics/RtLong.ard`, `wrap64`). `Proof/LongRange.ard` proves that
+  -- every long a literal or the runtime produces is in [-2^63, 2^63).
   | vLong Int
   | vStr String
   -- A decimal `int`: a constructor tag or a field index.

@@ -45,7 +45,10 @@ The generic result (`Proof/BackendCorrect.ard`) holds for any runtime model and
 them for the shipped ones. Among those facts: the two axiom oracles agree
 (`Proof/OracleShipped.ard`), mangled Java names are injective
 (`Proof/MangleInj.ard`) and generated local names are unique
-(`Proof/NodePathUnique.ard`, `Proof/PathFresh.ard`).
+(`Proof/NodePathUnique.ard`, `Proof/PathFresh.ard`). Separately,
+`Proof/LongRange.ard` shows that the Java model's `vLong`, although an
+unbounded `Int`, only ever holds real Java `long`s: every literal the compiler
+emits and every result of the runtime model lies in [-2^63, 2^63).
 
 **Trusted, not proved:**
 - the printer from the Java AST to text (`Compiler/JavaPrint.ard`);
