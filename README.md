@@ -159,7 +159,7 @@ runtime's classes.
 The theorem is not about the JVM, or the Java Language Specification as a
 whole. Its target is a model (`Semantics/JavaEval.ard`, `Semantics/JavaValue.ard`)
 of exactly the fragment the compiler emits (`Compiler/JavaAst.ard`), and that
-model is simpler than Java in three ways:
+model is simpler than Java in four ways:
 
 - **Closures and data are built in.** Application `((Rt.Fn)f).apply(x)`,
   closures `new Rt.Fn(){..}`, constructors `new Rt.Data(tag, fields)` and the
@@ -178,6 +178,15 @@ model is simpler than Java in three ways:
   constants (`Rt.PRIM_ADD_INT63`, ...) are given by an abstract interface
   (`RtSpec`) with a model (`Semantics/RtInt63.ard`), not by interpreting
   `Rt.java`. Only uncaught exceptions are modelled; there is no `try`/`catch`.
+- **Only the emitted shapes have a meaning.** The model is less permissive
+  than Java: forms the generator never produces are *stuck* even when they are
+  valid Java, e.g. `e.f` on anything but `Rt`, `new Object()`, or a method call
+  with two arguments. Code `javac` would reject is stuck too, since the model
+  has no type checker (e.g. `d.tag` on a value that is not an `Rt.Data`). This
+  is sound for our purpose: the theorem proves that `body()` *returns*, so it
+  also shows that generated code never reaches these cases. But the model is a
+  semantics of the compiler's output, not of a Java subset in general. (A
+  failed cast is not stuck: it throws `ClassCastException`, as in Java.)
 
 What the model does follow is Java's evaluation order, name resolution (JLS 6.5),
 casts (`checkcast`) and `long` wraparound. So "verified λ□ to Java" means:

@@ -29,12 +29,23 @@
 -- and a type name means a local class in scope before a top-level class.
 --
 -- The observable is the value returned by the entry method (`body`) or the
--- exception it throws. Programs `javac` rejects (an unknown name, a cast of a
--- non-object, `throw` of a non-`Throwable`) are `rStuck`, and so are four
--- shapes the generator never emits, marked at their clauses: `jField` on a
--- non-`Rt` receiver, `jNew` of anything but a local class or an exception,
--- `jInvoke` with other than one argument, and a call of a generated method
--- with arguments.
+-- exception it throws. The model is a semantics of the generator's output,
+-- not of a Java subset in general, so it is less permissive than Java:
+-- `rStuck` covers
+-- * code `javac` rejects. There is no type checker, so this includes what
+--   static types rule out: an unbound name, an unknown type, a cast of a
+--   non-object, `throw` of a non-`Throwable`, `d.tag`/`d.fields[i]` on a
+--   non-`Rt.Data`, `?:` on a non-boolean;
+-- * valid Java the generator never emits, marked at the clauses: `jField` on
+--   a receiver other than `Rt`; `jNew` of anything but a local class (no
+--   arguments) or an exception (one message), e.g. `new Object()`; `jInvoke`
+--   on anything but a `fix` object, or with other than one argument; a call
+--   of a generated method with arguments; an `Rt` member, static or builtin
+--   that the `RtSpec` instance does not cover.
+-- This is sound for the theorem, which proves that `body()` *returns*: so it
+-- also shows that generated code never reaches these cases. A failed cast is
+-- not stuck: it throws `ClassCastException`, as in Java (e.g. `apply` on a
+-- non-function).
 
 -- ---------------------------------------------------------------------------
 -- Class-level lookup: one flat method table (cf. Featherweight Java's `CT`).
