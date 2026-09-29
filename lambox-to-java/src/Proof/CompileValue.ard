@@ -106,7 +106,7 @@
       (jv = vClos (wrapName p idx) (wrapBody recv p idx) E)
       (EnvRel rt cls rho cenv E0 p)
       (\Pi (a : Value) -> \Sigma (n : Nat)
-                                 (evalExpr rt cls n ((kVar (wrapName p idx), a) :: E) recv = rOk (eVal (fixObj cenv p defs E0))))
+                                 (evalExpr {\new Machine rt cls} n ((kVar (wrapName p idx), a) :: E) recv = rOk (eVal (fixObj cenv p defs E0))))
       (Generated E0)
   | evAx kn args => cvAx {nm : JIdent} {got : Array Value} {k : Nat}
       (jv = vBuiltin nm got) (axiomRtName kn = just nm) (builtinArity {rt} nm = just k)
@@ -125,7 +125,7 @@
   | nil, nil => erNil
   | w :: rho, e :: cenv => erCons
       (\Pi (X : Env) -> NotAnc X c ->
-         \Sigma (jv : Value) (n : Nat) (evalExpr rt cls n (X ++ jenv) e = rOk (eVal jv)) (CV rt cls w jv))
+         \Sigma (jv : Value) (n : Nat) (evalExpr {\new Machine rt cls} n (X ++ jenv) e = rOk (eVal jv)) (CV rt cls w jv))
       (EnvRel rt cls rho cenv jenv c)
 
 -- ---------------------------------------------------------------------------
@@ -135,16 +135,16 @@
 -- For a compiled node `o = (statements, value expression)`.
 \func SimOutO (rt : RtSpec) (cls : JClass) (jenv : Env) (p : Path) (o : Out) (w : EV) : \Type =>
   \Sigma (ext0 : Env) (Within ext0 p) (n : Nat)
-         (execStmts rt cls n jenv o.1 = rOk (oNormal (ext0 ++ jenv)))
+         (execStmts {\new Machine rt cls} n jenv o.1 = rOk (oNormal (ext0 ++ jenv)))
          (\Pi (X : Env) -> IndepOf X p ->
-            \Sigma (jv : Value) (m : Nat) (evalExpr rt cls m (X ++ (ext0 ++ jenv)) o.2 = rOk (eVal jv))
+            \Sigma (jv : Value) (m : Nat) (evalExpr {\new Machine rt cls} m (X ++ (ext0 ++ jenv)) o.2 = rOk (eVal jv))
                    (CV rt cls w jv))
 
 \func SimOut (rt : RtSpec) (cls : JClass) (cenv : Array JExpr) (jenv : Env) (p : Path) (b : LBTerm) (w : EV) : \Type =>
   SimOutO rt cls jenv p (compileExpr cenv p b) w
 
 \func AppOutJ (rt : RtSpec) (cls : JClass) (jf ja : Value) (w : EV) : \Type =>
-  \Sigma (jv : Value) (n : Nat) (applyVal rt cls n jf ja = rOk (eVal jv)) (CV rt cls w jv)
+  \Sigma (jv : Value) (n : Nat) (applyVal {\new Machine rt cls} n jf ja = rOk (eVal jv)) (CV rt cls w jv)
 
 -- ---------------------------------------------------------------------------
 -- WHAT THE SIMULATION ASSUMES. Discharged for the shipped backend in

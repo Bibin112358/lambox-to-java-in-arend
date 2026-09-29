@@ -18,7 +18,7 @@
 --
 -- One lemma per function of the evaluator's mutual cycle, each stating
 -- `F n .. <= F (suc n) ..` for the order `Mono`. Every clause of the
--- evaluator sequences recursive calls at the same fuel (`thenE`, `thenA`,
+-- evaluator sequences recursive calls at the same fuel (`>>=`, `>>=*`, `>>>`,
 -- `methodResult`, `bindRes`), so each clause of the proof combines the
 -- induction hypotheses with the matching lemma below; continuations that do
 -- not recurse are identical at both clocks (`monoRefl`).
@@ -36,11 +36,6 @@
 
 \func monoFuel {A : \Type} {b : Res A} : Mono rOutOfFuel b => \lam r p => contradiction
 
-\func afterCastMono (ok : Maybe Bool) {k k' : Res ExprOut} (h : Mono k k') : Mono (afterCast ok k) (afterCast ok k') \elim ok
-  | just true => h
-  | just false => monoRefl
-  | nothing => monoRefl
-
 \func bindMono {A B : \Type} {m m' : Res A} {k k' : A -> Res B}
                (hm : Mono m m') (hk : \Pi (x : A) -> Mono (k x) (k' x))
   : Mono (bindRes m k) (bindRes m' k') \elim m
@@ -48,17 +43,17 @@
   | rStuck => \lam r p => contradiction
   | rOutOfFuel => \lam r p => contradiction
 
-\func thenEMono {B : \Type} {exc : Value -> B} {m m' : Res ExprOut} {k k' : Value -> Res B}
+\func thenEMono {B : CanThrow} {m m' : Res ExprOut} {k k' : Value -> Res B}
                 (hm : Mono m m') (hk : \Pi (v : Value) -> Mono (k v) (k' v))
-  : Mono (thenE exc m k) (thenE exc m' k') =>
+  : Mono (m >>= k) (m' >>= k') =>
   bindMono hm (\lam o => \case \elim o \with {
     | eExc ev => monoRefl
     | eVal v => hk v
   })
 
-\func thenAMono {B : \Type} {exc : Value -> B} {m m' : Res ArgsOut} {k k' : Array Value -> Res B}
+\func thenAMono {B : CanThrow} {m m' : Res ArgsOut} {k k' : Array Value -> Res B}
                 (hm : Mono m m') (hk : \Pi (vs : Array Value) -> Mono (k vs) (k' vs))
-  : Mono (thenA exc m k) (thenA exc m' k') =>
+  : Mono (m >>=* k) (m' >>=* k') =>
   bindMono hm (\lam o => \case \elim o \with {
     | aExc ev => monoRefl
     | aVals vs => hk vs
@@ -72,7 +67,7 @@
 -- ---------------------------------------------------------------------------
 
 \func evalExprMono (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (e : JExpr)
-  : Mono (evalExpr rt cls n env e) (evalExpr rt cls (suc n) env e) \elim n, e
+  : Mono (evalExpr {\new Machine rt cls} n env e) (evalExpr {\new Machine rt cls} (suc n) env e) \elim n, e
   | 0, _ => monoFuel
   | suc n, jLit l => monoRefl
   | suc n, jBox => monoRefl
@@ -83,9 +78,10 @@
   | suc n, jField recv f => thenEMono (evalExprMono rt cls n env recv) (\lam v => monoRefl)
   | suc n, jCast t e => thenEMono (evalExprMono rt cls n env e) (\lam v => monoRefl)
   | suc n, jApply f a => thenEMono (evalExprMono rt cls n env f) (\lam fv =>
-    afterCastMono (castOk env tFn fv) (thenEMono {_} {eExc} (evalExprMono rt cls n env a) (\lam av => applyValMono rt cls n fv av)))
+    thenEMono monoRefl (\lam fn =>
+    thenEMono (evalExprMono rt cls n env a) (\lam av => applyValMono rt cls n fn av)))
   | suc n, jInvoke recv m args => thenEMono (evalExprMono rt cls n env recv) (\lam rv =>
-    thenAMono {_} {eExc} (evalArgsMono rt cls n env args) (\lam vs => invokeMethodMono rt cls n rv m vs))
+    thenAMono (evalArgsMono rt cls n env args) (\lam vs => invokeMethodMono rt cls n rv m vs))
   | suc n, jCallStatic q args => thenAMono (evalArgsMono rt cls n env args) (\lam vs => callStaticMono rt cls n q vs)
   | suc n, jNew t args => thenAMono (evalArgsMono rt cls n env args) (\lam vs => monoRefl)
   | suc n, jDataNew tag args => thenAMono (evalArgsMono rt cls n env args) (\lam vs => monoRefl)
@@ -106,15 +102,15 @@
   })
 
 \func evalArgsMono (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (es : Array JExpr)
-  : Mono (evalArgs rt cls n env es) (evalArgs rt cls (suc n) env es) \elim n, es
+  : Mono (evalArgs {\new Machine rt cls} n env es) (evalArgs {\new Machine rt cls} (suc n) env es) \elim n, es
   | 0, _ => monoFuel
   | suc n, nil => monoRefl
   | suc n, e :: es => thenEMono (evalExprMono rt cls n env e) (\lam v =>
-    thenAMono {_} {aExc} {_} {_} {\lam vs => rOk (aVals (v :: vs))} {\lam vs => rOk (aVals (v :: vs))}
+    thenAMono {ArgsThrows} {_} {_} {\lam vs => rOk (aVals (v :: vs))} {\lam vs => rOk (aVals (v :: vs))}
               (evalArgsMono rt cls n env es) (\lam vs => monoRefl))
 
 \func applyValMono (rt : RtSpec) (cls : JClass) (n : Nat) (f a : Value)
-  : Mono (applyVal rt cls n f a) (applyVal rt cls (suc n) f a) \elim n, f
+  : Mono (applyVal {\new Machine rt cls} n f a) (applyVal {\new Machine rt cls} (suc n) f a) \elim n, f
   | 0, _ => monoFuel
   | suc n, vClos p body cenv => methodResultMono (execStmtsMono rt cls n (bindVar cenv p a) body)
   | suc n, vBuiltin nm got => monoRefl
@@ -128,7 +124,7 @@
   | suc n, vExcObj _ _ => monoRefl
 
 \func invokeMethodMono (rt : RtSpec) (cls : JClass) (n : Nat) (recv : Value) (m : JIdent) (vs : Array Value)
-  : Mono (invokeMethod rt cls n recv m vs) (invokeMethod rt cls (suc n) recv m vs) \elim n, recv
+  : Mono (invokeMethod {\new Machine rt cls} n recv m vs) (invokeMethod {\new Machine rt cls} (suc n) recv m vs) \elim n, recv
   | 0, _ => monoFuel
   | suc n, vObj c ms cenv => cases (lookupClassMethod ms m) \with {
     | nothing => monoRefl
@@ -149,7 +145,7 @@
   | suc n, vExcObj _ _ => monoRefl
 
 \func callStaticMono (rt : RtSpec) (cls : JClass) (n : Nat) (q : JQIdent) (vs : Array Value)
-  : Mono (callStatic rt cls n q vs) (callStatic rt cls (suc n) q vs) \elim n
+  : Mono (callStatic {\new Machine rt cls} n q vs) (callStatic {\new Machine rt cls} (suc n) q vs) \elim n
   | 0 => monoFuel
   | suc n => cases (lookupMethod cls q) \with {
     | just mth => cases vs \with {
@@ -160,7 +156,7 @@
   }
 
 \func execStmtMono (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (s : JStmt)
-  : Mono (execStmt rt cls n env s) (execStmt rt cls (suc n) env s) \elim n, s
+  : Mono (execStmt {\new Machine rt cls} n env s) (execStmt {\new Machine rt cls} (suc n) env s) \elim n, s
   | 0, _ => monoFuel
   | suc n, jComment _ => monoRefl
   | suc n, jLocal _ x e => thenEMono (evalExprMono rt cls n env e) (\lam v => monoRefl)
@@ -169,7 +165,7 @@
   | suc n, jReturn e => thenEMono (evalExprMono rt cls n env e) (\lam v => monoRefl)
 
 \func execStmtsMono (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (ss : Array JStmt)
-  : Mono (execStmts rt cls n env ss) (execStmts rt cls (suc n) env ss) \elim n, ss
+  : Mono (execStmts {\new Machine rt cls} n env ss) (execStmts {\new Machine rt cls} (suc n) env ss) \elim n, ss
   | 0, _ => monoFuel
   | suc n, nil => monoRefl
   | suc n, s :: ss => bindMono (execStmtMono rt cls n env s) (\lam o => \case \elim o \with {
@@ -185,15 +181,15 @@
 -- ---------------------------------------------------------------------------
 
 \func evalExprMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (env : Env) (e : JExpr)
-  : Mono (evalExpr rt cls n env e) (evalExpr rt cls (n Nat.+ k) env e) \elim k
+  : Mono (evalExpr {\new Machine rt cls} n env e) (evalExpr {\new Machine rt cls} (n Nat.+ k) env e) \elim k
   | 0 => monoRefl
   | suc k => monoTrans (evalExprMonoPlus rt cls n k env e) (evalExprMono rt cls (n Nat.+ k) env e)
 
 \func execStmtsMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (env : Env) (ss : Array JStmt)
-  : Mono (execStmts rt cls n env ss) (execStmts rt cls (n Nat.+ k) env ss) \elim k
+  : Mono (execStmts {\new Machine rt cls} n env ss) (execStmts {\new Machine rt cls} (n Nat.+ k) env ss) \elim k
   | 0 => monoRefl
   | suc k => monoTrans (execStmtsMonoPlus rt cls n k env ss) (execStmtsMono rt cls (n Nat.+ k) env ss)
 
 \func fuelMono {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} {e : JExpr} {r : ExprOut}
-                (p : evalExpr rt cls n env e = rOk r) : evalExpr rt cls (suc n) env e = rOk r =>
+                (p : evalExpr {\new Machine rt cls} n env e = rOk r) : evalExpr {\new Machine rt cls} (suc n) env e = rOk r =>
   evalExprMono rt cls n env e r p

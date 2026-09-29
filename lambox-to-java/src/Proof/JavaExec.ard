@@ -103,7 +103,7 @@
   lookupKeyCons {k} {kType c} v env ne
 
 \func evalVar (rt : RtSpec) (cls : JClass) (n : Nat) {env : Env} {x : JIdent} {v : Value} (h : lookupVar env x = just v)
-  : evalExpr rt cls (suc n) env (jVar x) = rOk (eVal v) =>
+  : evalExpr {\new Machine rt cls} (suc n) env (jVar x) = rOk (eVal v) =>
   rewrite h idp
 
 -- ---------------------------------------------------------------------------
@@ -111,33 +111,33 @@
 -- ---------------------------------------------------------------------------
 
 \func upE {rt : RtSpec} {cls : JClass} {env : Env} {e : JExpr} {r : ExprOut} {n m : Nat} (le : n <= m)
-          (h : evalExpr rt cls n env e = rOk r) : evalExpr rt cls m env e = rOk r =>
-  transport (\lam x => evalExpr rt cls x env e = rOk r) (<=_exists le) (evalExprMonoPlus rt cls n (m -' n) env e r h)
+          (h : evalExpr {\new Machine rt cls} n env e = rOk r) : evalExpr {\new Machine rt cls} m env e = rOk r =>
+  transport (\lam x => evalExpr {\new Machine rt cls} x env e = rOk r) (<=_exists le) (evalExprMonoPlus rt cls n (m -' n) env e r h)
 
 \func upS {rt : RtSpec} {cls : JClass} {env : Env} {ss : Array JStmt} {r : StmtOut} {n m : Nat} (le : n <= m)
-          (h : execStmts rt cls n env ss = rOk r) : execStmts rt cls m env ss = rOk r =>
-  transport (\lam x => execStmts rt cls x env ss = rOk r) (<=_exists le) (execStmtsMonoPlus rt cls n (m -' n) env ss r h)
+          (h : execStmts {\new Machine rt cls} n env ss = rOk r) : execStmts {\new Machine rt cls} m env ss = rOk r =>
+  transport (\lam x => execStmts {\new Machine rt cls} x env ss = rOk r) (<=_exists le) (execStmtsMonoPlus rt cls n (m -' n) env ss r h)
 
 \func upA {rt : RtSpec} {cls : JClass} {env : Env} {es : Array JExpr} {r : ArgsOut} {n m : Nat} (le : n <= m)
-          (h : evalArgs rt cls n env es = rOk r) : evalArgs rt cls m env es = rOk r =>
-  transport (\lam x => evalArgs rt cls x env es = rOk r) (<=_exists le) (evalArgsMonoPlus rt cls n (m -' n) env es r h)
+          (h : evalArgs {\new Machine rt cls} n env es = rOk r) : evalArgs {\new Machine rt cls} m env es = rOk r =>
+  transport (\lam x => evalArgs {\new Machine rt cls} x env es = rOk r) (<=_exists le) (evalArgsMonoPlus rt cls n (m -' n) env es r h)
 
 \func upAp {rt : RtSpec} {cls : JClass} {f a : Value} {r : ExprOut} {n m : Nat} (le : n <= m)
-           (h : applyVal rt cls n f a = rOk r) : applyVal rt cls m f a = rOk r =>
-  transport (\lam x => applyVal rt cls x f a = rOk r) (<=_exists le) (applyValMonoPlus rt cls n (m -' n) f a r h)
+           (h : applyVal {\new Machine rt cls} n f a = rOk r) : applyVal {\new Machine rt cls} m f a = rOk r =>
+  transport (\lam x => applyVal {\new Machine rt cls} x f a = rOk r) (<=_exists le) (applyValMonoPlus rt cls n (m -' n) f a r h)
 
 \func evalArgsMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (env : Env) (es : Array JExpr)
-  : Mono (evalArgs rt cls n env es) (evalArgs rt cls (n Nat.+ k) env es) \elim k
+  : Mono (evalArgs {\new Machine rt cls} n env es) (evalArgs {\new Machine rt cls} (n Nat.+ k) env es) \elim k
   | 0 => monoRefl
   | suc k => monoTrans (evalArgsMonoPlus rt cls n k env es) (evalArgsMono rt cls (n Nat.+ k) env es)
 
 \func applyValMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (f a : Value)
-  : Mono (applyVal rt cls n f a) (applyVal rt cls (n Nat.+ k) f a) \elim k
+  : Mono (applyVal {\new Machine rt cls} n f a) (applyVal {\new Machine rt cls} (n Nat.+ k) f a) \elim k
   | 0 => monoRefl
   | suc k => monoTrans (applyValMonoPlus rt cls n k f a) (applyValMono rt cls (n Nat.+ k) f a)
 
 \func execStmtMonoPlus (rt : RtSpec) (cls : JClass) (n k : Nat) (env : Env) (s : JStmt)
-  : Mono (execStmt rt cls n env s) (execStmt rt cls (n Nat.+ k) env s) \elim k
+  : Mono (execStmt {\new Machine rt cls} n env s) (execStmt {\new Machine rt cls} (n Nat.+ k) env s) \elim k
   | 0 => monoRefl
   | suc k => monoTrans (execStmtMonoPlus rt cls n k env s) (execStmtMono rt cls (n Nat.+ k) env s)
 
@@ -148,16 +148,16 @@
 -- Two statement sequences run one after the other. (`\case` does not reduce
 -- under a hypothesis about its scrutinee, hence the `\as s, idp` idiom.)
 \func execApp {rt : RtSpec} {cls : JClass} {n m : Nat} {env e1 : Env} {xs ys : Array JStmt} {r : StmtOut}
-              (hx : execStmts rt cls n env xs = rOk (oNormal e1)) (hy : execStmts rt cls m e1 ys = rOk r)
-  : execStmts rt cls (n Nat.+ m) env (appendStmts xs ys) = rOk r \elim n, xs
+              (hx : execStmts {\new Machine rt cls} n env xs = rOk (oNormal e1)) (hy : execStmts {\new Machine rt cls} m e1 ys = rOk r)
+  : execStmts {\new Machine rt cls} (n Nat.+ m) env (appendStmts xs ys) = rOk r \elim n, xs
   | 0, _ => contradiction
   | suc n, nil =>
     \let | pe : env = e1 => pmap (unNormal env) hx
     \in rewrite pe (upS (linarith : m <= suc n Nat.+ m) hy)
   | suc n, x :: xs =>
-    \case execStmt rt cls n env x \as s, idp : execStmt rt cls n env x = s \with {
+    \case execStmt {\new Machine rt cls} n env x \as s, idp : execStmt {\new Machine rt cls} n env x = s \with {
       | rOk (oNormal env'), q =>
-        \let | h2 : execStmts rt cls n env' xs = rOk (oNormal e1) => rewrite q at hx $ hx
+        \let | h2 : execStmts {\new Machine rt cls} n env' xs = rOk (oNormal e1) => rewrite q at hx $ hx
         \in bindOk (execStmtMonoPlus rt cls n m env x (oNormal env') q) (execApp h2 hy)
       | rOk (oReturn v), q => rewrite q at hx $ contradiction
       | rOk (oExcS ev), q => rewrite q at hx $ contradiction
@@ -165,29 +165,29 @@
       | rOutOfFuel, q => rewrite q at hx $ contradiction
     }
 
-\func execNilInv {rt : RtSpec} {cls : JClass} {n : Nat} {env E : Env} (h : execStmts rt cls n env nil = rOk (oNormal E)) : env = E \elim n
+\func execNilInv {rt : RtSpec} {cls : JClass} {n : Nat} {env E : Env} (h : execStmts {\new Machine rt cls} n env nil = rOk (oNormal E)) : env = E \elim n
   | 0 => \case h
   | suc n => pmap (unNormal env) h
 
 \func execRet1 {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} {e : JExpr} {v : Value}
-               (h : evalExpr rt cls n env e = rOk (eVal v))
-  : execStmts rt cls (suc (suc n)) env (jReturn e :: nil) = rOk (oReturn v) =>
+               (h : evalExpr {\new Machine rt cls} n env e = rOk (eVal v))
+  : execStmts {\new Machine rt cls} (suc (suc n)) env (jReturn e :: nil) = rOk (oReturn v) =>
   rewrite h idp
 
 -- The statements of a compiled node, then `return` of its value expression.
 \func execRetApp {rt : RtSpec} {cls : JClass} {n m : Nat} {env e1 : Env} {ss : Array JStmt} {e : JExpr} {v : Value}
-                 (hs : execStmts rt cls n env ss = rOk (oNormal e1)) (he : evalExpr rt cls m e1 e = rOk (eVal v))
-  : \Sigma (N : Nat) (execStmts rt cls N env (appendStmts ss (jReturn e :: nil)) = rOk (oReturn v)) =>
+                 (hs : execStmts {\new Machine rt cls} n env ss = rOk (oNormal e1)) (he : evalExpr {\new Machine rt cls} m e1 e = rOk (eVal v))
+  : \Sigma (N : Nat) (execStmts {\new Machine rt cls} N env (appendStmts ss (jReturn e :: nil)) = rOk (oReturn v)) =>
   (n Nat.+ suc (suc m), execApp {rt} {cls} {n} {suc (suc m)} hs (execRet1 he))
 
 \func execLocal1 {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} (t : JType) (x : JIdent) {e : JExpr} {v : Value}
-                 (h : evalExpr rt cls n env e = rOk (eVal v))
-  : execStmts rt cls (suc (suc n)) env (jLocal t x e :: nil) = rOk (oNormal ((kVar x, v) :: env)) =>
+                 (h : evalExpr {\new Machine rt cls} n env e = rOk (eVal v))
+  : execStmts {\new Machine rt cls} (suc (suc n)) env (jLocal t x e :: nil) = rOk (oNormal ((kVar x, v) :: env)) =>
   rewrite h idp
 
 -- The two statements of a `fix` node: declare the local class, instantiate it.
 \func fixExec (rt : RtSpec) (cls : JClass) (cn inst : JIdent) (ms : Array (\Sigma JIdent JIdent (Array JStmt))) (jenv : Env)
-  : execStmts rt cls 5 jenv (jLocalClass cn ms :: jLocal (tClass cn) inst (jNew (tClass cn) nil) :: nil)
+  : execStmts {\new Machine rt cls} 5 jenv (jLocalClass cn ms :: jLocal (tClass cn) inst (jNew (tClass cn) nil) :: nil)
   = rOk (oNormal ((kVar inst, vObj cn ms jenv) :: (kType cn, vObj cn ms jenv) :: jenv)) =>
   rewrite (lookupTypeHead cn (vObj cn ms jenv) jenv) idp
 
@@ -207,14 +207,18 @@
   : castOk env t v = instanceOf v d =>
   pmap (\lam r => castOk.castTo r v) rs
 
+-- A cast that succeeds is the identity.
+\func castPasses {env : Env} {t : JType} {v : Value} (ok : castOk env t v = just true) : cast env t v = value v =>
+  pmap (\lam o => cast.afterCast o v) ok
+
 -- ---------------------------------------------------------------------------
 -- Expressions.
 -- ---------------------------------------------------------------------------
 
 -- An argument list whose members each evaluate.
 \func evalArgsAll {rt : RtSpec} {cls : JClass} {env : Env} (es : Array JExpr) (vs : Array Value es.len)
-                  (h : \Pi (i : Fin es.len) -> \Sigma (n : Nat) (evalExpr rt cls n env (es i) = rOk (eVal (vs i))))
-  : \Sigma (n : Nat) (evalArgs rt cls n env es = rOk (aVals vs)) \elim es, vs
+                  (h : \Pi (i : Fin es.len) -> \Sigma (n : Nat) (evalExpr {\new Machine rt cls} n env (es i) = rOk (eVal (vs i))))
+  : \Sigma (n : Nat) (evalArgs {\new Machine rt cls} n env es = rOk (aVals vs)) \elim es, vs
   | nil, vs => (1, idp)
   | e :: es, v :: vs =>
     \let
@@ -234,8 +238,8 @@
 \func condChainEval {rt : RtSpec} {cls : JClass} {env : Env} {dv : JIdent} {c : Nat} {fs : Array Value}
                     (hd : lookupVar env dv = just (vData c fs)) (p : Path)
                     (arms : Array JExpr) (tag : Nat) (j : Fin arms.len) (e : c = tag Nat.+ j) {v : Value}
-                    (ha : \Sigma (n : Nat) (evalExpr rt cls n env (arms j) = rOk (eVal v)))
-  : \Sigma (n : Nat) (evalExpr rt cls n env (condChain (jVar dv) tag arms p) = rOk (eVal v)) \elim arms, j
+                    (ha : \Sigma (n : Nat) (evalExpr {\new Machine rt cls} n env (arms j) = rOk (eVal v)))
+  : \Sigma (n : Nat) (evalExpr {\new Machine rt cls} n env (condChain (jVar dv) tag arms p) = rOk (eVal v)) \elim arms, j
   | a :: arms, 0 =>
     \let (n, h) => ha
          | n' => suc (suc (suc n))
@@ -246,46 +250,46 @@
     \in (n', rewrite (hd, tagNe e) (upE (linarith : n <= suc (suc n)) h))
 
 \func applyEval {rt : RtSpec} {cls : JClass} {N : Nat} {env : Env} {f a : JExpr} {jf ja : Value} {r : ExprOut}
-                (hf : evalExpr rt cls N env f = rOk (eVal jf)) (ok : castOk env tFn jf = just true)
-                (ha : evalExpr rt cls N env a = rOk (eVal ja)) (hap : applyVal rt cls N jf ja = rOk r)
-  : evalExpr rt cls (suc N) env (jApply f a) = rOk r =>
-  bindOk hf (rewrite ok (bindOk ha hap))
+                (hf : evalExpr {\new Machine rt cls} N env f = rOk (eVal jf)) (ok : castOk env tFn jf = just true)
+                (ha : evalExpr {\new Machine rt cls} N env a = rOk (eVal ja)) (hap : applyVal {\new Machine rt cls} N jf ja = rOk r)
+  : evalExpr {\new Machine rt cls} (suc N) env (jApply f a) = rOk r =>
+  bindOk hf (bindOk (castPasses {env} {tFn} ok) (bindOk ha hap))
 
 \func callConst {rt : RtSpec} {cls : JClass} {n : Nat} {q : JQIdent} {m : JMethod} {B : Array JStmt} {v : Value}
                 (lk : lookupMethod cls q = just m) (bd : JMethod.mBody {m} = B)
-                (ex : execStmts rt cls n nil B = rOk (oReturn v)) (env : Env)
-  : evalExpr rt cls (suc (suc n)) env (jCallStatic q nil) = rOk (eVal v) =>
-  rewrite lk (bindOk (transport (\lam B' => execStmts rt cls n nil B' = rOk (oReturn v)) (inv bd) ex) idp)
+                (ex : execStmts {\new Machine rt cls} n nil B = rOk (oReturn v)) (env : Env)
+  : evalExpr {\new Machine rt cls} (suc (suc n)) env (jCallStatic q nil) = rOk (eVal v) =>
+  rewrite lk (bindOk (transport (\lam B' => execStmts {\new Machine rt cls} n nil B' = rOk (oReturn v)) (inv bd) ex) idp)
 
 \func fieldEval {rt : RtSpec} {cls : JClass} {nm : JIdent} {v : Value} (rf : rtField {rt} nm = just v) (env : Env)
-  : evalExpr rt cls 2 env (jField rtRef nm) = rOk (eVal v) =>
+  : evalExpr {\new Machine rt cls} 2 env (jField rtRef nm) = rOk (eVal v) =>
   rewrite rf idp
 
 \func castDataEval {rt : RtSpec} {cls : JClass} {m : Nat} {env : Env} {e : JExpr} {c : Nat} {fs : Array Value}
-                   (rs : resolveType env tData = just cRtData) (h : evalExpr rt cls m env e = rOk (eVal (vData c fs)))
-  : evalExpr rt cls (suc m) env (jCast tData e) = rOk (eVal (vData c fs)) =>
-  bindOk h (rewrite (castResolved rs (vData c fs)) idp)
+                   (rs : resolveType env tData = just cRtData) (h : evalExpr {\new Machine rt cls} m env e = rOk (eVal (vData c fs)))
+  : evalExpr {\new Machine rt cls} (suc m) env (jCast tData e) = rOk (eVal (vData c fs)) =>
+  bindOk h (castPasses {env} {tData} (castResolved {env} {tData} rs (vData c fs)))
 
 \func projEval {rt : RtSpec} {cls : JClass} {m : Nat} {env : Env} {e : JExpr} {c k : Nat} {fs : Array Value} {f : Value}
                (rs : resolveType env tData = just cRtData)
-               (h : evalExpr rt cls m env e = rOk (eVal (vData c fs))) (hk : nthArr k fs = just f)
-  : evalExpr rt cls (suc (suc m)) env (jDataField (jCast tData e) k) = rOk (eVal f) =>
+               (h : evalExpr {\new Machine rt cls} m env e = rOk (eVal (vData c fs))) (hk : nthArr k fs = just f)
+  : evalExpr {\new Machine rt cls} (suc (suc m)) env (jDataField (jCast tData e) k) = rOk (eVal f) =>
   bindOk (castDataEval rs h) (rewrite hk idp)
 
 \func fieldEvalV {rt : RtSpec} {cls : JClass} {env : Env} {x : JIdent} {c k : Nat} {fs : Array Value} {f : Value}
                  (hl : lookupVar env x = just (vData c fs)) (hk : nthArr k fs = just f)
-  : evalExpr rt cls 2 env (jDataField (jVar x) k) = rOk (eVal f) =>
+  : evalExpr {\new Machine rt cls} 2 env (jDataField (jVar x) k) = rOk (eVal f) =>
   bindOk (evalVar rt cls 0 hl) (rewrite hk idp)
 
 \func qualThisEval {rt : RtSpec} {cls : JClass} {env : Env} {q c : JIdent} {ms : Array (\Sigma JIdent JIdent (Array JStmt))} {ce : Env}
                    (h : lookupType env q = just (vObj c ms ce))
-  : evalExpr rt cls 1 env (jQualThis q) = rOk (eVal (vObj c ms ce)) => rewrite h idp
+  : evalExpr {\new Machine rt cls} 1 env (jQualThis q) = rOk (eVal (vObj c ms ce)) => rewrite h idp
 
 \func invokeEval {rt : RtSpec} {cls : JClass} {n0 : Nat} {env : Env} {recv : JExpr} {m x : JIdent} {a obj : Value} {r : ExprOut}
-                 (hr : evalExpr rt cls (suc (suc n0)) env recv = rOk (eVal obj)) (hx : lookupVar env x = just a)
-                 (hi : invokeMethod rt cls (suc (suc n0)) obj m (a :: nil) = rOk r)
-  : evalExpr rt cls (suc (suc (suc n0))) env (jInvoke recv m (jVar x :: nil)) = rOk r =>
-  \let ha : evalArgs rt cls (suc (suc n0)) env (jVar x :: nil) = rOk (aVals (a :: nil)) => rewrite hx idp
+                 (hr : evalExpr {\new Machine rt cls} (suc (suc n0)) env recv = rOk (eVal obj)) (hx : lookupVar env x = just a)
+                 (hi : invokeMethod {\new Machine rt cls} (suc (suc n0)) obj m (a :: nil) = rOk r)
+  : evalExpr {\new Machine rt cls} (suc (suc (suc n0))) env (jInvoke recv m (jVar x :: nil)) = rOk r =>
+  \let ha : evalArgs {\new Machine rt cls} (suc (suc n0)) env (jVar x :: nil) = rOk (aVals (a :: nil)) => rewrite hx idp
   \in bindOk hr (bindOk ha hi)
 
 -- A method of a local class runs with its parameter, then the class name (a
@@ -293,20 +297,20 @@
 \func methodInvoke {rt : RtSpec} {cls : JClass} {n : Nat} {cn m : JIdent} {ms : Array (\Sigma JIdent JIdent (Array JStmt))} {E0 : Env}
                    {pb : \Sigma JIdent (Array JStmt)} {a v : Value}
                    (lk : lookupClassMethod ms m = just pb)
-                   (ex : execStmts rt cls n ((kVar pb.1, a) :: (kType cn, vObj cn ms E0) :: E0) pb.2 = rOk (oReturn v))
-  : invokeMethod rt cls (suc n) (vObj cn ms E0) m (a :: nil) = rOk (eVal v) =>
+                   (ex : execStmts {\new Machine rt cls} n ((kVar pb.1, a) :: (kType cn, vObj cn ms E0) :: E0) pb.2 = rOk (oReturn v))
+  : invokeMethod {\new Machine rt cls} (suc n) (vObj cn ms E0) m (a :: nil) = rOk (eVal v) =>
   rewrite lk (bindOk ex idp)
 
 -- A builtin applied to its last argument fires; before that it collects.
 \func builtinFire {rt : RtSpec} {cls : JClass} {nm : JIdent} {got : Array Value} {ja v : Value} {k : Nat}
                   (ba : builtinArity {rt} nm = just k) (lt : ((snocArr got ja).len == k) = true)
                   (bro : builtinRun {rt} nm (snocArr got ja) = rOk v)
-  : applyVal rt cls 1 (vBuiltin nm got) ja = rOk (eVal v) =>
+  : applyVal {\new Machine rt cls} 1 (vBuiltin nm got) ja = rOk (eVal v) =>
   rewrite ba (rewrite lt (rewrite bro idp))
 
 \func builtinCollect {rt : RtSpec} {cls : JClass} {nm : JIdent} {got : Array Value} {ja : Value} {k : Nat}
                      (ba : builtinArity {rt} nm = just k) (lf : ((snocArr got ja).len == k) = false)
-  : applyVal rt cls 1 (vBuiltin nm got) ja = rOk (eVal (vBuiltin nm (snocArr got ja))) =>
+  : applyVal {\new Machine rt cls} 1 (vBuiltin nm got) ja = rOk (eVal (vBuiltin nm (snocArr got ja))) =>
   rewrite ba (rewrite lf idp)
 
 -- ---------------------------------------------------------------------------

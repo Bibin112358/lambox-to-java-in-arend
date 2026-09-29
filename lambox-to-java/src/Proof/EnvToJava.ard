@@ -60,11 +60,11 @@
 -- The last component of `SimOutO`, for an environment `E`.
 \func ValAt (rt : RtSpec) (cls : JClass) (E : Env) (p : Path) (e : JExpr) (w : EV) : \Type =>
   \Pi (X : Env) -> IndepOf X p ->
-    \Sigma (jv : Value) (m : Nat) (evalExpr rt cls m (X ++ E) e = rOk (eVal jv)) (CV rt cls w jv)
+    \Sigma (jv : Value) (m : Nat) (evalExpr {\new Machine rt cls} m (X ++ E) e = rOk (eVal jv)) (CV rt cls w jv)
 
 \func simOf {rt : RtSpec} {cls : JClass} {jenv : Env} {p : Path} (o : Out) {w : EV}
             (ext0 : Env) (wi : Within ext0 p) (E' : Env) (eE : ext0 ++ jenv = E') (n : Nat)
-            (ex : execStmts rt cls n jenv o.1 = rOk (oNormal E'))
+            (ex : execStmts {\new Machine rt cls} n jenv o.1 = rOk (oNormal E'))
             (h : ValAt rt cls E' p o.2 w)
   : SimOutO rt cls jenv p o w =>
   (ext0, wi, n, ex *> pmap (\lam E => rOk (oNormal E)) (inv eE), transport (\lam E => ValAt rt cls E p o.2 w) (inv eE) h)
@@ -77,7 +77,7 @@
 -- A literal: `Long.valueOf` is not generated, so it falls through to the runtime.
 \func valueOfEval {spec : LBSpec} {rt : RtSpec} {cls : JClass} {genv : GlobalDeclarations} (H : SimHyps spec rt cls genv)
                   (env : Env) (x : JLong)
-  : evalExpr rt cls 4 env (jCallStatic "Long.valueOf" (jLit (litLong x) :: nil)) = rOk (eVal (vLong x)) =>
+  : evalExpr {\new Machine rt cls} 4 env (jCallStatic "Long.valueOf" (jLit (litLong x) :: nil)) = rOk (eVal (vLong x)) =>
   rewrite (H.hValueOf, H.hRtValueOf x) idp
 
 \func conInvCV {rt : RtSpec} {cls : JClass} {ind : InductiveId} {c : Nat} {ws : Array EV} {jv : Value}
@@ -102,7 +102,7 @@
   | box, eeBox e => pureOut (compileExpr cenv p box) idp (\lam X _ => (vBox, 1, idp, rewrite e (cvBox idp)))
   | bvar n, eeVar h =>
     \let r => erLookup er h
-    \in pureOut (compileExpr cenv p (bvar n)) idp (\lam X ix => \let s => r.3 X (indepNotAnc ix) \in (s.1, s.2, transport (\lam e => evalExpr rt cls s.2 (X ++ jenv) e = rOk (eVal s.1)) (inv (nthVarAt r.2 p)) s.3, s.4))
+    \in pureOut (compileExpr cenv p (bvar n)) idp (\lam X ix => \let s => r.3 X (indepNotAnc ix) \in (s.1, s.2, transport (\lam e => evalExpr {\new Machine rt cls} s.2 (X ++ jenv) e = rOk (eVal s.1)) (inv (nthVarAt r.2 p)) s.3, s.4))
   | lambda na b, eeLam e =>
     pureOut (compileExpr cenv p (lambda na b)) idp (\lam X ix => (vClos (renderName nParam p) (lamBody cenv p b) (X ++ jenv), 1, idp,
                                rewrite e (cvClos idp (erExtend er X (indepNotAnc ix)) (genApp ix g))))
@@ -112,7 +112,7 @@
          | obj => fixObj cenv p defs jenv
          | ext0 : Env => (kVar inst, obj) :: (kType cn, obj) :: nil
          | wi : Within ext0 p => ((nFixInst, p, idp, sufSelf p), ((nFixClass, p, idp, sufSelf p), ()))
-         | ex : execStmts rt cls 5 jenv (compileExpr cenv p (fix defs idx)).1 = rOk (oNormal (ext0 ++ jenv)) =>
+         | ex : execStmts {\new Machine rt cls} 5 jenv (compileExpr cenv p (fix defs idx)).1 = rOk (oNormal (ext0 ++ jenv)) =>
            fixExec rt cls cn inst (fixMethods cenv p defs) jenv
     \in simOf (compileExpr cenv p (fix defs idx)) ext0 wi (ext0 ++ jenv) idp 5 ex (\lam X ix =>
       (vClos (wrapName p idx) (wrapBody (jVar inst) p idx) (X ++ (ext0 ++ jenv)), 1, idp,
@@ -144,12 +144,12 @@
          | gB : Generated jB => ((nLet, p, idp, ()), genApp r0.2 g)
          | r1 => simE H d1 erB gB
          | exL => execLocal1 {rt} {cls} {v0.2} {r0.1 ++ jenv} tObject lv v0.3
-         | exB : execStmts rt cls (suc (suc v0.2) Nat.+ r1.3) (r0.1 ++ jenv)
+         | exB : execStmts {\new Machine rt cls} (suc (suc v0.2) Nat.+ r1.3) (r0.1 ++ jenv)
                    (jLocal tObject lv (compileExpr cenv (sLetVal :: p) b0).2 :: (compileExpr (jVar lv :: cenv) (sLetBody :: p) b1).1)
                  = rOk (oNormal (r1.1 ++ jB)) =>
              execApp {rt} {cls} {suc (suc v0.2)} {r1.3} {r0.1 ++ jenv} {jB}
                      {jLocal tObject lv (compileExpr cenv (sLetVal :: p) b0).2 :: nil} {(compileExpr (jVar lv :: cenv) (sLetBody :: p) b1).1} exL r1.4
-         | exAll : execStmts rt cls (r0.3 Nat.+ (suc (suc v0.2) Nat.+ r1.3)) jenv (compileExpr cenv p (letIn na b0 b1)).1
+         | exAll : execStmts {\new Machine rt cls} (r0.3 Nat.+ (suc (suc v0.2) Nat.+ r1.3)) jenv (compileExpr cenv p (letIn na b0 b1)).1
                  = rOk (oNormal (r1.1 ++ jB)) =>
              execApp {rt} {cls} {r0.3} {suc (suc v0.2) Nat.+ r1.3} {jenv} {r0.1 ++ jenv} {(compileExpr cenv (sLetVal :: p) b0).1}
                      {jLocal tObject lv (compileExpr cenv (sLetVal :: p) b0).2 :: (compileExpr (jVar lv :: cenv) (sLetBody :: p) b1).1} r0.4 exB
@@ -171,8 +171,8 @@
                      | va => ra.5 X (indepDown sArg ix)
                      | ap => simA H dap vf.4 va.4
                      | N => vf.2 Nat.+ va.2 Nat.+ ap.2
-                     | hf : evalExpr rt cls N (X ++ (ra.1 ++ (rf.1 ++ jenv))) (compileExpr cenv (sFun :: p) f).2 = rOk (eVal vf.1) =>
-                       upE linarith (transport (\lam E => evalExpr rt cls vf.2 E (compileExpr cenv (sFun :: p) f).2 = rOk (eVal vf.1))
+                     | hf : evalExpr {\new Machine rt cls} N (X ++ (ra.1 ++ (rf.1 ++ jenv))) (compileExpr cenv (sFun :: p) f).2 = rOk (eVal vf.1) =>
+                       upE linarith (transport (\lam E => evalExpr {\new Machine rt cls} vf.2 E (compileExpr cenv (sFun :: p) f).2 = rOk (eVal vf.1))
                                                (++-assoc {_} {X} {ra.1} {rf.1 ++ jenv}) vf.3)
                 \in (ap.1, suc N, applyEval hf (castFn (genApp ix (genApp ra.2 (genApp rf.2 g))) dap vf.4) (upE linarith va.3) (upAp linarith ap.3), ap.4))
   | construct ind c args, eeCon {arity} {ws} car len dall ew =>
@@ -195,11 +195,11 @@
          | vd => vData c ci0.1
          | dv => renderName nScrut p
          | os => compileExpr cenv (sScrut :: p) discr
-         | hs1 : evalExpr rt cls vs0.2 (rs.1 ++ jenv) os.2 = rOk (eVal vd) =>
-           transport (\lam z => evalExpr rt cls vs0.2 (rs.1 ++ jenv) os.2 = rOk (eVal z)) ci0.2 vs0.3
-         | hs0 : evalExpr rt cls (suc vs0.2) (rs.1 ++ jenv) (jCast tData os.2) = rOk (eVal vd) => castDataEval (resolveDataGen (genApp rs.2 g)) hs1
+         | hs1 : evalExpr {\new Machine rt cls} vs0.2 (rs.1 ++ jenv) os.2 = rOk (eVal vd) =>
+           transport (\lam z => evalExpr {\new Machine rt cls} vs0.2 (rs.1 ++ jenv) os.2 = rOk (eVal z)) ci0.2 vs0.3
+         | hs0 : evalExpr {\new Machine rt cls} (suc vs0.2) (rs.1 ++ jenv) (jCast tData os.2) = rOk (eVal vd) => castDataEval (resolveDataGen (genApp rs.2 g)) hs1
          | exL => execLocal1 {rt} {cls} {suc vs0.2} {rs.1 ++ jenv} tData dv {jCast tData os.2} {vd} hs0
-         | exAll : execStmts rt cls (rs.3 Nat.+ suc (suc (suc vs0.2))) jenv (compileExpr cenv p (case ind npars discr brs)).1
+         | exAll : execStmts {\new Machine rt cls} (rs.3 Nat.+ suc (suc (suc vs0.2))) jenv (compileExpr cenv p (case ind npars discr brs)).1
                    = rOk (oNormal ((kVar dv, vd) :: (rs.1 ++ jenv))) =>
            execApp {rt} {cls} {rs.3} {suc (suc (suc vs0.2))} {jenv} {rs.1 ++ jenv} {os.1} {jLocal tData dv (jCast tData os.2) :: nil} rs.4 exL
          | wi : Within ((kVar dv, vd) :: rs.1) p => ((nScrut, p, idp, sufSelf p), withinUp rs.2)
@@ -227,11 +227,11 @@
                       (inv (revArrApp (dropArr npars args) rho))
                       (fieldsRel lkT br.1 (dropArr npars args) dlen npars hf (erChild (sBranch jf.1) erT0))
            | am => armSim {rt} {cls} (compileExpr (pushFields (jVar dv) npars br.1 cenv) bp br.2) bp Z gZ (simE H dbody erZ gZ) (simE H dbody erT ((nThunk, bp, idp, ()), gZ))
-           | am' : evalExpr rt cls am.2 Z (armExpr (compileExpr (pushFields (jVar dv) npars (brs jf.1).1 cenv) bp (brs jf.1).2).1
+           | am' : evalExpr {\new Machine rt cls} am.2 Z (armExpr (compileExpr (pushFields (jVar dv) npars (brs jf.1).1 cenv) bp (brs jf.1).2).1
                                                    (compileExpr (pushFields (jVar dv) npars (brs jf.1).1 cenv) bp (brs jf.1).2).2 bp)
                    = rOk (eVal am.1) =>
              transport (\lam (b : \Sigma (Array BinderName) LBTerm) =>
-                          evalExpr rt cls am.2 Z (armExpr (compileExpr (pushFields (jVar dv) npars b.1 cenv) bp b.2).1
+                          evalExpr {\new Machine rt cls} am.2 Z (armExpr (compileExpr (pushFields (jVar dv) npars b.1 cenv) bp b.2).1
                                                           (compileExpr (pushFields (jVar dv) npars b.1 cenv) bp b.2).2 bp) = rOk (eVal am.1))
                        (inv jf.3) am.3
            | cc => condChainEval {rt} {cls} {Z} {dv} {c} {ci0.1} hd p
@@ -246,7 +246,7 @@
       \let | vs => rs.5 X (indepDown sProj ix)
            | ci' => conInvCV vs.4
            | fr => allCVnth ci'.3 nth
-      \in (fr.1, suc (suc vs.2), projEval (resolveDataGen (genApp ix (genApp rs.2 g))) (transport (\lam z => evalExpr rt cls vs.2 (X ++ (rs.1 ++ jenv)) (compileExpr cenv (sProj :: p) discr).2 = rOk (eVal z)) ci'.2 vs.3) fr.2, fr.3))
+      \in (fr.1, suc (suc vs.2), projEval (resolveDataGen (genApp ix (genApp rs.2 g))) (transport (\lam z => evalExpr {\new Machine rt cls} vs.2 (X ++ (rs.1 ++ jenv)) (compileExpr cenv (sProj :: p) discr).2 = rOk (eVal z)) ci'.2 vs.3) fr.2, fr.3))
 
 \func axiomCase {spec : LBSpec} {rt : RtSpec} {cls : JClass} {genv : GlobalDeclarations} (H : SimHyps spec rt cls genv)
                 (kn : Kername) (cenv : Array JExpr) (jenv : Env) (p : Path) {cb : ConstantBody} {arity : Nat} {w : EV}
@@ -264,7 +264,7 @@
          | ba : builtinArity {rt} s.1 = just arity => inv (H.hAgree.1 kn s.1 rn).1 *> ar
          | rf => H.hRtField s.1 arity ba
          | m => H.hAxiom kn cb impl lk cbn em
-         | ex : execStmts rt cls 4 nil (jReturn impl :: nil) = rOk (oReturn (vBuiltin s.1 nil)) =>
+         | ex : execStmts {\new Machine rt cls} 4 nil (jReturn impl :: nil) = rOk (oReturn (vBuiltin s.1 nil)) =>
            rewrite s.2 (execRet1 {rt} {cls} {2} {nil} {jField rtRef s.1} (fieldEval {rt} {cls} rf nil))
     \in pureOut (compileExpr cenv p (const kn)) idp (\lam X _ => (vBuiltin s.1 nil, 6, callConst {rt} {cls} {4} m.2 m.3 ex (X ++ jenv), rewrite e (cvAx idp rn ba (rcNil idp))))
 
@@ -306,18 +306,18 @@
                                   = just (compileFixMethod (fixCenv cenv p defs) mp (defs jf.1).defBody)) jf.2 lk0
            | ro => rok ja
            | M => ro.1 Nat.+ ms'.3
-           | exM : execStmts rt cls (suc M)
+           | exM : execStmts {\new Machine rt cls} (suc M)
                      ((kVar (compileFixMethod (fixCenv cenv p defs) mp (defs jf.1).defBody).1, ja) :: (kType cn, obj) :: E0)
                      (compileFixMethod (fixCenv cenv p defs) mp (defs jf.1).defBody).2 = rOk (oReturn ms'.2) =>
-             transport (\lam x => execStmts rt cls (suc M) ((kVar x, ja) :: (kType cn, obj) :: E0)
+             transport (\lam x => execStmts {\new Machine rt cls} (suc M) ((kVar x, ja) :: (kType cn, obj) :: E0)
                                      (compileFixMethod (fixCenv cenv p defs) mp (defs jf.1).defBody).2 = rOk (oReturn ms'.2))
                        (inv ms'.1) (upS linarith ms'.4)
-           | hi : invokeMethod rt cls (suc (suc M)) obj (fixMethodName idx) (ja :: nil) = rOk (eVal ms'.2) =>
+           | hi : invokeMethod {\new Machine rt cls} (suc (suc M)) obj (fixMethodName idx) (ja :: nil) = rOk (eVal ms'.2) =>
              methodInvoke lk exM
-           | hr : evalExpr rt cls (suc (suc M)) ((kVar wp, ja) :: E) recv = rOk (eVal obj) => upE linarith ro.2
-           | hv : evalExpr rt cls (suc (suc (suc M))) ((kVar wp, ja) :: E) (jInvoke recv (fixMethodName idx) (jVar wp :: nil))
+           | hr : evalExpr {\new Machine rt cls} (suc (suc M)) ((kVar wp, ja) :: E) recv = rOk (eVal obj) => upE linarith ro.2
+           | hv : evalExpr {\new Machine rt cls} (suc (suc (suc M))) ((kVar wp, ja) :: E) (jInvoke recv (fixMethodName idx) (jVar wp :: nil))
                   = rOk (eVal ms'.2) => invokeEval hr (lookupHead wp ja E) hi
-           | ex : execStmts rt cls (suc (suc (suc (suc (suc M))))) ((kVar wp, ja) :: E) (wrapBody recv p idx) = rOk (oReturn ms'.2) =>
+           | ex : execStmts {\new Machine rt cls} (suc (suc (suc (suc (suc M))))) ((kVar wp, ja) :: E) (wrapBody recv p idx) = rOk (oReturn ms'.2) =>
              execRet1 {rt} {cls} {suc (suc (suc M))} {(kVar wp, ja) :: E} {jInvoke recv (fixMethodName idx) (jVar wp :: nil)} hv
       \in (ms'.2, suc (suc (suc (suc (suc (suc M))))), rewrite ej (bindOk ex idp), ms'.5)
   }
@@ -403,7 +403,7 @@
                 (t : LBTerm) : \Type =>
   \Sigma ((compileFixMethod cenv' (sMethod j :: p) t).1 = renderName nParam (sMethod j :: p))
          (v : Value) (n : Nat)
-         (execStmts rt cls n ((kVar (renderName nParam (sMethod j :: p)), ja) :: (kType (fixClassName p), obj) :: E0)
+         (execStmts {\new Machine rt cls} n ((kVar (renderName nParam (sMethod j :: p)), ja) :: (kType (fixClassName p), obj) :: E0)
                     (compileFixMethod cenv' (sMethod j :: p) t).2 = rOk (oReturn v))
          (CV rt cls w v)
 
@@ -460,7 +460,7 @@
          | v => r.5 nil ()
          | ex => execRetApp r.4 v.3
     \in (idp, v.1, ex.1,
-         transport (\lam b => execStmts rt cls ex.1 JM
+         transport (\lam b => execStmts {\new Machine rt cls} ex.1 JM
                                 (appendStmts (compileExpr (jVar pv :: cenv') (sLamBody :: mp) b).1
                                              (jReturn (compileExpr (jVar pv :: cenv') (sLamBody :: mp) b).2 :: nil)) = rOk (oReturn v.1))
                    eb ex.2,
@@ -486,13 +486,13 @@
        | hx : lookupVar (r.1 ++ JM) pv = just ja =>
          lookupSkip r.2 nParam (\lam (w' : IsSuffix (sEta :: mp) mp) => \let l => sufLen w' \in linarith) JM
            *> lookupHead pv ja ((kType (fixClassName p), fixObj cenv p defs E0) :: E0)
-       | he : evalExpr rt cls (suc N) (r.1 ++ JM) (jApply (compileExpr cenv' (sEta :: mp) t).2 (jVar pv)) = rOk (eVal ap.1) =>
+       | he : evalExpr {\new Machine rt cls} (suc N) (r.1 ++ JM) (jApply (compileExpr cenv' (sEta :: mp) t).2 (jVar pv)) = rOk (eVal ap.1) =>
          applyEval {rt} {cls} {N} {r.1 ++ JM} {(compileExpr cenv' (sEta :: mp) t).2} {jVar pv} {v.1} {ja} {eVal ap.1}
            (upE linarith v.3) (castFn (genApp r.2 (methodGen cenv p defs g0 j ja)) dap v.4) (upE {rt} {cls} {r.1 ++ JM} {jVar pv} {eVal ja} {1} {N} linarith (evalVar rt cls 0 hx))
            (upAp {rt} {cls} {v.1} {ja} {eVal ap.1} {ap.2} {N} linarith ap.3)
        | ex => execRetApp {rt} {cls} {r.3} {suc N} r.4 he
-       | ex' : execStmts rt cls (suc (suc ex.1)) JM (etaForm cenv' mp t).2 = rOk (oReturn ap.1) => upS linarith ex.2
-  \in (pmap __.1 cm, ap.1, suc (suc ex.1), transport (\lam o => execStmts rt cls (suc (suc ex.1)) JM o.2 = rOk (oReturn ap.1)) (inv cm) ex', ap.4)
+       | ex' : execStmts {\new Machine rt cls} (suc (suc ex.1)) JM (etaForm cenv' mp t).2 = rOk (oReturn ap.1) => upS linarith ex.2
+  \in (pmap __.1 cm, ap.1, suc (suc ex.1), transport (\lam o => execStmts {\new Machine rt cls} (suc (suc ex.1)) JM o.2 = rOk (oReturn ap.1)) (inv cm) ex', ap.4)
 
 -- ---------------------------------------------------------------------------
 -- Constructors: the arguments' statements run in order, then every value.
@@ -510,9 +510,9 @@
                (O : Fin n -> Out) (ws : Fin n -> EV) {jenv : Env}
                (ih : \Pi (i : Fin n) (Y : Env) -> NotAnc Y p -> SimOutO rt cls (Y ++ jenv) (sCtorArg (sel i) :: p) (O i) (ws i))
   : \Sigma (ext0 : Env) (NamesAt ext0 (ChainNames p n sel)) (N : Nat)
-           (execStmts rt cls N jenv (concatStmtBlocks (mkArray {Array JStmt} {n} (\lam i => (O i).1))) = rOk (oNormal (ext0 ++ jenv)))
+           (execStmts {\new Machine rt cls} N jenv (concatStmtBlocks (mkArray {Array JStmt} {n} (\lam i => (O i).1))) = rOk (oNormal (ext0 ++ jenv)))
            (\Pi (i : Fin n) (X : Env) -> IndepOf X p ->
-              \Sigma (jv : Value) (m : Nat) (evalExpr rt cls m (X ++ (ext0 ++ jenv)) (O i).2 = rOk (eVal jv)) (CV rt cls (ws i) jv))
+              \Sigma (jv : Value) (m : Nat) (evalExpr {\new Machine rt cls} m (X ++ (ext0 ++ jenv)) (O i).2 = rOk (eVal jv)) (CV rt cls (ws i) jv))
   \elim n
   | 0 => (nil, (), 1, idp, \lam i => \case i \with {})
   | suc n =>
@@ -537,10 +537,10 @@
          execApp r0.4 rt'.4 *> pmap (\lam E => rOk (oNormal E)) eE,
          \lam i X ix => \case \elim i \with {
            | 0 => \let v => r0.5 (X ++ rt'.1) (namesAppend (indepDown (sCtorArg (sel 0)) ix) nI)
-                  \in (v.1, v.2, transport (\lam E => evalExpr rt cls v.2 E (O 0).2 = rOk (eVal v.1))
+                  \in (v.1, v.2, transport (\lam E => evalExpr {\new Machine rt cls} v.2 E (O 0).2 = rOk (eVal v.1))
                                            (++-assoc {_} {X} {rt'.1} {r0.1 ++ jenv} *> pmap (X ++) eE) v.3, v.4)
            | suc i => \let v => rt'.5 i X ix
-                      \in (v.1, v.2, transport (\lam E => evalExpr rt cls v.2 (X ++ E) (O (suc i)).2 = rOk (eVal v.1)) eE v.3, v.4)
+                      \in (v.1, v.2, transport (\lam E => evalExpr {\new Machine rt cls} v.2 (X ++ E) (O (suc i)).2 = rOk (eVal v.1)) eE v.3, v.4)
          })
 
 \func ctorIdx (s : Sel) : Nat \elim s
@@ -575,20 +575,20 @@
 -- An arm: spliced in when statement-free, a thunk applied at once otherwise.
 \func armSim {rt : RtSpec} {cls : JClass} {w : EV} (o : Out) (bp : Path) (Z : Env) (gZ : Generated Z)
              (simZ : SimOutO rt cls Z bp o w) (simT : SimOutO rt cls ((kVar (renderName nThunk bp), vBox) :: Z) bp o w)
-  : \Sigma (v : Value) (n : Nat) (evalExpr rt cls n Z (armExpr o.1 o.2 bp) = rOk (eVal v)) (CV rt cls w v) =>
+  : \Sigma (v : Value) (n : Nat) (evalExpr {\new Machine rt cls} n Z (armExpr o.1 o.2 bp) = rOk (eVal v)) (CV rt cls w v) =>
   armSimAt o.1 o.2 bp Z gZ simZ simT
 
 \func armSimAt {rt : RtSpec} {cls : JClass} {w : EV} (ss : Array JStmt) (e : JExpr) (bp : Path) (Z : Env) (gZ : Generated Z)
                (simZ : SimOutO rt cls Z bp (ss, e) w) (simT : SimOutO rt cls ((kVar (renderName nThunk bp), vBox) :: Z) bp (ss, e) w)
-  : \Sigma (v : Value) (n : Nat) (evalExpr rt cls n Z (armExpr ss e bp) = rOk (eVal v)) (CV rt cls w v) \elim ss
+  : \Sigma (v : Value) (n : Nat) (evalExpr {\new Machine rt cls} n Z (armExpr ss e bp) = rOk (eVal v)) (CV rt cls w v) \elim ss
   | nil =>
     \let | eq : Z = simZ.1 ++ Z => execNilInv simZ.4
          | v => simZ.5 nil ()
-    \in (v.1, v.2, transport (\lam E => evalExpr rt cls v.2 E e = rOk (eVal v.1)) (inv eq) v.3, v.4)
+    \in (v.1, v.2, transport (\lam E => evalExpr {\new Machine rt cls} v.2 E e = rOk (eVal v.1)) (inv eq) v.3, v.4)
   | s :: ss =>
     \let | tn => renderName nThunk bp
          | v => simT.5 nil ()
          | ex => execRetApp simT.4 v.3
          | body => appendStmts (s :: ss) (jReturn e :: nil)
-         | hap : applyVal rt cls (suc ex.1) (vClos tn body Z) vBox = rOk (eVal v.1) => bindOk ex.2 idp
+         | hap : applyVal {\new Machine rt cls} (suc ex.1) (vClos tn body Z) vBox = rOk (eVal v.1) => bindOk ex.2 idp
     \in (v.1, suc (suc ex.1), applyEval {rt} {cls} {suc ex.1} {Z} {jClosure tn body} {jBox} {vClos tn body Z} {vBox} idp (castResolved {Z} {tFn} (resolveFnGen gZ) (vClos tn body Z)) idp hap, v.4)

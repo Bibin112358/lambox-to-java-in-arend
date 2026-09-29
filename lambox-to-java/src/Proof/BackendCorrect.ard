@@ -52,8 +52,8 @@
        | r => simE H s1.2 {nil} {nil} {nil} erNil ()
        | vv => r.5 nil ()
        | ex => execRetApp r.4 vv.3
-       | cs : callStatic rt cls (suc ex.1) bodyMethodName nil = rOk (eVal vv.1) =>
-         rewrite hBody.2 (bindOk (transport (\lam B => execStmts rt cls ex.1 nil B = rOk (oReturn vv.1)) (inv hBody.3) ex.2) idp)
+       | cs : callStatic {\new Machine rt cls} (suc ex.1) bodyMethodName nil = rOk (eVal vv.1) =>
+         rewrite hBody.2 (bindOk (transport (\lam B => execStmts {\new Machine rt cls} ex.1 nil B = rOk (oReturn vv.1)) (inv hBody.3) ex.2) idp)
   \in (s1.1, s1.3, vv.1, (suc ex.1, bindOk cs idp), vv.4)
 
 \func backendCorrectFO {spec : LBSpec} {rt : RtSpec} {p : LBProgram} {v : LBTerm}

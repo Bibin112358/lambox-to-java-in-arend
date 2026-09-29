@@ -60,12 +60,12 @@
   | nil, nil, erNil => erNil
   | w :: rho, e :: cenv, erCons h er =>
     erCons (\lam X nx => \let r => h (X ++ Y) (namesAppend nx ny)
-                        \in (r.1, r.2, transport (\lam E => evalExpr rt cls r.2 E e = rOk (eVal r.1)) (++-assoc {_} {X} {Y} {jenv}) r.3, r.4))
+                        \in (r.1, r.2, transport (\lam E => evalExpr {\new Machine rt cls} r.2 E e = rOk (eVal r.1)) (++-assoc {_} {X} {Y} {jenv}) r.3, r.4))
            (erExtend er Y ny)
 
 \func EntryOK (rt : RtSpec) (cls : JClass) (w : EV) (e : JExpr) (jenv : Env) (c : Path) : \Type =>
   \Pi (X : Env) -> NotAnc X c ->
-    \Sigma (jv : Value) (m : Nat) (evalExpr rt cls m (X ++ jenv) e = rOk (eVal jv)) (CV rt cls w jv)
+    \Sigma (jv : Value) (m : Nat) (evalExpr {\new Machine rt cls} m (X ++ jenv) e = rOk (eVal jv)) (CV rt cls w jv)
 
 \func erLookup {rt : RtSpec} {cls : JClass} {rho : Array EV} {cenv : Array JExpr} {jenv : Env} {c : Path}
                (er : EnvRel rt cls rho cenv jenv c) {n : Nat} {w : EV} (h : nthArr n rho = just w)

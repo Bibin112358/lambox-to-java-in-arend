@@ -8,67 +8,399 @@
 \import Set
 \import Compiler.StringUtil
 
--- The semantics of the Java fragment (`Compiler/JavaAst.ard`): a functional
--- big-step evaluator with fuel, the target side of the correctness theorem.
--- Values and the runtime interface `RtSpec` are in `Semantics/JavaValue.ard`.
+-- The semantics of the Java fragment (`Compiler/JavaAst.ard`): the target side
+-- of the correctness theorem. Values and the runtime interface `RtSpec` are in
+-- `Semantics/JavaValue.ard`.
 --
--- A function rather than a relation, so it can be run on generated programs
--- (and compared with `javac` + `java`): the functional big-step style of
--- Owens et al. (ESOP 2016, as in CakeML), where divergence is "out of fuel for
--- every fuel". `JEval` at the end recovers a relation. Java fixes evaluation
--- order left to right (JLS 15.7), so the evaluator is deterministic; rules
--- cite the JLS.
+-- It is a functional big-step evaluator with fuel (Owens et al., ESOP 2016, as
+-- in CakeML), so it can be run on generated programs and compared with the
+-- JVM; `JEval` at the end is the relation. Java fixes the evaluation order
+-- (left to right, JLS 15.7), so the evaluator is deterministic. Every
+-- constructor of `JExpr`/`JStmt` has a clause; the rules cite the JLS.
 --
--- Every constructor of `JExpr`/`JStmt`/`JType`/`JMember` has a clause, and the
--- fragment is closed, so no unmodelled Java can appear. Outside this model
--- are the trusted printer `Compiler/JavaPrint.ard` (e.g. `litStr` is not
--- escaped) and the runtime `runtime/Rt.java` (the parameter `RtSpec`).
+-- HOW TO READ A RULE. Each clause shows its Java form in a comment and reads as
+-- straight-line code, one evaluation step per line:
 --
--- Names are resolved as in Java (JLS 6.5): variables and types live in
--- separate namespaces of one environment (`Key` in Semantics/JavaValue.ard),
--- and a type name means a local class in scope before a top-level class.
+--   -- `((Rt.Fn) f).apply(a)`
+--   | suc n, jApply f a =>
+--     evalExpr n env f >>= \lam fv =>     --   Object fv = f;
+--     cast env tFn fv  >>= \lam fn =>     --   Rt.Fn fn = (Rt.Fn) fv;
+--     evalExpr n env a >>= \lam av =>     --   Object av = a;
+--     applyVal n fn av                    --   fn.apply(av)
 --
--- The observable is the value returned by the entry method (`body`) or the
--- exception it throws. The model is a semantics of the generator's output,
--- not of a Java subset in general, so it is less permissive than Java:
--- `rStuck` covers
+-- * `m >>= \lam v => k`: run `m`; if it completes normally with `v`, go on
+--   with `k`; if it throws, the whole construct throws the same exception and
+--   nothing after it runs (JLS 15.6, 14.1). `>>=*` is the same for an argument
+--   list, `>>>` for a statement.
+-- * `value v`: complete normally with `v`. `throw ex`: throw `ex`.
+-- * `need m (\lam x => k)`: `m` must be `just x`; `nothing` is `rStuck`.
+-- * `n` is fuel. Every function returns `rOutOfFuel` at 0 and passes `n` on;
+--   it has no Java counterpart (divergence is "out of fuel for every fuel").
+-- * The implicit `{M : Machine}` is what a run is relative to: the generated
+--   class (`M.cls`, its method table) and the runtime (`M.rt`).
+--
+-- Names are resolved as in Java (JLS 6.5): variables and types live in separate
+-- namespaces of one environment (`Key` in Semantics/JavaValue.ard), and a type
+-- name means a local class in scope before a top-level class.
+--
+-- WHAT IS STUCK. The model is a semantics of the generator's output, not of a
+-- Java subset in general, so it is less permissive than Java. `rStuck` covers
 -- * code `javac` rejects. There is no type checker, so this includes what
 --   static types rule out: an unbound name, an unknown type, a cast of a
 --   non-object, `throw` of a non-`Throwable`, `d.tag`/`d.fields[i]` on a
 --   non-`Rt.Data`, `?:` on a non-boolean;
--- * valid Java the generator never emits, marked at the clauses: `jField` on
---   a receiver other than `Rt`; `jNew` of anything but a local class (no
---   arguments) or an exception (one message), e.g. `new Object()`; `jInvoke`
---   on anything but a `fix` object, or with other than one argument; a call
---   of a generated method with arguments; an `Rt` member, static or builtin
---   that the `RtSpec` instance does not cover.
+-- * valid Java the generator never emits, marked at the clauses: `jField` on a
+--   receiver other than `Rt`; `jNew` of anything but a local class (no
+--   arguments) or an exception (one message), e.g. `new Object()`; `jInvoke` on
+--   anything but a `fix` object, or with other than one argument; a call of a
+--   generated method with arguments; an `Rt` member, static or builtin that the
+--   `RtSpec` instance does not cover.
 -- This is sound for the theorem, which proves that `body()` *returns*: so it
 -- also shows that generated code never reaches these cases. A failed cast is
 -- not stuck: it throws `ClassCastException`, as in Java (e.g. `apply` on a
 -- non-function).
+--
+-- Outside this model are the trusted printer `Compiler/JavaPrint.ard` and the
+-- runtime `runtime/Rt.java` (the parameter `RtSpec`).
 
 -- ---------------------------------------------------------------------------
--- Class-level lookup: one flat method table (cf. Featherweight Java's `CT`).
+-- The vocabulary of the rules
 -- ---------------------------------------------------------------------------
 
--- Not `StringUtil.lookupBy`: a member is a method or a comment, so there is no
--- key function.
+-- What every rule may consult; fixed for a whole run.
+\class Machine \noclassifying (rt : RtSpec) (cls : JClass)
+
+\func value (v : Value) : Res ExprOut => rOk (eVal v)
+
+-- The outcome types that can report a thrown exception (JLS 11.3: an uncaught
+-- exception ends the expression, the statement, the method and the run).
+\class CanThrow (Out : \Type)
+  | thrown : Value -> Out
+
+\instance ExprThrows : CanThrow ExprOut | thrown => eExc
+\instance ArgsThrows : CanThrow ArgsOut | thrown => aExc
+\instance StmtThrows : CanThrow StmtOut | thrown => oExcS
+
+\func throw {Out : CanThrow} (ex : Value) : Res Out => rOk (thrown ex)
+
+-- Abrupt completion (JLS 15.6, 14.1): when a subexpression throws, the whole
+-- expression or statement throws the same exception.
+\func \infixl 1 >>= {Out : CanThrow} (m : Res ExprOut) (k : Value -> Res Out) : Res Out =>
+  bindRes m (\lam o => \case o \with {
+    | eExc ex => throw ex
+    | eVal v => k v
+  })
+
+-- The same for an argument list: the first throw stops it (JLS 15.12.4.2).
+\func \infixl 1 >>=* {Out : CanThrow} (m : Res ArgsOut) (k : Array Value -> Res Out) : Res Out =>
+  bindRes m (\lam o => \case o \with {
+    | aExc ex => throw ex
+    | aVals vs => k vs
+  })
+
+-- A statement followed by more: a normal completion passes its scope on, a
+-- `return` or a throw ends the sequence (JLS 14.2).
+\func \infixl 1 >>> (m : Res StmtOut) (k : Env -> Res StmtOut) : Res StmtOut =>
+  bindRes m (\lam o => \case o \with {
+    | oNormal env' => k env'
+    | oReturn v => rOk (oReturn v)
+    | oExcS ex => rOk (oExcS ex)
+  })
+
+-- `m` must be there: `nothing` (an unbound name, an unmodelled runtime member)
+-- is code `javac` rejects or the generator never emits.
+\func need {A B : \Type} (m : Maybe A) (k : A -> Res B) : Res B \elim m
+  | just a => k a
+  | nothing => rStuck
+
+-- A method body's outcome as the result of the call. `apply` and every
+-- generated method return `Object`, so falling off the end is not a
+-- well-formed body (JLS 8.4.7); cf. ClightBigstep's `outcome_result_value`.
+\func methodResult (m : Res StmtOut) : Res ExprOut =>
+  bindRes m (\lam o => \case o \with {
+    | oReturn v => value v
+    | oExcS ex => throw ex
+    | oNormal _ => rStuck
+  })
+
+-- `(T) v` (JLS 15.16, 5.5.3): `v` itself if its class is a subtype of `T`,
+-- else `ClassCastException`. The check is `castOk` (below, with the classes).
+\func cast (env : Env) (t : JType) (v : Value) : Res ExprOut => afterCast (castOk env t v) v
+  \where
+    -- The check is a parameter, so that proofs can rewrite it.
+    \func afterCast (ok : Maybe Bool) (v : Value) : Res ExprOut \elim ok
+      | just true => value v
+      | just false => throw excCCE
+      | nothing => rStuck
+
+\func excCCE : Value => vExcObj cClassCast "cast failed"
+
+\func excAIOOBE : Value => vExcObj cArrayIndexOutOfBounds "index"
+
+-- ---------------------------------------------------------------------------
+-- Expressions
+-- ---------------------------------------------------------------------------
+
+\func evalExpr {M : Machine} (n : Nat) (env : Env) (e : JExpr) : Res ExprOut \elim n, e
+  | 0, _ => rOutOfFuel
+
+  -- `"s"`, `5L` (JLS 3.10), and `Rt.BOX`.
+  | suc _, jLit l => value (litValue l)
+  | suc _, jBox => value vBox
+
+  -- `x`: a local or a parameter (JLS 6.5.6.1).
+  | suc _, jVar x => need (lookupVar env x) value
+
+  -- `Rt`, as the receiver of `Rt.f`.
+  | suc _, jStatic q => value (vStaticRef q)
+
+  -- `new Rt.Fn() { public Object apply(Object p) { body } }`: the environment
+  -- is captured by value (JLS 15.9.5; captured locals are final, 4.12.4).
+  | suc _, jClosure p body => value (vClos p body env)
+
+  -- `C.this` inside a nested anonymous class (JLS 15.8.4). `C` is a type in
+  -- scope, bound to the instance by `jLocalClass` or by a method call (see
+  -- `invokeMethod`), so this is a lookup.
+  | suc _, jQualThis c => need (lookupType env c) value
+
+  -- `Rt.f` (`Rt.PRIM_ADD_LONG`, ...). Any other receiver: never emitted.
+  | suc n, jField recv f =>
+    evalExpr n env recv >>= \lam r =>
+    \case r \with {
+      | vStaticRef _ => need (rtField {M.rt} f) value
+      | _ => rStuck
+    }
+
+  -- `(T) e`.
+  | suc n, jCast t e =>
+    evalExpr n env e >>= \lam v =>
+    cast env t v
+
+  -- `((Rt.Fn) f).apply(a)`: λ□ application; the cast is part of the node.
+  | suc n, jApply f a =>
+    evalExpr n env f >>= \lam fv =>
+    cast env tFn fv  >>= \lam fn =>
+    evalExpr n env a >>= \lam av =>
+    applyVal n fn av
+
+  -- `recv.m(args)`: a method of a `fix` local class, the only call other than
+  -- `apply` on an object.
+  | suc n, jInvoke recv m args =>
+    evalExpr n env recv >>= \lam obj =>
+    evalArgs n env args >>=* \lam vs =>
+    invokeMethod n obj m vs
+
+  -- `q(args)`: a method of the generated class, or a static of the runtime.
+  | suc n, jCallStatic q args =>
+    evalArgs n env args >>=* \lam vs =>
+    callStatic n q vs
+
+  -- `new T(args)`.
+  | suc n, jNew t args =>
+    evalArgs n env args >>=* \lam vs =>
+    newObject env t vs
+
+  -- `new Rt.Data(tag, new Object[]{ args })`: fields are values (no heap).
+  | suc n, jDataNew tag args =>
+    evalArgs n env args >>=* \lam vs =>
+    value (vData tag vs)
+
+  -- `d.tag == k` (JLS 15.21.1): is `d` the k-th constructor?
+  | suc n, jTagEq d k =>
+    evalExpr n env d >>= \lam dv =>
+    \case dv \with {
+      | vData tag _ => value (vBool (tag == k))
+      | _ => rStuck
+    }
+
+  -- `d.fields[i]`; an index out of range throws (JLS 15.10.4).
+  | suc n, jDataField d i =>
+    evalExpr n env d >>= \lam dv =>
+    \case dv \with {
+      | vData _ fs => \case nthArr i fs \with {
+        | just v => value v
+        | nothing => throw excAIOOBE
+      }
+      | _ => rStuck
+    }
+
+  -- `c ? a : b`: the condition, then exactly one arm (JLS 15.25).
+  | suc n, jCond c a b =>
+    evalExpr n env c >>= \lam cv =>
+    \case cv \with {
+      | vBool true => evalExpr n env a
+      | vBool false => evalExpr n env b
+      | _ => rStuck
+    }
+
+-- Arguments, left to right (JLS 15.12.4.2).
+\func evalArgs {M : Machine} (n : Nat) (env : Env) (es : Array JExpr) : Res ArgsOut \elim n, es
+  | 0, _ => rOutOfFuel
+  | suc _, nil => rOk (aVals nil)
+  | suc n, e :: es =>
+    evalExpr n env e  >>= \lam v =>
+    evalArgs n env es >>=* \lam vs =>
+    rOk (aVals (v :: vs))
+
+-- ---------------------------------------------------------------------------
+-- Calls and object creation
+-- ---------------------------------------------------------------------------
+
+-- `f.apply(a)`, after the cast to `Rt.Fn`:
+-- * a closure runs its body in the captured environment plus its parameter;
+-- * a runtime constant collects arguments until it has `builtinArity`, then
+--   computes (`Rt.PRIM_ADD_LONG` is an `Fn` returning an `Fn`);
+-- * `Rt.BOX` applied to anything is `Rt.BOX` (λ□'s `evalBox`).
+-- Other values do not implement `Rt.Fn`, so the cast has already thrown.
+\func applyVal {M : Machine} (n : Nat) (f a : Value) : Res ExprOut \elim n
+  | 0 => rOutOfFuel
+  | suc n => \case f \with {
+    | vClos p body cenv => methodResult (execStmts n (bindVar cenv p a) body)
+    | vBuiltin nm got => need (builtinArity {M.rt} nm) \lam arity =>
+      \case (snocArr got a).len == arity \with {
+        | false => value (vBuiltin nm (snocArr got a))
+        | true => bindRes (builtinRun {M.rt} nm (snocArr got a)) value
+      }
+    | vBox => value vBox
+    | _ => rStuck
+  }
+
+-- `obj.m(a)` on an instance of a `fix` local class; every method of one is
+-- `Object f<j>(Object)`, so any other argument count is never emitted.
+--
+-- This is where the `fix` knot is tied (the letrec rule): the body runs in the
+-- environment captured at the class declaration, plus the class name (a type)
+-- bound to the object, plus the parameter. So `C.this.f<i>` finds the same
+-- object at any depth, with no mutable cell.
+\func invokeMethod {M : Machine} (n : Nat) (obj : Value) (m : JIdent) (args : Array Value) : Res ExprOut \elim n
+  | 0 => rOutOfFuel
+  | suc n => \case obj \with {
+    | vObj c ms cenv => need (lookupClassMethod ms m) \lam method =>
+      \case args \with {
+        | a :: nil =>
+          \let | (param, body) => method
+               | this => bindType cenv c (vObj c ms cenv)
+          \in methodResult (execStmts n (bindVar this param a) body)
+        | _ => rStuck
+      }
+    | _ => rStuck
+  }
+
+-- `q(args)`: a method of the generated class, else a static of the runtime
+-- (`Rt.unbound`, `Rt.freeVar`, `Rt.noBranch`, `Long.valueOf`), which the
+-- `RtSpec` instance decides. A generated method has no parameters (a λ□
+-- constant is closed), so it runs in the empty environment and a call with
+-- arguments is never emitted.
+\func callStatic {M : Machine} (n : Nat) (q : JQIdent) (args : Array Value) : Res ExprOut \elim n
+  | 0 => rOutOfFuel
+  | suc n => \case lookupMethod M.cls q \with {
+    | just mth => \case args \with {
+      | nil => methodResult (execStmts n nil mth.mBody)
+      | _ => rStuck
+    }
+    | nothing => need (rtStaticCall {M.rt} q args) \lam r => r
+  }
+
+-- `new T(args)` for the two things the generator instantiates: a `fix` local
+-- class (the default constructor) and the `RuntimeException` of an
+-- unimplemented axiom's stub (its `(String message)` constructor). Anything
+-- else (`new Object()`, ...) is never emitted.
+--
+-- A local class is looked up rather than built: `jLocalClass` bound its name to
+-- the (stateless) instance, see `vObj` in Semantics/JavaValue.ard.
+\func newObject (env : Env) (t : JType) (args : Array Value) : Res ExprOut \elim t
+  | tClass q => newWith (lookupType env q) (resolveType env (tClass q)) args
+  \where
+    -- The lookups are parameters, so that proofs can rewrite them.
+    \func newWith (local : Maybe Value) (c : Maybe ClassId) (args : Array Value) : Res ExprOut \elim local, c, args
+      | just (vObj c ms cenv), _, nil => value (vObj c ms cenv)
+      | just _, _, _ => rStuck
+      | nothing, just c, vStr msg :: nil => \case subclassOf c cThrowable \with {
+        | true => value (vExcObj c msg)
+        | false => rStuck
+      }
+      | nothing, _, _ => rStuck
+
+-- ---------------------------------------------------------------------------
+-- Statements. A statement list is a sequence of bindings ending in a
+-- `return`: a let-chain with two abrupt outcomes.
+-- ---------------------------------------------------------------------------
+
+\func execStmt {M : Machine} (n : Nat) (env : Env) (s : JStmt) : Res StmtOut \elim n, s
+  | 0, _ => rOutOfFuel
+
+  -- A comment line; no effect.
+  | suc _, jComment _ => rOk (oNormal env)
+
+  -- `final T x = e;` (JLS 14.4). The declared type is not checked (`javac`
+  -- does, JLS 5.2).
+  | suc n, jLocal _ x e =>
+    evalExpr n env e >>= \lam v =>
+    rOk (oNormal (bindVar env x v))
+
+  -- `class C { .. }`, a local class (a `fix` block, JLS 14.3): binds the type
+  -- `C` to the instance, capturing the environment, so `new C()` and every
+  -- `C.this` mean the same object.
+  | suc _, jLocalClass c ms => rOk (oNormal (bindType env c (vObj c ms env)))
+
+  -- `throw e;` (JLS 14.18): `e` must be a `Throwable`.
+  | suc n, jThrow e =>
+    evalExpr n env e >>= \lam v =>
+    \case instanceOf v cThrowable \with {
+      | just true => throw v
+      | _ => rStuck
+    }
+
+  -- `return e;` (JLS 14.17).
+  | suc n, jReturn e =>
+    evalExpr n env e >>= \lam v =>
+    rOk (oReturn v)
+
+-- Falling off the end is `oNormal`, which every caller rejects (`methodResult`).
+\func execStmts {M : Machine} (n : Nat) (env : Env) (ss : Array JStmt) : Res StmtOut \elim n, ss
+  | 0, _ => rOutOfFuel
+  | suc _, nil => rOk (oNormal env)
+  | suc n, s :: ss =>
+    execStmt n env s >>> \lam env' =>
+    execStmts n env' ss
+
+-- ---------------------------------------------------------------------------
+-- Running a program: call the entry method (`Compiler/ToJava.ard`'s
+-- `bodyMethodName`) of `cls`, linked against the runtime `rt`.
+-- ---------------------------------------------------------------------------
+
+\data RunOut | rvValue Value | rvThrown Value
+
+\instance RunThrows : CanThrow RunOut | thrown => rvThrown
+
+\func runClass (rt : RtSpec) (cls : JClass) (entry : JIdent) (n : Nat) : Res RunOut =>
+  callStatic {\new Machine rt cls} n entry nil >>= \lam v =>
+  rOk (rvValue v)
+
+-- The relation recovered from the function: `cls` runs to `v` for some fuel.
+\func JEval (rt : RtSpec) (cls : JClass) (entry : JIdent) (v : Value) : \Type =>
+  \Sigma (n : Nat) (runClass rt cls entry n = rOk (rvValue v))
+
+-- ---------------------------------------------------------------------------
+-- The method table (cf. Featherweight Java's `CT`): the first member of that
+-- name. Not `StringUtil.lookupBy`: a member is a method or a comment.
+-- ---------------------------------------------------------------------------
+
+\func lookupMethod (cls : JClass) (nm : JIdent) : Maybe JMethod => lookupMethodIn cls.classMembers nm
+
 \func lookupMethodIn (ms : Array JMember) (nm : JIdent) : Maybe JMethod \elim ms
   | nil => nothing
-  | jMethod m :: ms => \case JMethod.mName {m} == nm \with {
+  | jMethod m :: ms => \case m.mName == nm \with {
     | true => just m
     | false => lookupMethodIn ms nm
   }
   | jMemberComment _ :: ms => lookupMethodIn ms nm
 
-\func lookupMethod (cls : JClass) (nm : JIdent) : Maybe JMethod =>
-  lookupMethodIn (JClass.classMembers {cls}) nm
-
 -- ---------------------------------------------------------------------------
 -- Classes: name resolution (JLS 6.5.5), the class table, casts (JLS 5.5.3).
 --
--- The class table below must match the JDK and `runtime/Rt.java`; like
--- `RtSpec`, it is trusted.
+-- The class table (`knownClasses`, `supertypes`) must match the JDK and
+-- `runtime/Rt.java`; like `RtSpec`, it is trusted.
 -- ---------------------------------------------------------------------------
 
 -- The top-level classes the fragment may name, under each spelling: the
@@ -97,12 +429,11 @@
 \func resolveType (env : Env) (t : JType) : Maybe ClassId \elim t
   | tClass q => resolveWith env (lookupType env q) (lookupBy (\lam e => e.1) q knownClasses)
   \where {
-    -- The lookups are parameters rather than `\case`s, so that a proof holding
-    -- their results can rewrite with them.
+    -- The lookups are parameters, so that proofs can rewrite them.
     \func resolveWith (env : Env) (local : Maybe Value) (known : Maybe (\Sigma JQIdent JIdent ClassId))
       : Maybe ClassId \elim local, known
       | just (vObj c _ _), _ => just (cLocal c)
-      | just _, _ => nothing                    -- only `jLocalClass` binds a type
+      | just _, _ => nothing                    -- only a `vObj` is bound as a type
       | nothing, just e => unlessShadowed (lookupType env e.2) e.3
       | nothing, nothing => nothing
 
@@ -131,22 +462,23 @@
     cArrayIndexOutOfBounds :: cIndexOutOfBounds :: cRuntimeException :: cException :: cThrowable :: cObject :: nil
   | cLocal x => cLocal x :: cObject :: nil
 
-\func sameClass (c d : ClassId) : Bool
-  | cLocal x, cLocal y => x == y
-  | cLocal _, _ => false
-  | _, cLocal _ => false
-  | c, d => classCode c == classCode d
-  \where
+\func subclassOf (c d : ClassId) : Bool => anyClass (supertypes c) d
+  \where {
+    \func anyClass (cs : Array ClassId) (d : ClassId) : Bool \elim cs
+      | nil => false
+      | c :: cs => sameClass c d or anyClass cs d
+
+    \func sameClass (c d : ClassId) : Bool
+      | cLocal x, cLocal y => x == y
+      | cLocal _, _ => false
+      | _, cLocal _ => false
+      | c, d => classCode c == classCode d
+
     \func classCode (c : ClassId) : Nat
       | cObject => 0 | cLong => 1 | cString => 2 | cRtFn => 3 | cRtData => 4 | cAnonFn => 5
       | cThrowable => 6 | cException => 7 | cRuntimeException => 8 | cIllegalState => 9
       | cClassCast => 10 | cIndexOutOfBounds => 11 | cArrayIndexOutOfBounds => 12 | cLocal _ => 13
-
-\func subclassOf (c d : ClassId) : Bool => anyClass (supertypes c) d
-  \where
-    \func anyClass (cs : Array ClassId) (d : ClassId) : Bool \elim cs
-      | nil => false
-      | c :: cs => sameClass c d or anyClass cs d
+  }
 
 -- The class of a value. `nothing` for what is not an object: the class `Rt`
 -- as a receiver, and a `boolean`.
@@ -165,313 +497,11 @@
 -- `v instanceof d`, for an object `v`.
 \func instanceOf (v : Value) (d : ClassId) : Maybe Bool => Maybe.map (\lam c => subclassOf c d) (runtimeClass v)
 
--- `(T) v` succeeds iff the class of `v` is a subtype of the class `T` names
--- (JLS 5.5.3; the JVM's `checkcast`), and throws `ClassCastException` if not.
--- `nothing`: `T` names no class, or `v` is no object -- `javac` rejects both.
+-- The check of a cast `(T) v`: whether the class of `v` is a subtype of the
+-- class `T` names (the JVM's `checkcast`). `nothing`: `T` names no class, or
+-- `v` is no object; `javac` rejects both.
 \func castOk (env : Env) (t : JType) (v : Value) : Maybe Bool => castTo (resolveType env t) v
   \where
     \func castTo (target : Maybe ClassId) (v : Value) : Maybe Bool \elim target
       | just d => instanceOf v d
       | nothing => nothing
-
-\func excCCE : Value => vExcObj cClassCast "cast failed"
-
--- What follows a cast, given `castOk`: go on with `k`, throw, or stuck. A
--- function rather than a `\case`, so that proofs can rewrite `castOk`.
-\func afterCast (ok : Maybe Bool) (k : Res ExprOut) : Res ExprOut \elim ok
-  | just true => k
-  | just false => rOk (eExc excCCE)
-  | nothing => rStuck
-
-\func excAIOOBE : Value => vExcObj cArrayIndexOutOfBounds "index"
-
--- ---------------------------------------------------------------------------
--- Abrupt completion (JLS 15.6, 14.1): when a subexpression throws, the whole
--- expression or statement throws the same exception and nothing after it is
--- evaluated. The clauses of the evaluator describe normal completion only and
--- leave propagation to these three functions.
--- ---------------------------------------------------------------------------
-
--- Evaluate `m`, then continue with `k` on its value. A throw is passed on,
--- wrapped by `exc` as the caller's kind of outcome (`eExc`, `aExc`, `oExcS`).
-\func thenE {B : \Type} (exc : Value -> B) (m : Res ExprOut) (k : Value -> Res B) : Res B =>
-  bindRes m (\lam o => \case o \with {
-    | eExc ev => rOk (exc ev)
-    | eVal v => k v
-  })
-
--- The same for an argument list.
-\func thenA {B : \Type} (exc : Value -> B) (m : Res ArgsOut) (k : Array Value -> Res B) : Res B =>
-  bindRes m (\lam o => \case o \with {
-    | aExc ev => rOk (exc ev)
-    | aVals vs => k vs
-  })
-
--- A method body's outcome as the result of the call. `apply` and every
--- generated method return `Object`, so falling off the end is not a
--- well-formed body (JLS 8.4.7); cf. ClightBigstep's `outcome_result_value`.
-\func methodResult (m : Res StmtOut) : Res ExprOut =>
-  bindRes m (\lam o => \case o \with {
-    | oReturn v => rOk (eVal v)
-    | oExcS ev => rOk (eExc ev)
-    | oNormal _ => rStuck
-  })
-
--- ---------------------------------------------------------------------------
--- The evaluator.
---
--- Fuel (`n`) is the first `\elim` argument and decreases at every call of the
--- mutual cycle, so termination is structural on it (and, unlike in the
--- compiler, array helpers such as `evalArgs` are fine).
--- ---------------------------------------------------------------------------
-
-\func evalExpr (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (e : JExpr)
-  : Res ExprOut \elim n, e
-  | 0, _ => rOutOfFuel
-
-  -- Literals (JLS 3.10) and the erased-value atom.
-  | suc _, jLit l => rOk (eVal (litValue l))
-  | suc _, jBox => rOk (eVal vBox)
-
-  -- A local or a parameter. Unbound is `rStuck` (`javac` would reject it).
-  | suc _, jVar x => \case lookupVar env x \with {
-    | nothing => rStuck
-    | just v => rOk (eVal v)
-  }
-
-  -- `Rt` as a receiver. The generator only emits `jStatic runtimeClassName`.
-  | suc _, jStatic q => rOk (eVal (vStaticRef q))
-
-  -- A closure; the environment is captured by value (JLS 15.9.5, 4.12.4).
-  | suc _, jClosure p body => rOk (eVal (vClos p body env))
-
-  -- `C.this` from inside a nested anonymous class (JLS 15.8.4). `C` is a type
-  -- name; `jLocalClass` bound it to the instance, and a method call re-binds
-  -- it (see `jInvoke`), so this is a lookup rather than a rule about
-  -- enclosing instances.
-  | suc _, jQualThis q => \case lookupType env q \with {
-    | just (vObj c ms cenv) => rOk (eVal (vObj c ms cenv))
-    | _ => rStuck
-  }
-
-  -- `e.f`: only ever a field of `Rt` (`Rt.PRIM_ADD_LONG`, ...); any other
-  -- receiver is never generated, hence stuck.
-  | suc n, jField recv f =>
-    thenE eExc (evalExpr rt cls n env recv) (\lam rv => \case rv \with {
-      | vStaticRef _ => \case rtField {rt} f \with {
-        | nothing => rStuck                      -- an Rt member no instance covers
-        | just v => rOk (eVal v)
-      }
-      | _ => rStuck
-    })
-
-  -- `(T)e`. JLS 5.5.
-  | suc n, jCast t e =>
-    thenE eExc (evalExpr rt cls n env e) (\lam v => afterCast (castOk env t v) (rOk (eVal v)))
-
-  -- `((Rt.Fn)(f)).apply(x)`: λ□ application; the cast is part of the node.
-  | suc n, jApply f a =>
-    thenE eExc (evalExpr rt cls n env f) (\lam fv =>
-      afterCast (castOk env tFn fv)
-        (thenE eExc (evalExpr rt cls n env a) (\lam av => applyVal rt cls n fv av)))
-
-  -- `recv.m(arg)`: a call to a method of a `fix` local class, the fragment's
-  -- only non-`apply` virtual call. Exactly one argument, by construction.
-  | suc n, jInvoke recv m args =>
-    thenE eExc (evalExpr rt cls n env recv) (\lam rv =>
-      thenA eExc (evalArgs rt cls n env args) (\lam vs => invokeMethod rt cls n rv m vs))
-
-  -- `q(args)`: a method of the generated class, or a static of the runtime.
-  | suc n, jCallStatic q args =>
-    thenA eExc (evalArgs rt cls n env args) (\lam vs => callStatic rt cls n q vs)
-
-  -- `new T(args)`.
-  | suc n, jNew t args =>
-    thenA eExc (evalArgs rt cls n env args) (\lam vs => newObject env t vs)
-
-  -- `new Rt.Data(tag, new Object[]{ .. })`: fields are values (no store).
-  | suc n, jDataNew tag args =>
-    thenA eExc (evalArgs rt cls n env args) (\lam vs => rOk (eVal (vData tag vs)))
-
-  -- `d.tag == k` (JLS 15.21.1): is this value the k-th constructor? The
-  -- receiver is always the `Rt.Data`-typed local a `case` binds, so a
-  -- non-`Data` cannot arise.
-  | suc n, jTagEq d k =>
-    thenE eExc (evalExpr rt cls n env d) (\lam dv => \case dv \with {
-      | vData tg _ => rOk (eVal (vBool (tg == k)))
-      | _ => rStuck
-    })
-
-  -- `d.fields[i]`. An out-of-range index throws (JLS 10.4); unreachable for
-  -- well-formed λ□, but modelled since a generator bug would land here.
-  | suc n, jDataField d i =>
-    thenE eExc (evalExpr rt cls n env d) (\lam dv => \case dv \with {
-      | vData _ fs => \case nthArr i fs \with {
-        | just v => rOk (eVal v)
-        | nothing => rOk (eExc excAIOOBE)
-      }
-      | _ => rStuck
-    })
-
-  -- `(c ? a : b)`: the condition, then exactly one arm (JLS 15.25).
-  | suc n, jCond c a b =>
-    thenE eExc (evalExpr rt cls n env c) (\lam cv => \case cv \with {
-      | vBool true => evalExpr rt cls n env a
-      | vBool false => evalExpr rt cls n env b
-      | _ => rStuck
-    })
-
--- Arguments, left to right (JLS 15.12.4.2); the first throw stops the list.
-\func evalArgs (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (es : Array JExpr)
-  : Res ArgsOut \elim n, es
-  | 0, _ => rOutOfFuel
-  | suc _, nil => rOk (aVals nil)
-  | suc n, e :: es =>
-    thenE aExc (evalExpr rt cls n env e) (\lam v =>
-      thenA aExc (evalArgs rt cls n env es) (\lam vs => rOk (aVals (v :: vs))))
-
--- `apply`. A closure runs its body in the captured environment extended with
--- its parameter; a runtime constant accumulates arguments until
--- `builtinArity` is reached and then computes; `Rt.BOX` applied to anything is
--- `Rt.BOX` (λ□'s `evalBox`). Other values were excluded by the cast.
-\func applyVal (rt : RtSpec) (cls : JClass) (n : Nat) (f a : Value)
-  : Res ExprOut \elim n
-  | 0 => rOutOfFuel
-  | suc n => \case f \with {
-    | vClos p body cenv => methodResult (execStmts rt cls n (bindVar cenv p a) body)
-    | vBuiltin nm got => \case builtinArity {rt} nm \with {
-      | nothing => rStuck
-      | just k => \case snocArr got a \with {
-        | got' => \case got'.len == k \with {
-          | false => rOk (eVal (vBuiltin nm got'))
-          | true => bindRes (builtinRun {rt} nm got') (\lam v => rOk (eVal v))
-        }
-      }
-    }
-    | vBox => rOk (eVal vBox)
-    | _ => rStuck
-  }
-
--- `recv.f<j>(arg)` on a `fix` local class instance.
---
--- This is where the `fix` knot is tied (the letrec rule): the body runs in the
--- environment captured at the class declaration, extended with the class name
--- (a type) bound to the receiver, then with the parameter. So `C.this.f<i>`
--- finds the same instance at any depth, with no mutable cell.
-\func invokeMethod (rt : RtSpec) (cls : JClass) (n : Nat) (recv : Value) (m : JIdent) (vs : Array Value)
-  : Res ExprOut \elim n
-  | 0 => rOutOfFuel
-  | suc n => \case recv \with {
-    | vObj c ms cenv => \case lookupClassMethod ms m \with {
-      | nothing => rStuck
-      | just pb => \case vs \with {
-        | a :: nil => methodResult (execStmts rt cls n (bindVar (bindType cenv c (vObj c ms cenv)) pb.1 a) pb.2)
-        -- Every method of a `fix` class is `Object f<j>(Object)`: unreachable.
-        | _ => rStuck
-      }
-    }
-    | _ => rStuck
-  }
-
--- `q(args)`: a method of the generated class, else a static of the runtime.
---
--- A generated method runs in the empty environment: it has no parameters and a
--- λ□ constant is closed.
-\func callStatic (rt : RtSpec) (cls : JClass) (n : Nat) (q : JQIdent) (vs : Array Value)
-  : Res ExprOut \elim n
-  | 0 => rOutOfFuel
-  | suc n => \case lookupMethod cls q \with {
-    | just mth => \case vs \with {
-      | nil => methodResult (execStmts rt cls n nil (JMethod.mBody {mth}))
-      | _ => rStuck                              -- zero-argument by construction
-    }
-    -- Not ours: `Rt.unbound`, `Rt.freeVar`, `Rt.noBranch`, `Long.valueOf`; the
-    -- `RtSpec` instance decides.
-    | nothing => \case rtStaticCall {rt} q vs \with {
-      | nothing => rStuck
-      | just r => r
-    }
-  }
-
--- `new T(args)` for the two things the generator instantiates: a `fix` local
--- class, and the `RuntimeException` of an unimplemented axiom's stub. Other
--- constructors (`new Object()`, `new Rt.Data(..)` -- `jDataNew` is its own
--- node) are never emitted and not modelled.
---
--- A local class is looked up rather than built: `jLocalClass` bound its name to
--- the (stateless) instance, see `vObj` in Semantics/JavaValue.ard.
-\func newObject (env : Env) (t : JType) (vs : Array Value) : Res ExprOut \elim t
-  | tClass q => newWith (lookupType env q) (resolveType env (tClass q)) vs
-  \where
-    \func newWith (local : Maybe Value) (c : Maybe ClassId) (vs : Array Value) : Res ExprOut \elim local, c, vs
-      -- A local class has only the default constructor.
-      | just (vObj c ms cenv), _, nil => rOk (eVal (vObj c ms cenv))
-      | just _, _, _ => rStuck
-      -- An exception class: its `(String message)` constructor.
-      | nothing, just c, vStr msg :: nil => \case subclassOf c cThrowable \with {
-        | true => rOk (eVal (vExcObj c msg))
-        | false => rStuck
-      }
-      | nothing, _, _ => rStuck
-
--- ---------------------------------------------------------------------------
--- Statements. A statement list is a sequence of bindings ending in a
--- `jReturn`, i.e. a let-chain with two abrupt outcomes.
--- ---------------------------------------------------------------------------
-
-\func execStmt (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (s : JStmt)
-  : Res StmtOut \elim n, s
-  | 0, _ => rOutOfFuel
-
-  -- No effect at all; it exists so the printer can put a comment on a line.
-  | suc _, jComment _ => rOk (oNormal env)
-
-  -- `final T x = e;`: a binding. The declared type is not checked (`javac`
-  -- does, JLS 5.2).
-  | suc n, jLocal _ x e =>
-    thenE oExcS (evalExpr rt cls n env e) (\lam v => rOk (oNormal (bindVar env x v)))
-
-  -- A local class `C` (a `fix` block): binds the type `C` to the instance,
-  -- capturing the environment, so `new C()` and every `C.this` mean the same
-  -- object.
-  | suc _, jLocalClass c ms => rOk (oNormal (bindType env c (vObj c ms env)))
-
-  -- `throw e;` (JLS 14.18): `e` must be a `Throwable`.
-  | suc n, jThrow e =>
-    thenE oExcS (evalExpr rt cls n env e) (\lam v => \case instanceOf v cThrowable \with {
-      | just true => rOk (oExcS v)
-      | _ => rStuck
-    })
-
-  | suc n, jReturn e =>
-    thenE oExcS (evalExpr rt cls n env e) (\lam v => rOk (oReturn v))
-
--- An abrupt outcome stops the sequence and propagates; a normal one carries its
--- (possibly extended) environment to the next statement. Falling off the end is
--- `oNormal`, which every caller rejects -- see `methodResult`.
-\func execStmts (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (ss : Array JStmt)
-  : Res StmtOut \elim n, ss
-  | 0, _ => rOutOfFuel
-  | suc _, nil => rOk (oNormal env)
-  | suc n, s :: ss =>
-    bindRes (execStmt rt cls n env s) (\lam o => \case o \with {
-      | oReturn v => rOk (oReturn v)
-      | oExcS ev => rOk (oExcS ev)
-      | oNormal env' => execStmts rt cls n env' ss
-    })
-
--- ---------------------------------------------------------------------------
--- Running a program
---
--- The result of calling the entry method (`Compiler/ToJava.ard`'s
--- `bodyMethodName`, passed as a parameter).
--- ---------------------------------------------------------------------------
-
-\data RunOut | rvValue Value | rvThrown Value
-
-\func runClass (rt : RtSpec) (cls : JClass) (entry : JIdent) (n : Nat) : Res RunOut =>
-  thenE rvThrown (callStatic rt cls n entry nil) (\lam v => rOk (rvValue v))
-
--- The relation recovered from the function: `cls` runs to `v` for some fuel.
-\func JEval (rt : RtSpec) (cls : JClass) (entry : JIdent) (v : Value) : \Type =>
-  \Sigma (n : Nat) (runClass rt cls entry n = rOk (rvValue v))
