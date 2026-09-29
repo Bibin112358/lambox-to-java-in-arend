@@ -21,7 +21,7 @@
 \import Semantics.RtLong
 \import Proof.OracleShipped (kernameEq-sound, noJust)
 \import Proof.MangleInj (mangleKername-inj, kn_bytes)
-\import Proof.JavaExec (eqSelf, eqOther)
+\import Proof.JavaExec (eqSelf, eqOther, natEqB, headIs)
 \import Proof.CompileValue (constBody)
 \import Paths
 \import Paths.Meta
@@ -89,15 +89,6 @@
 -- First bytes: a mangled name starts with `c`, `body` with `b`, and
 -- `Long.valueOf` with `L`.
 -- ---------------------------------------------------------------------------
-
-\func natEqB (a b : Nat) : Bool \elim a, b
-  | 0, 0 => true
-  | suc a, suc b => natEqB a b
-  | _, _ => false
-
-\func headIs (n : Nat) (bs : Array Byte) : Bool \elim bs
-  | nil => false
-  | b :: _ => natEqB b n
 
 \func mangleNoC (kn : Kername) (s : String) (hs : headIs 99 s.bytes = false) : mangleKername kn /= s =>
   \lam p => \case inv (pmap (headIs 99) (kn_bytes kn)) *> pmap (\lam (t : String) => headIs 99 t.bytes) p *> hs \with {}

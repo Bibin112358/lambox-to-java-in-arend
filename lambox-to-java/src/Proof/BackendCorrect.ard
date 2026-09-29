@@ -49,7 +49,7 @@
            (CV rt (compileClass progClassName p) w jv) =>
   \let | cls => compileClass progClassName p
        | s1 => evalToEvalEnv {spec} {p.1} H.hFO gc ct d
-       | r => simE H s1.2 {nil} {nil} {nil} erNil
+       | r => simE H s1.2 {nil} {nil} {nil} erNil ()
        | vv => r.5 nil ()
        | ex => execRetApp r.4 vv.3
        | cs : callStatic rt cls (suc ex.1) bodyMethodName nil = rOk (eVal vv.1) =>

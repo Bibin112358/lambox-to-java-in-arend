@@ -42,6 +42,10 @@
 --   * `evAx kn args`: the runtime constant `Rt.<nm>` realizing `kn`, holding
 --     the related arguments OLDEST first (`RevCV`; λ□ collects newest first).
 --
+-- A closure's captured environment holds only generated names (`Generated`,
+-- Proof/PathFresh.ard), so its body's casts to `Rt.Fn`/`Rt.Data` resolve to
+-- the runtime's classes.
+--
 -- `EnvRel rho cenv E c`: index `i` compiles to `cenv i`, which evaluates to a
 -- value related to `rho i` -- in `E` and in `E` extended by anything bound
 -- later at paths that are not strict ancestors of the use site `c` (`NotAnc`,
@@ -97,11 +101,13 @@
   | evClos na b rho => cvClos {cenv : Array JExpr} {E : Env} {p : Path}
       (jv = vClos (renderName nParam p) (lamBody cenv p b) E)
       (EnvRel rt cls rho cenv E p)
+      (Generated E)
   | evFix defs idx rho => cvFix {cenv : Array JExpr} {E0 E : Env} {p : Path} {recv : JExpr}
       (jv = vClos (wrapName p idx) (wrapBody recv p idx) E)
       (EnvRel rt cls rho cenv E0 p)
       (\Pi (a : Value) -> \Sigma (n : Nat)
-                                 (evalExpr rt cls n ((wrapName p idx, a) :: E) recv = rOk (eVal (fixObj cenv p defs E0))))
+                                 (evalExpr rt cls n ((kVar (wrapName p idx), a) :: E) recv = rOk (eVal (fixObj cenv p defs E0))))
+      (Generated E0)
   | evAx kn args => cvAx {nm : JIdent} {got : Array Value} {k : Nat}
       (jv = vBuiltin nm got) (axiomRtName kn = just nm) (builtinArity {rt} nm = just k)
       (RevCV rt cls args got)

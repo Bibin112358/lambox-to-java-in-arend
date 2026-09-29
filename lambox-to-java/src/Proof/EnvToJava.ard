@@ -97,7 +97,7 @@
 
 \func simE {spec : LBSpec} {rt : RtSpec} {cls : JClass} {genv : GlobalDeclarations} (H : SimHyps spec rt cls genv)
            {rho : Array EV} {t : LBTerm} {w : EV} (d : EvalE spec genv rho t w)
-           {cenv : Array JExpr} {jenv : Env} {p : Path} (er : EnvRel rt cls rho cenv jenv p)
+           {cenv : Array JExpr} {jenv : Env} {p : Path} (er : EnvRel rt cls rho cenv jenv p) (g : Generated jenv)
   : SimOut rt cls cenv jenv p t w \elim t, d
   | box, eeBox e => pureOut (compileExpr cenv p box) idp (\lam X _ => (vBox, 1, idp, rewrite e (cvBox idp)))
   | bvar n, eeVar h =>
@@ -105,43 +105,44 @@
     \in pureOut (compileExpr cenv p (bvar n)) idp (\lam X ix => \let s => r.3 X (indepNotAnc ix) \in (s.1, s.2, transport (\lam e => evalExpr rt cls s.2 (X ++ jenv) e = rOk (eVal s.1)) (inv (nthVarAt r.2 p)) s.3, s.4))
   | lambda na b, eeLam e =>
     pureOut (compileExpr cenv p (lambda na b)) idp (\lam X ix => (vClos (renderName nParam p) (lamBody cenv p b) (X ++ jenv), 1, idp,
-                               rewrite e (cvClos idp (erExtend er X (indepNotAnc ix)))))
+                               rewrite e (cvClos idp (erExtend er X (indepNotAnc ix)) (genApp ix g))))
   | fix defs idx, eeFix e =>
     \let | cn => fixClassName p
          | inst => renderName nFixInst p
          | obj => fixObj cenv p defs jenv
-         | ext0 : Env => (inst, obj) :: (cn, obj) :: nil
+         | ext0 : Env => (kVar inst, obj) :: (kType cn, obj) :: nil
          | wi : Within ext0 p => ((nFixInst, p, idp, sufSelf p), ((nFixClass, p, idp, sufSelf p), ()))
          | ex : execStmts rt cls 5 jenv (compileExpr cenv p (fix defs idx)).1 = rOk (oNormal (ext0 ++ jenv)) =>
            fixExec rt cls cn inst (fixMethods cenv p defs) jenv
     \in simOf (compileExpr cenv p (fix defs idx)) ext0 wi (ext0 ++ jenv) idp 5 ex (\lam X ix =>
       (vClos (wrapName p idx) (wrapBody (jVar inst) p idx) (X ++ (ext0 ++ jenv)), 1, idp,
        rewrite e (cvFix idp er (\lam a =>
-         (1, evalVar rt cls 0 {(wrapName p idx, a) :: (X ++ (ext0 ++ jenv))} {inst} {obj} (lookupCons a (X ++ (ext0 ++ jenv)) (renderNeKind (\lam (q : nParam = nFixInst) => contradiction) (sWrap idx :: p) p)
+         (1, evalVar rt cls 0 {(kVar (wrapName p idx), a) :: (X ++ (ext0 ++ jenv))} {inst} {obj} (lookupCons a (X ++ (ext0 ++ jenv)) (renderNeKind (\lam (q : nParam = nFixInst) => contradiction) (sWrap idx :: p) p)
                                *> lookupSkip ix nFixInst (\lam ind => indepNotSelf ind idp) (ext0 ++ jenv)
-                               *> lookupHead inst obj ((cn, obj) :: jenv)))))))
+                               *> lookupHead inst obj ((kType cn, obj) :: jenv)))) g)))
   | prim (rocqUint63, i), eePrim e =>
     pureOut (compileExpr cenv p (prim (rocqUint63, i))) idp (\lam X _ => (vLong (longOfUint63 i), 4, valueOfEval H (X ++ jenv) (longOfUint63 i), rewrite e (cvP63 idp)))
   | prim (javaLong, i), eePrim e =>
     pureOut (compileExpr cenv p (prim (javaLong, i))) idp (\lam X _ => (vLong (longOfBits i), 4, valueOfEval H (X ++ jenv) (longOfBits i), rewrite e (cvP64 idp)))
   | const kn, eeDelta {cb} {body} lk cbb dbody =>
-    \let | r => simE H dbody {nil} {nil} {nil} erNil
+    \let | r => simE H dbody {nil} {nil} {nil} erNil ()
          | v => r.5 nil ()
          | ex => execRetApp r.4 v.3
          | m => H.hConst kn cb body lk cbb
     \in pureOut (compileExpr cenv p (const kn)) idp (\lam X _ => (v.1, suc (suc ex.1), callConst m.2 m.3 ex.2 (X ++ jenv), v.4))
   | const kn, eeAxiom {cb} {arity} lk cbn ar e => axiomCase H kn cenv jenv p lk cbn ar e (axiomImpl kn) idp
   | letIn na b0 b1, eeLet {w0} d0 d1 =>
-    \let | r0 => simE H d0 (erChild sLetVal er)
+    \let | r0 => simE H d0 (erChild sLetVal er) g
          | v0 => r0.5 nil ()
          | lv => renderName nLet p
-         | jB : Env => (lv, v0.1) :: (r0.1 ++ jenv)
-         | ny : NotAnc ((lv, v0.1) :: r0.1) p => ((nLet, p, idp, notStrictSelf p), withinNotAnc r0.2)
+         | jB : Env => (kVar lv, v0.1) :: (r0.1 ++ jenv)
+         | ny : NotAnc ((kVar lv, v0.1) :: r0.1) p => ((nLet, p, idp, notStrictSelf p), withinNotAnc r0.2)
          | erB : EnvRel rt cls (w0 :: rho) (jVar lv :: cenv) jB (sLetBody :: p) =>
            erCons (\lam X nx => (v0.1, 1, evalVar rt cls 0 (lookupSkip nx nLet (\lam f => f (parentStrict sLetBody p)) jB
                                                              *> lookupHead lv v0.1 (r0.1 ++ jenv)), v0.4))
-                  (erChild sLetBody (erExtend er ((lv, v0.1) :: r0.1) ny))
-         | r1 => simE H d1 erB
+                  (erChild sLetBody (erExtend er ((kVar lv, v0.1) :: r0.1) ny))
+         | gB : Generated jB => ((nLet, p, idp, ()), genApp r0.2 g)
+         | r1 => simE H d1 erB gB
          | exL => execLocal1 {rt} {cls} {v0.2} {r0.1 ++ jenv} tObject lv v0.3
          | exB : execStmts rt cls (suc (suc v0.2) Nat.+ r1.3) (r0.1 ++ jenv)
                    (jLocal tObject lv (compileExpr cenv (sLetVal :: p) b0).2 :: (compileExpr (jVar lv :: cenv) (sLetBody :: p) b1).1)
@@ -152,16 +153,16 @@
                  = rOk (oNormal (r1.1 ++ jB)) =>
              execApp {rt} {cls} {r0.3} {suc (suc v0.2) Nat.+ r1.3} {jenv} {r0.1 ++ jenv} {(compileExpr cenv (sLetVal :: p) b0).1}
                      {jLocal tObject lv (compileExpr cenv (sLetVal :: p) b0).2 :: (compileExpr (jVar lv :: cenv) (sLetBody :: p) b1).1} r0.4 exB
-         | wiL : Within ((lv, v0.1) :: r0.1) p => ((nLet, p, idp, sufSelf p), withinUp r0.2)
-    \in simOf (compileExpr cenv p (letIn na b0 b1)) (r1.1 ++ ((lv, v0.1) :: r0.1))
+         | wiL : Within ((kVar lv, v0.1) :: r0.1) p => ((nLet, p, idp, sufSelf p), withinUp r0.2)
+    \in simOf (compileExpr cenv p (letIn na b0 b1)) (r1.1 ++ ((kVar lv, v0.1) :: r0.1))
               (namesAppend (withinUp r1.2) wiL)
-              (r1.1 ++ jB) (++-assoc {_} {r1.1} {(lv, v0.1) :: r0.1} {jenv})
+              (r1.1 ++ jB) (++-assoc {_} {r1.1} {(kVar lv, v0.1) :: r0.1} {jenv})
               (r0.3 Nat.+ (suc (suc v0.2) Nat.+ r1.3))
               exAll
               (\lam X ix => r1.5 X (indepDown sLetBody ix))
   | app f a, eeApp {wf} {wa} df da dap =>
-    \let | rf => simE H df (erChild sFun er)
-         | ra => simE H da (erChild sArg (erExtend er rf.1 (withinNotAnc rf.2)))
+    \let | rf => simE H df (erChild sFun er) g
+         | ra => simE H da (erChild sArg (erExtend er rf.1 (withinNotAnc rf.2))) (genApp rf.2 g)
     \in simOf (compileExpr cenv p (app f a)) (ra.1 ++ rf.1) (namesAppend (withinUp ra.2) (withinUp rf.2))
               (ra.1 ++ (rf.1 ++ jenv)) (++-assoc {_} {ra.1} {rf.1} {jenv})
               (rf.3 Nat.+ ra.3) (execApp rf.4 ra.4)
@@ -173,11 +174,11 @@
                      | hf : evalExpr rt cls N (X ++ (ra.1 ++ (rf.1 ++ jenv))) (compileExpr cenv (sFun :: p) f).2 = rOk (eVal vf.1) =>
                        upE linarith (transport (\lam E => evalExpr rt cls vf.2 E (compileExpr cenv (sFun :: p) f).2 = rOk (eVal vf.1))
                                                (++-assoc {_} {X} {ra.1} {rf.1 ++ jenv}) vf.3)
-                \in (ap.1, suc N, applyEval hf (castFn dap vf.4) (upE linarith va.3) (upAp linarith ap.3), ap.4))
+                \in (ap.1, suc N, applyEval hf (castFn (genApp ix (genApp ra.2 (genApp rf.2 g))) dap vf.4) (upE linarith va.3) (upAp linarith ap.3), ap.4))
   | construct ind c args, eeCon {arity} {ws} car len dall ew =>
     \let | ch => conChain {rt} {cls} {p} args.len (\lam i => i) (\lam i j e => e)
                   (\lam i => compileExpr cenv (sCtorArg i :: p) (args i)) (\lam i => ws i) {jenv}
-                  (\lam i Y ny => simE H (dall i) (erChild (sCtorArg i) (erExtend er Y ny)))
+                  (\lam i Y ny => simE H (dall i) (erChild (sCtorArg i) (erExtend er Y ny)) (genApp ny g))
          | wi : Within ch.1 p =>
            namesMono {\lam q => \Sigma (i : Fin args.len) (IsSuffix (sCtorArg i :: p) q)} {\lam q => IsSuffix p q}
                      (\lam q h => sufTrans (sufChild (sCtorArg h.1) (sufSelf p)) h.2) ch.2
@@ -188,7 +189,7 @@
                      vs (\lam i => ((ch.5 i X ix).2, (ch.5 i X ix).3))
       \in (vData c vs, suc ea.1, bindOk ea.2 idp, rewrite ew (cvCon idp (allCVof ws vs (\lam i => (ch.5 i X ix).4)))))
   | case ind npars discr brs, eeCase {c} {nargs} {args} {br} dd ci nb alen dlen dbody =>
-    \let | rs => simE H dd (erChild sScrut er)
+    \let | rs => simE H dd (erChild sScrut er) g
          | vs0 => rs.5 nil ()
          | ci0 => conInvCV vs0.4
          | vd => vData c ci0.1
@@ -196,35 +197,36 @@
          | os => compileExpr cenv (sScrut :: p) discr
          | hs1 : evalExpr rt cls vs0.2 (rs.1 ++ jenv) os.2 = rOk (eVal vd) =>
            transport (\lam z => evalExpr rt cls vs0.2 (rs.1 ++ jenv) os.2 = rOk (eVal z)) ci0.2 vs0.3
-         | hs0 : evalExpr rt cls (suc vs0.2) (rs.1 ++ jenv) (jCast tData os.2) = rOk (eVal vd) => bindOk hs1 idp
+         | hs0 : evalExpr rt cls (suc vs0.2) (rs.1 ++ jenv) (jCast tData os.2) = rOk (eVal vd) => castDataEval (resolveDataGen (genApp rs.2 g)) hs1
          | exL => execLocal1 {rt} {cls} {suc vs0.2} {rs.1 ++ jenv} tData dv {jCast tData os.2} {vd} hs0
          | exAll : execStmts rt cls (rs.3 Nat.+ suc (suc (suc vs0.2))) jenv (compileExpr cenv p (case ind npars discr brs)).1
-                   = rOk (oNormal ((dv, vd) :: (rs.1 ++ jenv))) =>
+                   = rOk (oNormal ((kVar dv, vd) :: (rs.1 ++ jenv))) =>
            execApp {rt} {cls} {rs.3} {suc (suc (suc vs0.2))} {jenv} {rs.1 ++ jenv} {os.1} {jLocal tData dv (jCast tData os.2) :: nil} rs.4 exL
-         | wi : Within ((dv, vd) :: rs.1) p => ((nScrut, p, idp, sufSelf p), withinUp rs.2)
-         | ny1 : NotAnc ((dv, vd) :: rs.1) p => ((nScrut, p, idp, notStrictSelf p), withinNotAnc rs.2)
+         | wi : Within ((kVar dv, vd) :: rs.1) p => ((nScrut, p, idp, sufSelf p), withinUp rs.2)
+         | ny1 : NotAnc ((kVar dv, vd) :: rs.1) p => ((nScrut, p, idp, notStrictSelf p), withinNotAnc rs.2)
          | jf => nthArrFin nb
-    \in simOf (compileExpr cenv p (case ind npars discr brs)) ((dv, vd) :: rs.1) wi ((dv, vd) :: (rs.1 ++ jenv)) idp _ exAll (\lam X ix =>
-      \let | Z => X ++ ((dv, vd) :: (rs.1 ++ jenv))
+    \in simOf (compileExpr cenv p (case ind npars discr brs)) ((kVar dv, vd) :: rs.1) wi ((kVar dv, vd) :: (rs.1 ++ jenv)) idp _ exAll (\lam X ix =>
+      \let | Z => X ++ ((kVar dv, vd) :: (rs.1 ++ jenv))
            | hd : lookupVar Z dv = just vd =>
-             lookupSkip ix nScrut (\lam ind => indepNotSelf ind idp) ((dv, vd) :: (rs.1 ++ jenv)) *> lookupHead dv vd (rs.1 ++ jenv)
+             lookupSkip ix nScrut (\lam ind => indepNotSelf ind idp) ((kVar dv, vd) :: (rs.1 ++ jenv)) *> lookupHead dv vd (rs.1 ++ jenv)
            | bp => sBranch jf.1 :: p
            | tn => renderName nThunk bp
-           | erZ0 : EnvRel rt cls rho cenv Z p => erExtend (erExtend er ((dv, vd) :: rs.1) ny1) X (indepNotAnc ix)
-           | nyT : NotAnc ((tn, vBox) :: nil) p => ((nThunk, bp, idp, childNotStrict (sufSelf bp)), ())
-           | erT0 : EnvRel rt cls rho cenv ((tn, vBox) :: Z) p => erExtend erZ0 ((tn, vBox) :: nil) nyT
+           | erZ0 : EnvRel rt cls rho cenv Z p => erExtend (erExtend er ((kVar dv, vd) :: rs.1) ny1) X (indepNotAnc ix)
+           | gZ : Generated Z => genApp {X} {(kVar dv, vd) :: (rs.1 ++ jenv)} ix ((nScrut, p, idp, ()), genApp rs.2 g)
+           | nyT : NotAnc ((kVar tn, vBox) :: nil) p => ((nThunk, bp, idp, childNotStrict (sufSelf bp)), ())
+           | erT0 : EnvRel rt cls rho cenv ((kVar tn, vBox) :: Z) p => erExtend erZ0 ((kVar tn, vBox) :: nil) nyT
            | hf => dropRel npars ci0.3
            | lkZ : \Pi (X' : Env) -> NotAnc X' bp -> lookupVar (X' ++ Z) dv = just vd =>
              \lam X' nx' => lookupSkip nx' nScrut (\lam f => f (parentStrict (sBranch jf.1) p)) Z *> hd
-           | lkT : \Pi (X' : Env) -> NotAnc X' bp -> lookupVar (X' ++ ((tn, vBox) :: Z)) dv = just vd =>
-             \lam X' nx' => lookupSkip nx' nScrut (\lam f => f (parentStrict (sBranch jf.1) p)) ((tn, vBox) :: Z)
+           | lkT : \Pi (X' : Env) -> NotAnc X' bp -> lookupVar (X' ++ ((kVar tn, vBox) :: Z)) dv = just vd =>
+             \lam X' nx' => lookupSkip nx' nScrut (\lam f => f (parentStrict (sBranch jf.1) p)) ((kVar tn, vBox) :: Z)
                               *> lookupCons vBox Z (renderNeKind (\lam (q : nThunk = nScrut) => contradiction) bp p) *> hd
            | erZ => transport (\lam r => EnvRel rt cls r (pushFields (jVar dv) npars br.1 cenv) Z bp) (inv (revArrApp (dropArr npars args) rho))
                       (fieldsRel lkZ br.1 (dropArr npars args) dlen npars hf (erChild (sBranch jf.1) erZ0))
-           | erT => transport (\lam r => EnvRel rt cls r (pushFields (jVar dv) npars br.1 cenv) ((tn, vBox) :: Z) bp)
+           | erT => transport (\lam r => EnvRel rt cls r (pushFields (jVar dv) npars br.1 cenv) ((kVar tn, vBox) :: Z) bp)
                       (inv (revArrApp (dropArr npars args) rho))
                       (fieldsRel lkT br.1 (dropArr npars args) dlen npars hf (erChild (sBranch jf.1) erT0))
-           | am => armSim {rt} {cls} (compileExpr (pushFields (jVar dv) npars br.1 cenv) bp br.2) bp Z (simE H dbody erZ) (simE H dbody erT)
+           | am => armSim {rt} {cls} (compileExpr (pushFields (jVar dv) npars br.1 cenv) bp br.2) bp Z gZ (simE H dbody erZ gZ) (simE H dbody erT ((nThunk, bp, idp, ()), gZ))
            | am' : evalExpr rt cls am.2 Z (armExpr (compileExpr (pushFields (jVar dv) npars (brs jf.1).1 cenv) bp (brs jf.1).2).1
                                                    (compileExpr (pushFields (jVar dv) npars (brs jf.1).1 cenv) bp (brs jf.1).2).2 bp)
                    = rOk (eVal am.1) =>
@@ -239,12 +241,12 @@
                      0 jf.1 (inv jf.2) (am.2, am')
       \in (am.1, cc.1, cc.2, am.4))
   | proj pr discr, eeProj {nargs} {args} dd ci alen nth =>
-    \let rs => simE H dd (erChild sProj er)
+    \let rs => simE H dd (erChild sProj er) g
     \in simOf (compileExpr cenv p (proj pr discr)) rs.1 (withinUp rs.2) (rs.1 ++ jenv) idp rs.3 rs.4 (\lam X ix =>
       \let | vs => rs.5 X (indepDown sProj ix)
            | ci' => conInvCV vs.4
            | fr => allCVnth ci'.3 nth
-      \in (fr.1, suc (suc vs.2), projEval (transport (\lam z => evalExpr rt cls vs.2 (X ++ (rs.1 ++ jenv)) (compileExpr cenv (sProj :: p) discr).2 = rOk (eVal z)) ci'.2 vs.3) fr.2, fr.3))
+      \in (fr.1, suc (suc vs.2), projEval (resolveDataGen (genApp ix (genApp rs.2 g))) (transport (\lam z => evalExpr rt cls vs.2 (X ++ (rs.1 ++ jenv)) (compileExpr cenv (sProj :: p) discr).2 = rOk (eVal z)) ci'.2 vs.3) fr.2, fr.3))
 
 \func axiomCase {spec : LBSpec} {rt : RtSpec} {cls : JClass} {genv : GlobalDeclarations} (H : SimHyps spec rt cls genv)
                 (kn : Kername) (cenv : Array JExpr) (jenv : Env) (p : Path) {cb : ConstantBody} {arity : Nat} {w : EV}
@@ -273,28 +275,28 @@
     | cvBox ej => (vBox, 1, rewrite ej idp, rewrite e (cvBox idp))
   }
   | evClos na b rho, apBeta db => \case \elim cf \with {
-    | cvClos {cenv} {E} {p} ej er =>
+    | cvClos {cenv} {E} {p} ej er gE =>
       \let | pv => renderName nParam p
-           | jB : Env => (pv, ja) :: E
-           | ny : NotAnc ((pv, ja) :: nil) p => ((nParam, p, idp, notStrictSelf p), ())
+           | jB : Env => (kVar pv, ja) :: E
+           | ny : NotAnc ((kVar pv, ja) :: nil) p => ((nParam, p, idp, notStrictSelf p), ())
            | erB : EnvRel rt cls (wa :: rho) (jVar pv :: cenv) jB (sLamBody :: p) =>
              erCons (\lam X nx => (ja, 1, evalVar rt cls 0 (lookupSkip nx nParam (\lam f => f (parentStrict sLamBody p)) jB
                                                           *> lookupHead pv ja E), ca))
-                    (erChild sLamBody (erExtend er ((pv, ja) :: nil) ny))
-           | r => simE H db erB
+                    (erChild sLamBody (erExtend er ((kVar pv, ja) :: nil) ny))
+           | r => simE H db erB ((nParam, p, idp, ()), gE)
            | v => r.5 nil ()
            | ex => execRetApp r.4 v.3
       \in (v.1, suc ex.1, rewrite ej (bindOk ex.2 idp), v.4)
   }
   | evFix defs idx rho, apFix {d} {wfn} nd dbody dap => \case \elim cf \with {
-    | cvFix {cenv} {E0} {E} {p} {recv} ej er rok =>
+    | cvFix {cenv} {E0} {E} {p} {recv} ej er rok g0 =>
       \let | jf => nthArrFin nd
            | j : Nat => jf.1
            | mp => sMethod j :: p
            | cn => fixClassName p
            | obj => fixObj cenv p defs E0
            | wp => wrapName p idx
-           | ms => methodSim H {defs} {rho} {cenv} {E0} {p} j er ca d.defBody dbody dap
+           | ms => methodSim H {defs} {rho} {cenv} {E0} {p} j er g0 ca d.defBody dbody dap
            | ms' : MethodOut rt cls (fixCenv cenv p defs) p j E0 obj ja w (defs jf.1).defBody =>
              transport (MethodOut rt cls (fixCenv cenv p defs) p j E0 obj ja w) (pmap (\lam (dd : FixDef LBTerm) => dd.defBody) (inv jf.3)) ms
            | lk0 => lookupFixMethod (\lam (i : Fin defs.len) => compileFixMethod (fixCenv cenv p defs) (sMethod i :: p) (defs i).defBody) jf.1
@@ -305,18 +307,18 @@
            | ro => rok ja
            | M => ro.1 Nat.+ ms'.3
            | exM : execStmts rt cls (suc M)
-                     (((compileFixMethod (fixCenv cenv p defs) mp (defs jf.1).defBody).1, ja) :: (cn, obj) :: E0)
+                     ((kVar (compileFixMethod (fixCenv cenv p defs) mp (defs jf.1).defBody).1, ja) :: (kType cn, obj) :: E0)
                      (compileFixMethod (fixCenv cenv p defs) mp (defs jf.1).defBody).2 = rOk (oReturn ms'.2) =>
-             transport (\lam x => execStmts rt cls (suc M) ((x, ja) :: (cn, obj) :: E0)
+             transport (\lam x => execStmts rt cls (suc M) ((kVar x, ja) :: (kType cn, obj) :: E0)
                                      (compileFixMethod (fixCenv cenv p defs) mp (defs jf.1).defBody).2 = rOk (oReturn ms'.2))
                        (inv ms'.1) (upS linarith ms'.4)
            | hi : invokeMethod rt cls (suc (suc M)) obj (fixMethodName idx) (ja :: nil) = rOk (eVal ms'.2) =>
              methodInvoke lk exM
-           | hr : evalExpr rt cls (suc (suc M)) ((wp, ja) :: E) recv = rOk (eVal obj) => upE linarith ro.2
-           | hv : evalExpr rt cls (suc (suc (suc M))) ((wp, ja) :: E) (jInvoke recv (fixMethodName idx) (jVar wp :: nil))
+           | hr : evalExpr rt cls (suc (suc M)) ((kVar wp, ja) :: E) recv = rOk (eVal obj) => upE linarith ro.2
+           | hv : evalExpr rt cls (suc (suc (suc M))) ((kVar wp, ja) :: E) (jInvoke recv (fixMethodName idx) (jVar wp :: nil))
                   = rOk (eVal ms'.2) => invokeEval hr (lookupHead wp ja E) hi
-           | ex : execStmts rt cls (suc (suc (suc (suc (suc M))))) ((wp, ja) :: E) (wrapBody recv p idx) = rOk (oReturn ms'.2) =>
-             execRet1 {rt} {cls} {suc (suc (suc M))} {(wp, ja) :: E} {jInvoke recv (fixMethodName idx) (jVar wp :: nil)} hv
+           | ex : execStmts rt cls (suc (suc (suc (suc (suc M))))) ((kVar wp, ja) :: E) (wrapBody recv p idx) = rOk (oReturn ms'.2) =>
+             execRet1 {rt} {cls} {suc (suc (suc M))} {(kVar wp, ja) :: E} {jInvoke recv (fixMethodName idx) (jVar wp :: nil)} hv
       \in (ms'.2, suc (suc (suc (suc (suc (suc M))))), rewrite ej (bindOk ex idp), ms'.5)
   }
   | evAx kn args, apAxRun kn' xs {r} sat run ew => \case \elim cf \with {
@@ -359,19 +361,23 @@
 -- ---------------------------------------------------------------------------
 
 -- The environment a method of the class runs in: its parameter, then the
--- class name bound to the instance, then the declaration's environment.
+-- class name (a type) bound to the instance, then the declaration's environment.
 \func methodEnv (cenv : Array JExpr) (p : Path) (defs : Array (FixDef LBTerm)) (E0 : Env) (j : Nat) (a : Value) : Env =>
-  (renderName nParam (sMethod j :: p), a) :: (fixClassName p, fixObj cenv p defs E0) :: E0
+  (kVar (renderName nParam (sMethod j :: p)), a) :: (kType (fixClassName p), fixObj cenv p defs E0) :: E0
+
+\func methodGen (cenv : Array JExpr) (p : Path) (defs : Array (FixDef LBTerm)) {E0 : Env} (g0 : Generated E0) (j : Nat) (a : Value)
+  : Generated (methodEnv cenv p defs E0 j a) =>
+  ((nParam, sMethod j :: p, idp, ()), ((nFixClass, p, idp, ()), g0))
 
 \func fixRel {rt : RtSpec} {cls : JClass} {defs : Array (FixDef LBTerm)} {rho : Array EV} {cenv : Array JExpr} {E0 : Env} {p : Path}
-             (er : EnvRel rt cls rho cenv E0 p) (j : Nat) (a : Value) (n : Nat)
+             (er : EnvRel rt cls rho cenv E0 p) (g0 : Generated E0) (j : Nat) (a : Value) (n : Nat)
   : EnvRel rt cls (fixEnvAux defs rho n ++ rho) (fixRefs (jQualThis (fixClassName p)) p n ++ cenv)
            (methodEnv cenv p defs E0 j a) (sMethod j :: p) \elim n
   | 0 =>
-    \let ny : NotAnc ((renderName nParam (sMethod j :: p), a) :: (fixClassName p, fixObj cenv p defs E0) :: nil) p =>
+    \let ny : NotAnc ((kVar (renderName nParam (sMethod j :: p)), a) :: (kType (fixClassName p), fixObj cenv p defs E0) :: nil) p =>
            ((nParam, sMethod j :: p, idp, childNotStrict (sufSelf (sMethod j :: p))),
             ((nFixClass, p, idp, notStrictSelf p), ()))
-    \in erChild (sMethod j) (erExtend er ((renderName nParam (sMethod j :: p), a) :: (fixClassName p, fixObj cenv p defs E0) :: nil) ny)
+    \in erChild (sMethod j) (erExtend er ((kVar (renderName nParam (sMethod j :: p)), a) :: (kType (fixClassName p), fixObj cenv p defs E0) :: nil) ny)
   | suc n =>
     \let | cn => fixClassName p
          | obj => fixObj cenv p defs E0
@@ -379,25 +385,25 @@
     \in erCons (\lam X nx =>
          (vClos (wrapName p n) (wrapBody (jQualThis cn) p n) (X ++ JM), 1, idp,
           cvFix idp er (\lam b =>
-            (1, qualThisEval {rt} {cls} {(wrapName p n, b) :: (X ++ JM)} {cn} (lookupCons b (X ++ JM) (renderNeKind (\lam (q : nParam = nFixClass) => contradiction) (sWrap n :: p) p)
-                              *> lookupSkip nx nFixClass (\lam f => f (parentStrict (sMethod j) p)) JM
-                              *> lookupCons a ((cn, obj) :: E0) (renderNeKind (\lam (q : nParam = nFixClass) => contradiction) (sMethod j :: p) p)
-                              *> lookupHead cn obj E0)))))
-         (fixRel er j a n)
+            (1, qualThisEval {rt} {cls} {(kVar (wrapName p n), b) :: (X ++ JM)} {cn} (lookupTypeCons {kVar (wrapName p n)} {cn} b (X ++ JM) (renderNeKind (\lam (q : nParam = nFixClass) => contradiction) (sWrap n :: p) p)
+                              *> lookupTypeSkip nx nFixClass (\lam f => f (parentStrict (sMethod j) p)) JM
+                              *> lookupTypeCons {kVar (renderName nParam (sMethod j :: p))} {cn} a ((kType cn, obj) :: E0) (renderNeKind (\lam (q : nParam = nFixClass) => contradiction) (sMethod j :: p) p)
+                              *> lookupTypeHead cn obj E0))) g0))
+         (fixRel er g0 j a n)
 
 \func fixEnvRel {rt : RtSpec} {cls : JClass} {defs : Array (FixDef LBTerm)} {rho : Array EV} {cenv : Array JExpr} {E0 : Env} {p : Path}
-                (er : EnvRel rt cls rho cenv E0 p) (j : Nat) (a : Value)
+                (er : EnvRel rt cls rho cenv E0 p) (g0 : Generated E0) (j : Nat) (a : Value)
   : EnvRel rt cls (fixEnv defs rho ++ rho) (fixCenv cenv p defs) (methodEnv cenv p defs E0 j a) (sMethod j :: p) =>
   transport (\lam ce => EnvRel rt cls (fixEnv defs rho ++ rho) ce (methodEnv cenv p defs E0 j a) (sMethod j :: p))
             (inv (pushFixRefs (jQualThis (fixClassName p)) p defs.len cenv))
-            (fixRel er j a defs.len)
+            (fixRel er g0 j a defs.len)
 
 -- What running a method gives.
 \func MethodOut (rt : RtSpec) (cls : JClass) (cenv' : Array JExpr) (p : Path) (j : Nat) (E0 : Env) (obj : Value) (ja : Value) (w : EV)
                 (t : LBTerm) : \Type =>
   \Sigma ((compileFixMethod cenv' (sMethod j :: p) t).1 = renderName nParam (sMethod j :: p))
          (v : Value) (n : Nat)
-         (execStmts rt cls n ((renderName nParam (sMethod j :: p), ja) :: (fixClassName p, obj) :: E0)
+         (execStmts rt cls n ((kVar (renderName nParam (sMethod j :: p)), ja) :: (kType (fixClassName p), obj) :: E0)
                     (compileFixMethod cenv' (sMethod j :: p) t).2 = rOk (oReturn v))
          (CV rt cls w v)
 
@@ -409,21 +415,21 @@
 
 \func methodSim {spec : LBSpec} {rt : RtSpec} {cls : JClass} {genv : GlobalDeclarations} (H : SimHyps spec rt cls genv)
                 {defs : Array (FixDef LBTerm)} {rho : Array EV} {cenv : Array JExpr} {E0 : Env} {p : Path}
-                (j : Nat) (er : EnvRel rt cls rho cenv E0 p) {wfn wa w : EV} {ja : Value} (ca : CV rt cls wa ja)
+                (j : Nat) (er : EnvRel rt cls rho cenv E0 p) (g0 : Generated E0) {wfn wa w : EV} {ja : Value} (ca : CV rt cls wa ja)
                 (t : LBTerm) (dbody : EvalE spec genv (fixEnv defs rho ++ rho) t wfn) (dap : ApplyE spec genv wfn wa w)
   : MethodOut rt cls (fixCenv cenv p defs) p j E0 (fixObj cenv p defs E0) ja w t \elim t, dbody
-  | lambda na inner, eeLam e => lamMethod H j er ca na inner e dap
-  | box, dbody => etaMethod H j er ca box dbody dap idp
-  | bvar n, dbody => etaMethod H j er ca (bvar n) dbody dap idp
-  | fvar v, dbody => etaMethod H j er ca (fvar v) dbody dap idp
-  | letIn na b0 b1, dbody => etaMethod H j er ca (letIn na b0 b1) dbody dap idp
-  | app f x, dbody => etaMethod H j er ca (app f x) dbody dap idp
-  | const kn, dbody => etaMethod H j er ca (const kn) dbody dap idp
-  | construct ind c xs, dbody => etaMethod H j er ca (construct ind c xs) dbody dap idp
-  | case ind np dc brs, dbody => etaMethod H j er ca (case ind np dc brs) dbody dap idp
-  | proj pr dc, dbody => etaMethod H j er ca (proj pr dc) dbody dap idp
-  | fix ds ix, dbody => etaMethod H j er ca (fix ds ix) dbody dap idp
-  | prim pv, dbody => etaMethod H j er ca (prim pv) dbody dap idp
+  | lambda na inner, eeLam e => lamMethod H j er g0 ca na inner e dap
+  | box, dbody => etaMethod H j er g0 ca box dbody dap idp
+  | bvar n, dbody => etaMethod H j er g0 ca (bvar n) dbody dap idp
+  | fvar v, dbody => etaMethod H j er g0 ca (fvar v) dbody dap idp
+  | letIn na b0 b1, dbody => etaMethod H j er g0 ca (letIn na b0 b1) dbody dap idp
+  | app f x, dbody => etaMethod H j er g0 ca (app f x) dbody dap idp
+  | const kn, dbody => etaMethod H j er g0 ca (const kn) dbody dap idp
+  | construct ind c xs, dbody => etaMethod H j er g0 ca (construct ind c xs) dbody dap idp
+  | case ind np dc brs, dbody => etaMethod H j er g0 ca (case ind np dc brs) dbody dap idp
+  | proj pr dc, dbody => etaMethod H j er g0 ca (proj pr dc) dbody dap idp
+  | fix ds ix, dbody => etaMethod H j er g0 ca (fix ds ix) dbody dap idp
+  | prim pv, dbody => etaMethod H j er g0 ca (prim pv) dbody dap idp
 
 \func evClosBody (w : EV) : LBTerm \elim w
   | evClos _ b _ => b
@@ -435,7 +441,7 @@
 
 \func lamMethod {spec : LBSpec} {rt : RtSpec} {cls : JClass} {genv : GlobalDeclarations} (H : SimHyps spec rt cls genv)
                 {defs : Array (FixDef LBTerm)} {rho : Array EV} {cenv : Array JExpr} {E0 : Env} {p : Path}
-                (j : Nat) (er : EnvRel rt cls rho cenv E0 p) {wfn wa w : EV} {ja : Value} (ca : CV rt cls wa ja)
+                (j : Nat) (er : EnvRel rt cls rho cenv E0 p) (g0 : Generated E0) {wfn wa w : EV} {ja : Value} (ca : CV rt cls wa ja)
                 (na : BinderName) (inner : LBTerm) (e : wfn = evClos na inner (fixEnv defs rho ++ rho)) (dap : ApplyE spec genv wfn wa w)
   : MethodOut rt cls (fixCenv cenv p defs) p j E0 (fixObj cenv p defs E0) ja w (lambda na inner) \elim wfn, dap
   | evClos na' b' rho', apBeta db' =>
@@ -445,12 +451,12 @@
          | JM => methodEnv cenv p defs E0 j ja
          | eb : b' = inner => pmap evClosBody e
          | erM : EnvRel rt cls rho' cenv' JM mp =>
-           transport (\lam r => EnvRel rt cls r cenv' JM mp) (inv (pmap evClosEnv e)) (fixEnvRel er j ja)
+           transport (\lam r => EnvRel rt cls r cenv' JM mp) (inv (pmap evClosEnv e)) (fixEnvRel er g0 j ja)
          | erB : EnvRel rt cls (wa :: rho') (jVar pv :: cenv') JM (sLamBody :: mp) =>
            erCons (\lam X nx => (ja, 1, evalVar rt cls 0 (lookupSkip nx nParam (\lam f => f (parentStrict sLamBody mp)) JM
-                                                         *> lookupHead pv ja ((fixClassName p, fixObj cenv p defs E0) :: E0)), ca))
+                                                         *> lookupHead pv ja ((kType (fixClassName p), fixObj cenv p defs E0) :: E0)), ca))
                   (erChild sLamBody erM)
-         | r => simE H db' erB
+         | r => simE H db' erB (methodGen cenv p defs g0 j ja)
          | v => r.5 nil ()
          | ex => execRetApp r.4 v.3
     \in (idp, v.1, ex.1,
@@ -465,7 +471,7 @@
 
 \func etaMethod {spec : LBSpec} {rt : RtSpec} {cls : JClass} {genv : GlobalDeclarations} (H : SimHyps spec rt cls genv)
                 {defs : Array (FixDef LBTerm)} {rho : Array EV} {cenv : Array JExpr} {E0 : Env} {p : Path}
-                (j : Nat) (er : EnvRel rt cls rho cenv E0 p) {wfn wa w : EV} {ja : Value} (ca : CV rt cls wa ja)
+                (j : Nat) (er : EnvRel rt cls rho cenv E0 p) (g0 : Generated E0) {wfn wa w : EV} {ja : Value} (ca : CV rt cls wa ja)
                 (t : LBTerm) (dbody : EvalE spec genv (fixEnv defs rho ++ rho) t wfn) (dap : ApplyE spec genv wfn wa w)
                 (cm : compileFixMethod (fixCenv cenv p defs) (sMethod j :: p) t = etaForm (fixCenv cenv p defs) (sMethod j :: p) t)
   : MethodOut rt cls (fixCenv cenv p defs) p j E0 (fixObj cenv p defs E0) ja w t =>
@@ -473,16 +479,16 @@
        | pv => renderName nParam mp
        | cenv' => fixCenv cenv p defs
        | JM => methodEnv cenv p defs E0 j ja
-       | r => simE H dbody (erChild sEta (fixEnvRel er j ja))
+       | r => simE H dbody (erChild sEta (fixEnvRel er g0 j ja)) (methodGen cenv p defs g0 j ja)
        | v => r.5 nil ()
        | ap => simA H dap v.4 ca
        | N => suc (v.2 Nat.+ ap.2)
        | hx : lookupVar (r.1 ++ JM) pv = just ja =>
          lookupSkip r.2 nParam (\lam (w' : IsSuffix (sEta :: mp) mp) => \let l => sufLen w' \in linarith) JM
-           *> lookupHead pv ja ((fixClassName p, fixObj cenv p defs E0) :: E0)
+           *> lookupHead pv ja ((kType (fixClassName p), fixObj cenv p defs E0) :: E0)
        | he : evalExpr rt cls (suc N) (r.1 ++ JM) (jApply (compileExpr cenv' (sEta :: mp) t).2 (jVar pv)) = rOk (eVal ap.1) =>
          applyEval {rt} {cls} {N} {r.1 ++ JM} {(compileExpr cenv' (sEta :: mp) t).2} {jVar pv} {v.1} {ja} {eVal ap.1}
-           (upE linarith v.3) (castFn dap v.4) (upE {rt} {cls} {r.1 ++ JM} {jVar pv} {eVal ja} {1} {N} linarith (evalVar rt cls 0 hx))
+           (upE linarith v.3) (castFn (genApp r.2 (methodGen cenv p defs g0 j ja)) dap v.4) (upE {rt} {cls} {r.1 ++ JM} {jVar pv} {eVal ja} {1} {N} linarith (evalVar rt cls 0 hx))
            (upAp {rt} {cls} {v.1} {ja} {eVal ap.1} {ap.2} {N} linarith ap.3)
        | ex => execRetApp {rt} {cls} {r.3} {suc N} r.4 he
        | ex' : execStmts rt cls (suc (suc ex.1)) JM (etaForm cenv' mp t).2 = rOk (oReturn ap.1) => upS linarith ex.2
@@ -567,13 +573,13 @@
   | _ :: _, nil => \case len
 
 -- An arm: spliced in when statement-free, a thunk applied at once otherwise.
-\func armSim {rt : RtSpec} {cls : JClass} {w : EV} (o : Out) (bp : Path) (Z : Env)
-             (simZ : SimOutO rt cls Z bp o w) (simT : SimOutO rt cls ((renderName nThunk bp, vBox) :: Z) bp o w)
+\func armSim {rt : RtSpec} {cls : JClass} {w : EV} (o : Out) (bp : Path) (Z : Env) (gZ : Generated Z)
+             (simZ : SimOutO rt cls Z bp o w) (simT : SimOutO rt cls ((kVar (renderName nThunk bp), vBox) :: Z) bp o w)
   : \Sigma (v : Value) (n : Nat) (evalExpr rt cls n Z (armExpr o.1 o.2 bp) = rOk (eVal v)) (CV rt cls w v) =>
-  armSimAt o.1 o.2 bp Z simZ simT
+  armSimAt o.1 o.2 bp Z gZ simZ simT
 
-\func armSimAt {rt : RtSpec} {cls : JClass} {w : EV} (ss : Array JStmt) (e : JExpr) (bp : Path) (Z : Env)
-               (simZ : SimOutO rt cls Z bp (ss, e) w) (simT : SimOutO rt cls ((renderName nThunk bp, vBox) :: Z) bp (ss, e) w)
+\func armSimAt {rt : RtSpec} {cls : JClass} {w : EV} (ss : Array JStmt) (e : JExpr) (bp : Path) (Z : Env) (gZ : Generated Z)
+               (simZ : SimOutO rt cls Z bp (ss, e) w) (simT : SimOutO rt cls ((kVar (renderName nThunk bp), vBox) :: Z) bp (ss, e) w)
   : \Sigma (v : Value) (n : Nat) (evalExpr rt cls n Z (armExpr ss e bp) = rOk (eVal v)) (CV rt cls w v) \elim ss
   | nil =>
     \let | eq : Z = simZ.1 ++ Z => execNilInv simZ.4
@@ -585,4 +591,4 @@
          | ex => execRetApp simT.4 v.3
          | body => appendStmts (s :: ss) (jReturn e :: nil)
          | hap : applyVal rt cls (suc ex.1) (vClos tn body Z) vBox = rOk (eVal v.1) => bindOk ex.2 idp
-    \in (v.1, suc (suc ex.1), applyEval {rt} {cls} {suc ex.1} {Z} {jClosure tn body} {jBox} {vClos tn body Z} {vBox} idp idp idp hap, v.4)
+    \in (v.1, suc (suc ex.1), applyEval {rt} {cls} {suc ex.1} {Z} {jClosure tn body} {jBox} {vClos tn body Z} {vBox} idp (castResolved {Z} {tFn} (resolveFnGen gZ) (vClos tn body Z)) idp hap, v.4)

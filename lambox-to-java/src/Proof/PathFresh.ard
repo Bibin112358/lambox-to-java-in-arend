@@ -1,8 +1,11 @@
 \import Algebra.Meta
 \import Arith.Nat
 \import Data.Array (++)
+\import Data.Bool
 \import Data.Maybe
-\import Proof.JavaExec (lookupCons)
+\import Data.String (String)
+\import Proof.JavaExec (lookupCons, lookupTypeCons, headIs, resolveKnown)
+\import Semantics.JavaEval (resolveType)
 \import Semantics.JavaValue
 \import Proof.NodePathUnique (renderName-inj)
 \import Compiler.JavaAst
@@ -39,10 +42,15 @@
 --     statements bind is at such paths, and independence is inherited by
 --     every descendant of `p`.
 --
--- `NamesAt ext P`: every name bound in the environment segment `ext` is
--- `renderName k q` with `P q`. The one fact the simulation uses is
--- `lookupSkip`: looking up a name whose path `P` excludes walks past the
--- whole segment.
+-- `NamesAt ext P`: every name bound in the environment segment `ext`, in
+-- either namespace, is `renderName k q` with `P q`. The one fact the
+-- simulation uses is `lookupSkip`: looking up a name whose path `P` excludes
+-- walks past the whole segment.
+--
+-- `Generated env` (no condition on the path): every name in scope is a
+-- generated one. As those start with a lowercase kind letter or `C`, no local
+-- class is named `Rt`, so `Rt.Fn` and `Rt.Data` resolve to the runtime's
+-- classes (`resolveFnGen`, `resolveDataGen`).
 -- =============================================================================
 
 \data IsSuffix (q p : Path)
@@ -57,7 +65,7 @@
 
 \func NamesAt (ext : Env) (P : Path -> \Set0) : \Set0 \elim ext
   | nil => \Sigma
-  | e :: ext => \Sigma (\Sigma (k : NameKind) (q : Path) (e.1 = renderName k q) (P q)) (NamesAt ext P)
+  | e :: ext => \Sigma (\Sigma (k : NameKind) (q : Path) (keyName e.1 = renderName k q) (P q)) (NamesAt ext P)
 
 -- The three instances the simulation uses.
 -- What a node's statements bind: names in its own subtree (at `p` or below).
@@ -199,6 +207,51 @@
            | (ek, eq) => renderName-inj (inv e1 *> ee)
       \in np (transport P eq Pq')
     ) *> lookupSkip h.2 k np env
+
+\func lookupTypeSkip {P : Path -> \Set0} {X : Env} (h : NamesAt X P) (k : NameKind) {q : Path} (np : P q -> Empty) (env : Env)
+  : lookupType (X ++ env) (renderName k q) = lookupType env (renderName k q) \elim X
+  | nil => idp
+  | a :: X =>
+    lookupTypeCons a.2 (X ++ env) (\lam ee =>
+      \let | (k', q', e1, Pq') => h.1
+           | (ek, eq) => renderName-inj (inv e1 *> ee)
+      \in np (transport P eq Pq')
+    ) *> lookupTypeSkip h.2 k np env
+
+-- ---------------------------------------------------------------------------
+-- Generated names never shadow the runtime's classes.
+-- ---------------------------------------------------------------------------
+
+\func Generated (env : Env) : \Set0 => NamesAt env (\lam _ => \Sigma)
+
+\func genOf {P : Path -> \Set0} {X : Env} (h : NamesAt X P) : Generated X =>
+  namesMono {P} {\lam _ => \Sigma} (\lam _ _ => ()) h
+
+\func genApp {X Y : Env} {P : Path -> \Set0} (hx : NamesAt X P) (hy : Generated Y) : Generated (X ++ Y) =>
+  namesAppend (genOf hx) hy
+
+-- A generated name starts with its kind's letter, never with `R` (byte 82).
+\func renderNotR (k : NameKind) (q : Path) : headIs 82 (renderName k q).bytes = false \elim k
+  | nParam => idp
+  | nLet => idp
+  | nScrut => idp
+  | nThunk => idp
+  | nFixInst => idp
+  | nFixClass => idp
+
+\func genNoType {env : Env} (g : Generated env) (s : String) (hs : headIs 82 s.bytes = true) : lookupType env s = nothing \elim env
+  | nil => idp
+  | a :: env =>
+    lookupTypeCons a.2 env (\lam ee =>
+      \let (k, q, e1, _) => g.1
+      \in \case inv (renderNotR k q) *> pmap (\lam (t : String) => headIs 82 t.bytes) (inv e1 *> ee) *> hs \with {}
+    ) *> genNoType g.2 s hs
+
+\func resolveFnGen {env : Env} (g : Generated env) : resolveType env tFn = just cRtFn =>
+  resolveKnown {env} {"Rt.Fn"} {("Rt.Fn", "Rt", cRtFn)} idp (genNoType g "Rt.Fn" idp) (genNoType g "Rt" idp)
+
+\func resolveDataGen {env : Env} (g : Generated env) : resolveType env tData = just cRtData =>
+  resolveKnown {env} {"Rt.Data"} {("Rt.Data", "Rt", cRtData)} idp (genNoType g "Rt.Data" idp) (genNoType g "Rt" idp)
 
 -- Names of distinct kinds are distinct.
 \func renderNeKind {k k' : NameKind} (ne : k /= k') (p p' : Path) : renderName k p /= renderName k' p' =>

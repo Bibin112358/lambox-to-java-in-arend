@@ -172,11 +172,11 @@
 -- `Long.valueOf` is the identity on a boxed long.
 \func rtStaticCallLong (q : JQIdent) (vs : Array Value) : Maybe (Res ExprOut) =>
   \case q == "Rt.unbound" \with {
-    | true => just (rOk (eExc (vExcObj "java.lang.IllegalStateException" "unbound de Bruijn index")))
+    | true => just (rOk (eExc (vExcObj cIllegalState "unbound de Bruijn index")))
     | false => \case q == "Rt.freeVar" \with {
-      | true => just (rOk (eExc (vExcObj "java.lang.IllegalStateException" "free variable")))
+      | true => just (rOk (eExc (vExcObj cIllegalState "free variable")))
       | false => \case q == "Rt.noBranch" \with {
-        | true => just (rOk (eExc (vExcObj "java.lang.IllegalStateException" "matches no branch")))
+        | true => just (rOk (eExc (vExcObj cIllegalState "matches no branch")))
         | false => \case q == "Long.valueOf" \with {
           | true => \case vs \with {
             | vLong i :: nil => just (rOk (eVal (vLong i)))

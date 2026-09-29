@@ -23,10 +23,6 @@
 -- hides the index and is only used outside the cycle.
 
 \func printType (t : JType) : String \elim t
-  | tObject => "Object"
-  -- The only types whose spelling is not in the node; see `runtimeClassName`.
-  | tFn => runtimeQual ++ "Fn"
-  | tData => runtimeQual ++ "Data"
   | tClass q => q
 
 \func printLit (l : JLit) : String

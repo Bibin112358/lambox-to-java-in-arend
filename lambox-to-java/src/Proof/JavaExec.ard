@@ -3,7 +3,7 @@
 \import Data.Array (++, mkArray)
 \import Data.Bool
 \import Data.Maybe
-\import Data.String (String, stringExt, StringDecSet)
+\import Data.String (String, Byte, stringExt, StringDecSet)
 \import Proof.FuelMono
 \import Proof.OracleArith (natToStr-inj)
 \import Semantics.JavaEval
@@ -77,14 +77,30 @@
 -- Variables.
 -- ---------------------------------------------------------------------------
 
--- The head binding is found; a head binding of a different name is skipped.
-\func lookupHead (x : JIdent) (v : Value) (env : Env) : lookupVar ((x, v) :: env) x = just v =>
-  pmap (Maybe.map (\lam (e : \Sigma JIdent Value) => e.2))
-       (lookupStepHit (x, v) idp (lookupBy (\lam (e : \Sigma JIdent Value) => e.1) x env))
+-- The head binding is found; a head binding of a different name, in either
+-- namespace, is skipped.
+\func lookupKeyHead (k : Key) (v : Value) (env : Env) : lookupKey k ((k, v) :: env) = just v =>
+  pmap (Maybe.map (\lam (e : \Sigma Key Value) => e.2))
+       (lookupStepHit (k, v) idp (lookupBy (\lam (e : \Sigma Key Value) => e.1) k env))
 
-\func lookupCons {x y : JIdent} (v : Value) (env : Env) (ne : x /= y) : lookupVar ((x, v) :: env) y = lookupVar env y =>
-  pmap (Maybe.map (\lam (e : \Sigma JIdent Value) => e.2))
-       (lookupStepMiss (x, v) ne (lookupBy (\lam (e : \Sigma JIdent Value) => e.1) y env))
+\func lookupKeyCons {k k' : Key} (v : Value) (env : Env) (ne : keyName k /= keyName k')
+  : lookupKey k' ((k, v) :: env) = lookupKey k' env =>
+  pmap (Maybe.map (\lam (e : \Sigma Key Value) => e.2))
+       (lookupStepMiss (k, v) (\lam (e : k = k') => ne (pmap keyName e)) (lookupBy (\lam (e : \Sigma Key Value) => e.1) k' env))
+
+\func lookupHead (x : JIdent) (v : Value) (env : Env) : lookupVar ((kVar x, v) :: env) x = just v =>
+  lookupKeyHead (kVar x) v env
+
+\func lookupCons {k : Key} {y : JIdent} (v : Value) (env : Env) (ne : keyName k /= y)
+  : lookupVar ((k, v) :: env) y = lookupVar env y =>
+  lookupKeyCons {k} {kVar y} v env ne
+
+\func lookupTypeHead (c : JIdent) (v : Value) (env : Env) : lookupType ((kType c, v) :: env) c = just v =>
+  lookupKeyHead (kType c) v env
+
+\func lookupTypeCons {k : Key} {c : JIdent} (v : Value) (env : Env) (ne : keyName k /= c)
+  : lookupType ((k, v) :: env) c = lookupType env c =>
+  lookupKeyCons {k} {kType c} v env ne
 
 \func evalVar (rt : RtSpec) (cls : JClass) (n : Nat) {env : Env} {x : JIdent} {v : Value} (h : lookupVar env x = just v)
   : evalExpr rt cls (suc n) env (jVar x) = rOk (eVal v) =>
@@ -166,14 +182,30 @@
 
 \func execLocal1 {rt : RtSpec} {cls : JClass} {n : Nat} {env : Env} (t : JType) (x : JIdent) {e : JExpr} {v : Value}
                  (h : evalExpr rt cls n env e = rOk (eVal v))
-  : execStmts rt cls (suc (suc n)) env (jLocal t x e :: nil) = rOk (oNormal ((x, v) :: env)) =>
+  : execStmts rt cls (suc (suc n)) env (jLocal t x e :: nil) = rOk (oNormal ((kVar x, v) :: env)) =>
   rewrite h idp
 
 -- The two statements of a `fix` node: declare the local class, instantiate it.
 \func fixExec (rt : RtSpec) (cls : JClass) (cn inst : JIdent) (ms : Array (\Sigma JIdent JIdent (Array JStmt))) (jenv : Env)
   : execStmts rt cls 5 jenv (jLocalClass cn ms :: jLocal (tClass cn) inst (jNew (tClass cn) nil) :: nil)
-  = rOk (oNormal ((inst, vObj cn ms jenv) :: (cn, vObj cn ms jenv) :: jenv)) =>
-  rewrite (lookupHead cn (vObj cn ms jenv) jenv) idp
+  = rOk (oNormal ((kVar inst, vObj cn ms jenv) :: (kType cn, vObj cn ms jenv) :: jenv)) =>
+  rewrite (lookupTypeHead cn (vObj cn ms jenv) jenv) idp
+
+-- ---------------------------------------------------------------------------
+-- Casts: a known class resolves to itself unless a local class shadows it.
+-- ---------------------------------------------------------------------------
+
+\func resolveKnown {env : Env} {q : JQIdent} {e : \Sigma JQIdent JIdent ClassId}
+                   (hk : lookupBy (\lam (e : \Sigma JQIdent JIdent ClassId) => e.1) q knownClasses = just e)
+                   (h1 : lookupType env q = nothing) (h2 : lookupType env e.2 = nothing)
+  : resolveType env (tClass q) = just e.3 =>
+  pmap (\lam l => resolveType.resolveWith env l (lookupBy (\lam (e : \Sigma JQIdent JIdent ClassId) => e.1) q knownClasses)) h1
+  *> pmap (resolveType.resolveWith env nothing) hk
+  *> pmap (\lam s => resolveType.unlessShadowed s e.3) h2
+
+\func castResolved {env : Env} {t : JType} {d : ClassId} (rs : resolveType env t = just d) (v : Value)
+  : castOk env t v = instanceOf v d =>
+  pmap (\lam r => castOk.castTo r v) rs
 
 -- ---------------------------------------------------------------------------
 -- Expressions.
@@ -214,7 +246,7 @@
     \in (n', rewrite (hd, tagNe e) (upE (linarith : n <= suc (suc n)) h))
 
 \func applyEval {rt : RtSpec} {cls : JClass} {N : Nat} {env : Env} {f a : JExpr} {jf ja : Value} {r : ExprOut}
-                (hf : evalExpr rt cls N env f = rOk (eVal jf)) (ok : castOk tFn jf = true)
+                (hf : evalExpr rt cls N env f = rOk (eVal jf)) (ok : castOk env tFn jf = just true)
                 (ha : evalExpr rt cls N env a = rOk (eVal ja)) (hap : applyVal rt cls N jf ja = rOk r)
   : evalExpr rt cls (suc N) env (jApply f a) = rOk r =>
   bindOk hf (rewrite ok (bindOk ha hap))
@@ -229,11 +261,16 @@
   : evalExpr rt cls 2 env (jField rtRef nm) = rOk (eVal v) =>
   rewrite rf idp
 
+\func castDataEval {rt : RtSpec} {cls : JClass} {m : Nat} {env : Env} {e : JExpr} {c : Nat} {fs : Array Value}
+                   (rs : resolveType env tData = just cRtData) (h : evalExpr rt cls m env e = rOk (eVal (vData c fs)))
+  : evalExpr rt cls (suc m) env (jCast tData e) = rOk (eVal (vData c fs)) =>
+  bindOk h (rewrite (castResolved rs (vData c fs)) idp)
+
 \func projEval {rt : RtSpec} {cls : JClass} {m : Nat} {env : Env} {e : JExpr} {c k : Nat} {fs : Array Value} {f : Value}
+               (rs : resolveType env tData = just cRtData)
                (h : evalExpr rt cls m env e = rOk (eVal (vData c fs))) (hk : nthArr k fs = just f)
   : evalExpr rt cls (suc (suc m)) env (jDataField (jCast tData e) k) = rOk (eVal f) =>
-  \let hc : evalExpr rt cls (suc m) env (jCast tData e) = rOk (eVal (vData c fs)) => bindOk h idp
-  \in bindOk hc (rewrite hk idp)
+  bindOk (castDataEval rs h) (rewrite hk idp)
 
 \func fieldEvalV {rt : RtSpec} {cls : JClass} {env : Env} {x : JIdent} {c k : Nat} {fs : Array Value} {f : Value}
                  (hl : lookupVar env x = just (vData c fs)) (hk : nthArr k fs = just f)
@@ -241,7 +278,7 @@
   bindOk (evalVar rt cls 0 hl) (rewrite hk idp)
 
 \func qualThisEval {rt : RtSpec} {cls : JClass} {env : Env} {q c : JIdent} {ms : Array (\Sigma JIdent JIdent (Array JStmt))} {ce : Env}
-                   (h : lookupVar env q = just (vObj c ms ce))
+                   (h : lookupType env q = just (vObj c ms ce))
   : evalExpr rt cls 1 env (jQualThis q) = rOk (eVal (vObj c ms ce)) => rewrite h idp
 
 \func invokeEval {rt : RtSpec} {cls : JClass} {n0 : Nat} {env : Env} {recv : JExpr} {m x : JIdent} {a obj : Value} {r : ExprOut}
@@ -251,12 +288,12 @@
   \let ha : evalArgs rt cls (suc (suc n0)) env (jVar x :: nil) = rOk (aVals (a :: nil)) => rewrite hx idp
   \in bindOk hr (bindOk ha hi)
 
--- A method of a local class runs with its parameter, then the class name bound
--- to the instance, then the declaration's environment.
+-- A method of a local class runs with its parameter, then the class name (a
+-- type) bound to the instance, then the declaration's environment.
 \func methodInvoke {rt : RtSpec} {cls : JClass} {n : Nat} {cn m : JIdent} {ms : Array (\Sigma JIdent JIdent (Array JStmt))} {E0 : Env}
                    {pb : \Sigma JIdent (Array JStmt)} {a v : Value}
                    (lk : lookupClassMethod ms m = just pb)
-                   (ex : execStmts rt cls n ((pb.1, a) :: (cn, vObj cn ms E0) :: E0) pb.2 = rOk (oReturn v))
+                   (ex : execStmts rt cls n ((kVar pb.1, a) :: (kType cn, vObj cn ms E0) :: E0) pb.2 = rOk (oReturn v))
   : invokeMethod rt cls (suc n) (vObj cn ms E0) m (a :: nil) = rOk (eVal v) =>
   rewrite lk (bindOk ex idp)
 
@@ -271,6 +308,19 @@
                      (ba : builtinArity {rt} nm = just k) (lf : ((snocArr got ja).len == k) = false)
   : applyVal rt cls 1 (vBuiltin nm got) ja = rOk (eVal (vBuiltin nm (snocArr got ja))) =>
   rewrite ba (rewrite lf idp)
+
+-- ---------------------------------------------------------------------------
+-- First bytes of names (`headIs 82 s.bytes`: `s` starts with `R`).
+-- ---------------------------------------------------------------------------
+
+\func natEqB (a b : Nat) : Bool \elim a, b
+  | 0, 0 => true
+  | suc a, suc b => natEqB a b
+  | _, _ => false
+
+\func headIs (n : Nat) (bs : Array Byte) : Bool \elim bs
+  | nil => false
+  | b :: _ => natEqB b n
 
 -- ---------------------------------------------------------------------------
 -- Arrays and the compile-time environment.

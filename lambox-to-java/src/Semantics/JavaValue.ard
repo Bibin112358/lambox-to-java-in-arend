@@ -2,6 +2,7 @@
 -- Only the append, aliased: Data.Array's `++` would clash with String's.
 \import Data.Array (++ \as \infixr 5 ++A)
 \import Data.Maybe
+\import Paths (pmap)
 \import Data.String
 \import Semantics.Res
 \import Compiler.JavaAst
@@ -21,8 +22,53 @@
 -- `external_call` (the semantics quantifies over the runtime, `RtSpec`,
 -- instead of defining it); the fuel discipline of `Semantics/Res.ard`.
 
+-- ---------------------------------------------------------------------------
+-- Names and classes
+-- ---------------------------------------------------------------------------
+
+-- Java keeps variables and types in separate namespaces (JLS 6.5): `C` may
+-- name a local variable and a local class at once. An environment entry is
+-- therefore keyed by its namespace as well as its name.
+\data Key | kVar JIdent | kType JIdent
+
+\func keyName (k : Key) : JIdent
+  | kVar x => x
+  | kType c => c
+
+\func isVarKey (k : Key) : Bool
+  | kVar _ => true
+  | kType _ => false
+
+\instance KeyDecSet : DecSet Key
+  | decideEq k k' => \case \elim k, \elim k' \with {
+    | kVar x, kVar y => \case decideEq x y \with {
+      | yes e => yes (pmap kVar e)
+      | no ne => no (\lam e => ne (pmap keyName e))
+    }
+    | kType x, kType y => \case decideEq x y \with {
+      | yes e => yes (pmap kType e)
+      | no ne => no (\lam e => ne (pmap keyName e))
+    }
+    | kVar x, kType y => no (\lam e => \case (pmap isVarKey e : true = false) \with {})
+    | kType x, kVar y => no (\lam e => \case (pmap isVarKey e : false = true) \with {})
+  }
+
+-- A class as the JVM knows it, after name resolution (JLS 6.5.5): the classes
+-- of `java.lang` and of the runtime that the fragment can meet, the anonymous
+-- classes implementing `Rt.Fn` (closures, `Rt.BOX`, runtime constants: no
+-- source name, so one identity suffices), and the local classes of `fix`,
+-- identified by name (generated names are unique, `Proof/NodePathUnique.ard`).
+-- The subtype table is `subclassOf` in Semantics/JavaEval.ard.
+\data ClassId
+  | cObject | cLong | cString
+  | cRtFn | cRtData | cAnonFn
+  | cThrowable | cException | cRuntimeException
+  | cIllegalState | cClassCast | cIndexOutOfBounds | cArrayIndexOutOfBounds
+  | cLocal JIdent
+
 -- Every value the fragment can produce, and nothing else. Every static type in
--- the fragment is `Object`, so this is one flat sum rather than a hierarchy.
+-- the fragment is `Object`, so this is one flat sum rather than a hierarchy;
+-- the class of a value is `runtimeClass` in Semantics/JavaEval.ard.
 \data Value
   -- `Rt.BOX`, an erased proof or type. Identity-based in Java (`new Object()`),
   -- but nothing in the fragment tests identity, so one atom is faithful.
@@ -32,15 +78,15 @@
   -- `new Rt.Fn(){ public Object apply(Object p){ body } }`. The environment is
   -- captured by value at creation (JLS 15.9.5, 4.12.4). `Env` cannot be named
   -- yet (it is defined below, in terms of `Value`), so it is spelled out.
-  | vClos (param : JIdent) (body : Array JStmt) (cenv : Array (\Sigma JIdent Value))
+  | vClos (param : JIdent) (body : Array JStmt) (cenv : Array (\Sigma Key Value))
   -- A `fix` local class: its name, its methods (name, parameter, body) and
   -- the environment captured at the declaration. The same value stands for
-  -- the class (bound by `jLocalClass`) and its instances (`new C()`): they
-  -- have no state and nothing compares references. See `jInvoke` in
-  -- Semantics/JavaEval.ard.
-  | vObj (cname : JQIdent)
+  -- the class (bound as a type by `jLocalClass`) and its instances
+  -- (`new C()`, `C.this`): they have no state and nothing compares
+  -- references. See `jInvoke` in Semantics/JavaEval.ard.
+  | vObj (cname : JIdent)
          (methods : Array (\Sigma JIdent JIdent (Array JStmt)))
-         (cenv : Array (\Sigma JIdent Value))
+         (cenv : Array (\Sigma Key Value))
   -- A runtime constant of `Rt` that is an `Fn`, with the arguments it has
   -- collected so far. `Rt.PRIM_ADD_LONG` is an `Fn` returning an `Fn`, so
   -- applying it accumulates arguments until `builtinArity` is reached.
@@ -58,14 +104,14 @@
   | vBool Bool
   -- An exception OBJECT, not a thrown state: `new RuntimeException("..")`.
   -- Throwing it is a `StmtOut`.
-  | vExcObj (excClass : JQIdent) (msg : String)
+  | vExcObj (excClass : ClassId) (msg : String)
 
 -- What a literal denotes.
 \func litValue (l : JLit) : Value
   | litStr s => vStr s
   | litLong i => vLong i
 
-\func Env => Array (\Sigma JIdent Value)
+\func Env => Array (\Sigma Key Value)
 
 -- How an expression finished: with a value, or by throwing.
 \data ExprOut | eVal Value | eExc Value
@@ -86,11 +132,16 @@
 
 \func snocArr {A : \Type} (xs : Array A) (y : A) : Array A => xs ++A (y :: nil)
 
-\func lookupVar (env : Env) (x : JIdent) : Maybe Value => lookupKey x env
+\func lookupVar (env : Env) (x : JIdent) : Maybe Value => lookupKey (kVar x) env
+
+-- A local class in scope: the value `jLocalClass` bound (a `vObj`).
+\func lookupType (env : Env) (c : JIdent) : Maybe Value => lookupKey (kType c) env
 
 -- The newest binding wins. (Generated code never shadows, see
 -- Proof/NodePathUnique.ard, but the semantics does not rely on it.)
-\func bindVar (env : Env) (x : JIdent) (v : Value) : Env => (x, v) :: env
+\func bindVar (env : Env) (x : JIdent) (v : Value) : Env => (kVar x, v) :: env
+
+\func bindType (env : Env) (c : JIdent) (v : Value) : Env => (kType c, v) :: env
 
 -- A method of a `fix` local class by name: its (parameter, body).
 \func lookupClassMethod (ms : Array (\Sigma JIdent JIdent (Array JStmt))) (nm : JIdent)

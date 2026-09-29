@@ -1,3 +1,4 @@
+\import Data.Bool
 \import Data.Maybe
 \import Data.String
 \import Compiler.Int63 (wrap63)
@@ -141,5 +142,38 @@
 
 \func emptyCaseThrows
   : runClass rtLong emptyCaseClass bodyMethodName 100
-  = rOk (rvThrown (vExcObj "java.lang.IllegalStateException" "matches no branch"))
+  = rOk (rvThrown (vExcObj cIllegalState "matches no branch"))
   => idp
+
+-- ---------------------------------------------------------------------------
+-- Type names and casts, as in Java (JLS 6.5.5, 5.5.3): a name is resolved
+-- (a local class in scope first), then the cast checks subtyping.
+-- ---------------------------------------------------------------------------
+
+-- Two spellings of one class.
+\func objectAlias : resolveType nil (tClass "java.lang.Object") = resolveType nil tObject => idp
+
+\func castObjectQualified : castOk nil (tClass "java.lang.Object") vBox = just true => idp
+
+-- `Rt.BOX` is an `Rt.Fn` but not an `Rt.Data`: the cast throws.
+\func castBoxFn : castOk nil tFn vBox = just true => idp
+
+\func castBoxData : castOk nil tData vBox = just false => idp
+
+-- Subtyping: a `ClassCastException` is a `RuntimeException`.
+\func castSubclass : castOk nil (tClass "RuntimeException") excCCE = just true => idp
+
+-- An unknown class name: `javac` would reject the cast.
+\func castUnknown : castOk nil (tClass "Foo") vBox = nothing => idp
+
+-- A local class named `Object` shadows `java.lang.Object`; one named `Rt`
+-- shadows `Rt.Data`.
+\func shadowObject : resolveType (bindType nil "Object" (vObj "Object" nil nil)) tObject = just (cLocal "Object") => idp
+
+\func shadowRt : resolveType (bindType nil "Rt" (vObj "Rt" nil nil)) tData = nothing => idp
+
+-- Separate namespaces: a VARIABLE named `Rt` shadows no type, and a local
+-- class is no variable.
+\func varNoShadow : resolveType (bindVar nil "Rt" vBox) tData = just cRtData => idp
+
+\func classNoVar : lookupVar (bindType nil "C" (vObj "C" nil nil)) "C" = nothing => idp

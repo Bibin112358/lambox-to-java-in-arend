@@ -24,11 +24,17 @@
 -- are the trusted printer `Compiler/JavaPrint.ard` (e.g. `litStr` is not
 -- escaped) and the runtime `runtime/Rt.java` (the parameter `RtSpec`).
 --
+-- Names are resolved as in Java (JLS 6.5): variables and types live in
+-- separate namespaces of one environment (`Key` in Semantics/JavaValue.ard),
+-- and a type name means a local class in scope before a top-level class.
+--
 -- The observable is the value returned by the entry method (`body`) or the
--- exception it throws. Four shapes the generator never emits are `rStuck`,
--- marked at their clauses: `jField` on a non-`Rt` receiver, `jNew` of
--- `tObject`/`tFn`/`tData`, `jInvoke` with other than one argument, and a call
--- of a generated method with arguments.
+-- exception it throws. Programs `javac` rejects (an unknown name, a cast of a
+-- non-object, `throw` of a non-`Throwable`) are `rStuck`, and so are four
+-- shapes the generator never emits, marked at their clauses: `jField` on a
+-- non-`Rt` receiver, `jNew` of anything but a local class or an exception,
+-- `jInvoke` with other than one argument, and a call of a generated method
+-- with arguments.
 
 -- ---------------------------------------------------------------------------
 -- Class-level lookup: one flat method table (cf. Featherweight Java's `CT`).
@@ -48,36 +54,125 @@
   lookupMethodIn (JClass.classMembers {cls}) nm
 
 -- ---------------------------------------------------------------------------
--- Casts (JLS 5.5, 15.16): checked at run time, `ClassCastException` on
--- failure. The fragment only casts to `Rt.Fn` (in `jApply`), to `Rt.Data` and
--- to local classes.
+-- Classes: name resolution (JLS 6.5.5), the class table, casts (JLS 5.5.3).
+--
+-- The class table below must match the JDK and `runtime/Rt.java`; like
+-- `RtSpec`, it is trusted.
 -- ---------------------------------------------------------------------------
 
-\func excCCE : Value => vExcObj "java.lang.ClassCastException" "cast failed"
+-- The top-level classes the fragment may name, under each spelling: the
+-- source name, the simple name that a local class of that name would shadow
+-- (`Rt.Fn` is resolved as `Rt`, then its member `Fn`: JLS 6.5.5.2), the class.
+\func knownClasses : Array (\Sigma JQIdent JIdent ClassId) =>
+  ("Object", "Object", cObject) :: ("java.lang.Object", "java", cObject) ::
+  ("Long", "Long", cLong) :: ("java.lang.Long", "java", cLong) ::
+  ("String", "String", cString) :: ("java.lang.String", "java", cString) ::
+  ("Rt.Fn", "Rt", cRtFn) :: ("Rt.Data", "Rt", cRtData) ::
+  ("Throwable", "Throwable", cThrowable) :: ("java.lang.Throwable", "java", cThrowable) ::
+  ("Exception", "Exception", cException) :: ("java.lang.Exception", "java", cException) ::
+  ("RuntimeException", "RuntimeException", cRuntimeException) ::
+  ("java.lang.RuntimeException", "java", cRuntimeException) ::
+  ("IllegalStateException", "IllegalStateException", cIllegalState) ::
+  ("java.lang.IllegalStateException", "java", cIllegalState) ::
+  ("ClassCastException", "ClassCastException", cClassCast) ::
+  ("java.lang.ClassCastException", "java", cClassCast) ::
+  ("IndexOutOfBoundsException", "IndexOutOfBoundsException", cIndexOutOfBounds) ::
+  ("java.lang.IndexOutOfBoundsException", "java", cIndexOutOfBounds) ::
+  ("ArrayIndexOutOfBoundsException", "ArrayIndexOutOfBoundsException", cArrayIndexOutOfBounds) ::
+  ("java.lang.ArrayIndexOutOfBoundsException", "java", cArrayIndexOutOfBounds) :: nil
 
-\func excAIOOBE : Value => vExcObj "java.lang.ArrayIndexOutOfBoundsException" "index"
+-- What a type name denotes here: a local class in scope, else a known class
+-- that no local class shadows. `nothing` is a name `javac` would reject.
+\func resolveType (env : Env) (t : JType) : Maybe ClassId \elim t
+  | tClass q => resolveWith env (lookupType env q) (lookupBy (\lam e => e.1) q knownClasses)
+  \where {
+    -- The lookups are parameters rather than `\case`s, so that a proof holding
+    -- their results can rewrite with them.
+    \func resolveWith (env : Env) (local : Maybe Value) (known : Maybe (\Sigma JQIdent JIdent ClassId))
+      : Maybe ClassId \elim local, known
+      | just (vObj c _ _), _ => just (cLocal c)
+      | just _, _ => nothing                    -- only `jLocalClass` binds a type
+      | nothing, just e => unlessShadowed (lookupType env e.2) e.3
+      | nothing, nothing => nothing
 
-\func castOk (t : JType) (v : Value) : Bool \elim t
-  -- Every value of the fragment is an `Object`.
-  | tObject => true
-  -- `Rt.Fn`: a closure, a runtime constant that is one, or `Rt.BOX` -- which
-  -- is an `Fn` returning itself, because λ□ applies erased values (`evalBox`).
-  | tFn => \case v \with {
-    | vClos _ _ _ => true
-    | vBuiltin _ _ => true
-    | vBox => true
-    | _ => false
+    \func unlessShadowed (shadow : Maybe Value) (c : ClassId) : Maybe ClassId \elim shadow
+      | nothing => just c
+      | just _ => nothing
   }
-  | tData => \case v \with {
-    | vData _ _ => true
-    | _ => false
-  }
-  -- A named class: a `fix` local class instance, or an exception object.
-  | tClass q => \case v \with {
-    | vObj c _ _ => c == q
-    | vExcObj c _ => c == q
-    | _ => false
-  }
+
+-- The supertypes of a class, itself included (JLS 4.10.2): `Rt.Fn` is an
+-- interface that closures, `Rt.BOX` and the runtime constants implement;
+-- `Rt.Data`, `Long` and `String` are final; local classes extend `Object`.
+\func supertypes (c : ClassId) : Array ClassId
+  | cObject => cObject :: nil
+  | cLong => cLong :: cObject :: nil
+  | cString => cString :: cObject :: nil
+  | cRtFn => cRtFn :: cObject :: nil
+  | cRtData => cRtData :: cObject :: nil
+  | cAnonFn => cAnonFn :: cRtFn :: cObject :: nil
+  | cThrowable => cThrowable :: cObject :: nil
+  | cException => cException :: cThrowable :: cObject :: nil
+  | cRuntimeException => cRuntimeException :: cException :: cThrowable :: cObject :: nil
+  | cIllegalState => cIllegalState :: cRuntimeException :: cException :: cThrowable :: cObject :: nil
+  | cClassCast => cClassCast :: cRuntimeException :: cException :: cThrowable :: cObject :: nil
+  | cIndexOutOfBounds => cIndexOutOfBounds :: cRuntimeException :: cException :: cThrowable :: cObject :: nil
+  | cArrayIndexOutOfBounds =>
+    cArrayIndexOutOfBounds :: cIndexOutOfBounds :: cRuntimeException :: cException :: cThrowable :: cObject :: nil
+  | cLocal x => cLocal x :: cObject :: nil
+
+\func sameClass (c d : ClassId) : Bool
+  | cLocal x, cLocal y => x == y
+  | cLocal _, _ => false
+  | _, cLocal _ => false
+  | c, d => classCode c == classCode d
+  \where
+    \func classCode (c : ClassId) : Nat
+      | cObject => 0 | cLong => 1 | cString => 2 | cRtFn => 3 | cRtData => 4 | cAnonFn => 5
+      | cThrowable => 6 | cException => 7 | cRuntimeException => 8 | cIllegalState => 9
+      | cClassCast => 10 | cIndexOutOfBounds => 11 | cArrayIndexOutOfBounds => 12 | cLocal _ => 13
+
+\func subclassOf (c d : ClassId) : Bool => anyClass (supertypes c) d
+  \where
+    \func anyClass (cs : Array ClassId) (d : ClassId) : Bool \elim cs
+      | nil => false
+      | c :: cs => sameClass c d or anyClass cs d
+
+-- The class of a value. `nothing` for what is not an object: the class `Rt`
+-- as a receiver, and a `boolean`.
+\func runtimeClass (v : Value) : Maybe ClassId
+  | vBox => just cAnonFn
+  | vData _ _ => just cRtData
+  | vClos _ _ _ => just cAnonFn
+  | vObj c _ _ => just (cLocal c)
+  | vBuiltin _ _ => just cAnonFn
+  | vStaticRef _ => nothing
+  | vLong _ => just cLong
+  | vStr _ => just cString
+  | vBool _ => nothing
+  | vExcObj c _ => just c
+
+-- `v instanceof d`, for an object `v`.
+\func instanceOf (v : Value) (d : ClassId) : Maybe Bool => Maybe.map (\lam c => subclassOf c d) (runtimeClass v)
+
+-- `(T) v` succeeds iff the class of `v` is a subtype of the class `T` names
+-- (JLS 5.5.3; the JVM's `checkcast`), and throws `ClassCastException` if not.
+-- `nothing`: `T` names no class, or `v` is no object -- `javac` rejects both.
+\func castOk (env : Env) (t : JType) (v : Value) : Maybe Bool => castTo (resolveType env t) v
+  \where
+    \func castTo (target : Maybe ClassId) (v : Value) : Maybe Bool \elim target
+      | just d => instanceOf v d
+      | nothing => nothing
+
+\func excCCE : Value => vExcObj cClassCast "cast failed"
+
+-- What follows a cast, given `castOk`: go on with `k`, throw, or stuck. A
+-- function rather than a `\case`, so that proofs can rewrite `castOk`.
+\func afterCast (ok : Maybe Bool) (k : Res ExprOut) : Res ExprOut \elim ok
+  | just true => k
+  | just false => rOk (eExc excCCE)
+  | nothing => rStuck
+
+\func excAIOOBE : Value => vExcObj cArrayIndexOutOfBounds "index"
 
 -- ---------------------------------------------------------------------------
 -- The evaluator.
@@ -107,10 +202,11 @@
   -- A closure; the environment is captured by value (JLS 15.9.5, 4.12.4).
   | suc _, jClosure p body => rOk (eVal (vClos p body env))
 
-  -- `C.this` from inside a nested anonymous class. `jLocalClass` bound `C` to
-  -- the instance, and a method call re-binds it (see `jInvoke`), so this is a
-  -- lookup rather than a rule about enclosing instances.
-  | suc _, jQualThis q => \case lookupVar env q \with {
+  -- `C.this` from inside a nested anonymous class (JLS 15.8.4). `C` is a type
+  -- name; `jLocalClass` bound it to the instance, and a method call re-binds
+  -- it (see `jInvoke`), so this is a lookup rather than a rule about
+  -- enclosing instances.
+  | suc _, jQualThis q => \case lookupType env q \with {
     | just (vObj c ms cenv) => rOk (eVal (vObj c ms cenv))
     | _ => rStuck
   }
@@ -131,24 +227,18 @@
   | suc n, jCast t e =>
     bindRes (evalExpr rt cls n env e) (\lam o => \case o \with {
       | eExc ev => rOk (eExc ev)
-      | eVal v => \case castOk t v \with {
-        | true => rOk (eVal v)
-        | false => rOk (eExc excCCE)
-      }
+      | eVal v => afterCast (castOk env t v) (rOk (eVal v))
     })
 
   -- `((Rt.Fn)(f)).apply(x)`: λ□ application; the cast is part of the node.
   | suc n, jApply f a =>
     bindRes (evalExpr rt cls n env f) (\lam of => \case of \with {
       | eExc ev => rOk (eExc ev)
-      | eVal fv => \case castOk tFn fv \with {
-        | false => rOk (eExc excCCE)
-        | true =>
-          bindRes (evalExpr rt cls n env a) (\lam oa => \case oa \with {
-            | eExc ev => rOk (eExc ev)
-            | eVal av => applyVal rt cls n fv av
-          })
-      }
+      | eVal fv => afterCast (castOk env tFn fv)
+        (bindRes (evalExpr rt cls n env a) (\lam oa => \case oa \with {
+          | eExc ev => rOk (eExc ev)
+          | eVal av => applyVal rt cls n fv av
+        }))
     })
 
   -- `recv.m(arg)`: a call to a method of a `fix` local class, the fragment's
@@ -263,8 +353,8 @@
 --
 -- This is where the `fix` knot is tied (the letrec rule): the body runs in the
 -- environment captured at the class declaration, extended with the class name
--- bound to the receiver, then with the parameter. So `C.this.f<i>` finds the
--- same instance at any depth, with no mutable cell.
+-- (a type) bound to the receiver, then with the parameter. So `C.this.f<i>`
+-- finds the same instance at any depth, with no mutable cell.
 \func invokeMethod (rt : RtSpec) (cls : JClass) (n : Nat) (recv : Value) (m : JIdent) (vs : Array Value)
   : Res ExprOut \elim n
   | 0 => rOutOfFuel
@@ -273,7 +363,7 @@
       | nothing => rStuck
       | just pb => \case vs \with {
         | a :: nil =>
-          bindRes (execStmts rt cls n (bindVar (bindVar cenv c (vObj c ms cenv)) pb.1 a) pb.2)
+          bindRes (execStmts rt cls n (bindVar (bindType cenv c (vObj c ms cenv)) pb.1 a) pb.2)
                   (\lam o => \case o \with {
             | oReturn v => rOk (eVal v)
             | oExcS ev => rOk (eExc ev)
@@ -313,26 +403,25 @@
   }
 
 -- `new T(args)` for the two things the generator instantiates: a `fix` local
--- class, and the `RuntimeException` of an unimplemented axiom's stub.
+-- class, and the `RuntimeException` of an unimplemented axiom's stub. Other
+-- constructors (`new Object()`, `new Rt.Data(..)` -- `jDataNew` is its own
+-- node) are never emitted and not modelled.
 --
 -- A local class is looked up rather than built: `jLocalClass` bound its name to
 -- the (stateless) instance, see `vObj` in Semantics/JavaValue.ard.
-\func newObject (env : Env) (t : JType) (vs : Array Value) : Res ExprOut =>
-  \case t \with {
-    | tClass q => \case lookupVar env q \with {
-      | just (vObj c ms cenv) => \case vs \with {
-        | nil => rOk (eVal (vObj c ms cenv))
-        | _ => rStuck                            -- the class has no constructor
+\func newObject (env : Env) (t : JType) (vs : Array Value) : Res ExprOut \elim t
+  | tClass q => newWith (lookupType env q) (resolveType env (tClass q)) vs
+  \where
+    \func newWith (local : Maybe Value) (c : Maybe ClassId) (vs : Array Value) : Res ExprOut \elim local, c, vs
+      -- A local class has only the default constructor.
+      | just (vObj c ms cenv), _, nil => rOk (eVal (vObj c ms cenv))
+      | just _, _, _ => rStuck
+      -- An exception class: its `(String message)` constructor.
+      | nothing, just c, vStr msg :: nil => \case subclassOf c cThrowable \with {
+        | true => rOk (eVal (vExcObj c msg))
+        | false => rStuck
       }
-      | _ => \case vs \with {
-        | vStr msg :: nil => rOk (eVal (vExcObj q msg))
-        | _ => rStuck
-      }
-    }
-    -- `new Object()`/`new Rt.Fn()`/`new Rt.Data()` as such: never emitted
-    -- (`jClosure` and `jDataNew` are their own nodes).
-    | _ => rStuck
-  }
+      | nothing, _, _ => rStuck
 
 -- ---------------------------------------------------------------------------
 -- Statements. A statement list is a sequence of bindings ending in a
@@ -354,14 +443,19 @@
       | eVal v => rOk (oNormal (bindVar env x v))
     })
 
-  -- A local class `C` (a `fix` block): binds `C` to the instance, capturing
-  -- the environment, so `new C()` and every `C.this` mean the same object.
-  | suc _, jLocalClass c ms => rOk (oNormal (bindVar env c (vObj c ms env)))
+  -- A local class `C` (a `fix` block): binds the type `C` to the instance,
+  -- capturing the environment, so `new C()` and every `C.this` mean the same
+  -- object.
+  | suc _, jLocalClass c ms => rOk (oNormal (bindType env c (vObj c ms env)))
 
+  -- `throw e;` (JLS 14.18): `e` must be a `Throwable`.
   | suc n, jThrow e =>
     bindRes (evalExpr rt cls n env e) (\lam o => \case o \with {
       | eExc ev => rOk (oExcS ev)
-      | eVal v => rOk (oExcS v)
+      | eVal v => \case instanceOf v cThrowable \with {
+        | just true => rOk (oExcS v)
+        | _ => rStuck
+      }
     })
 
   | suc n, jReturn e =>

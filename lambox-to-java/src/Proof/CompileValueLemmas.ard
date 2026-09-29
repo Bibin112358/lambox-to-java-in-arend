@@ -10,7 +10,7 @@
 \import Semantics.JavaEval
 \import Semantics.JavaValue
 \import Semantics.LambdaBoxEval
-\import Proof.JavaExec (eqSelf)
+\import Proof.JavaExec (eqSelf, castResolved)
 \import Proof.OracleArith (eqTrue, intEqB-sound, intEqB-refl)
 \import Proof.PathFresh
 \import Semantics.Res
@@ -79,14 +79,19 @@
 -- What λ□ applies is an `Rt.Fn`.
 -- ---------------------------------------------------------------------------
 
-\func castFn {spec : LBSpec} {genv : GlobalDeclarations} {rt : RtSpec} {cls : JClass} {wf wa w : EV} {jf : Value}
-             (d : ApplyE spec genv wf wa w) (cf : CV rt cls wf jf) : castOk tFn jf = true \elim wf, cf
-  | evBox, cvBox e => rewrite e idp
-  | evClos _ _ _, cvClos e _ => rewrite e idp
-  | evFix _ _ _, cvFix e _ _ => rewrite e idp
-  | evAx _ _, cvAx e _ _ _ => rewrite e idp
-  | evCon _ _ _, _ => \case d
-  | evPrim _, _ => \case d
+-- In an environment of generated names, `Rt.Fn` is the runtime's interface.
+\func castFn {spec : LBSpec} {genv : GlobalDeclarations} {rt : RtSpec} {cls : JClass} {wf wa w : EV} {jf : Value} {env : Env}
+             (g : Generated env) (d : ApplyE spec genv wf wa w) (cf : CV rt cls wf jf) : castOk env tFn jf = just true =>
+  castResolved {env} {tFn} (resolveFnGen g) jf *> isFn d cf
+  \where
+    \func isFn {spec : LBSpec} {genv : GlobalDeclarations} {rt : RtSpec} {cls : JClass} {wf wa w : EV} {jf : Value}
+               (d : ApplyE spec genv wf wa w) (cf : CV rt cls wf jf) : instanceOf jf cRtFn = just true \elim wf, cf
+      | evBox, cvBox e => rewrite e idp
+      | evClos _ _ _, cvClos e _ _ => rewrite e idp
+      | evFix _ _ _, cvFix e _ _ _ => rewrite e idp
+      | evAx _ _, cvAx e _ _ _ => rewrite e idp
+      | evCon _ _ _, _ => \case d
+      | evPrim _, _ => \case d
 
 -- ---------------------------------------------------------------------------
 -- The first-order bridge.

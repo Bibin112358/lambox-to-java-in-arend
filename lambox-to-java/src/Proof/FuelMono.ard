@@ -35,6 +35,11 @@
 
 \func monoFuel {A : \Type} {b : Res A} : Mono rOutOfFuel b => \lam r p => contradiction
 
+\func afterCastMono (ok : Maybe Bool) {k k' : Res ExprOut} (h : Mono k k') : Mono (afterCast ok k) (afterCast ok k') \elim ok
+  | just true => h
+  | just false => monoRefl
+  | nothing => monoRefl
+
 \func bindMono {A B : \Type} {m m' : Res A} {k k' : A -> Res B}
                (hm : Mono m m') (hk : \Pi (x : A) -> Mono (k x) (k' x))
   : Mono (bindRes m k) (bindRes m' k') \elim m
@@ -59,27 +64,10 @@
   | suc n, jCast t e => bindMono (evalExprMono rt cls n env e) (\lam o => monoRefl)
   | suc n, jApply f a => bindMono (evalExprMono rt cls n env f) (\lam o => \case \elim o \with {
     | eExc ev => monoRefl
-    -- `castOk tFn fv` reduces to a `\case` on `fv`, so split on `fv` itself:
-    -- the three `Rt.Fn` values take the call, every other value the CCE.
-    | eVal (vClos p body cenv) => bindMono (evalExprMono rt cls n env a) (\lam oa => \case \elim oa \with {
+    | eVal fv => afterCastMono (castOk env tFn fv) (bindMono (evalExprMono rt cls n env a) (\lam oa => \case \elim oa \with {
       | eExc ev => monoRefl
-      | eVal av => applyValMono rt cls n (vClos p body cenv) av
-    })
-    | eVal (vBuiltin nm got) => bindMono (evalExprMono rt cls n env a) (\lam oa => \case \elim oa \with {
-      | eExc ev => monoRefl
-      | eVal av => applyValMono rt cls n (vBuiltin nm got) av
-    })
-    | eVal vBox => bindMono (evalExprMono rt cls n env a) (\lam oa => \case \elim oa \with {
-      | eExc ev => monoRefl
-      | eVal av => applyValMono rt cls n vBox av
-    })
-    | eVal (vData _ _) => monoRefl
-    | eVal (vObj _ _ _) => monoRefl
-    | eVal (vStaticRef _) => monoRefl
-    | eVal (vLong _) => monoRefl
-    | eVal (vStr _) => monoRefl
-    | eVal (vBool _) => monoRefl
-    | eVal (vExcObj _ _) => monoRefl
+      | eVal av => applyValMono rt cls n fv av
+    }))
   })
   | suc n, jInvoke recv m args => bindMono (evalExprMono rt cls n env recv) (\lam o => \case \elim o \with {
     | eExc ev => monoRefl
@@ -140,7 +128,7 @@
   | suc n, vObj c ms cenv => cases (lookupClassMethod ms m) \with {
     | nothing => monoRefl
     | just pb => cases vs \with {
-      | a :: nil => bindMono (execStmtsMono rt cls n (bindVar (bindVar cenv c (vObj c ms cenv)) pb.1 a) pb.2)
+      | a :: nil => bindMono (execStmtsMono rt cls n (bindVar (bindType cenv c (vObj c ms cenv)) pb.1 a) pb.2)
                              (\lam o => monoRefl)
       | nil => monoRefl
       | a :: b :: vs => monoRefl

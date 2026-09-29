@@ -37,13 +37,19 @@
 
 \func runtimeQual : String => runtimeClassName ++ "."
 
--- `tFn`/`tData` print as `Rt.Fn`/`Rt.Data` but are separate from `tClass`:
--- the semantics gives them meaning (function space, tagged product).
-\data JType
-  | tObject
-  | tFn    -- the runtime's one-method function interface: λ□'s function space
-  | tData  -- the runtime's constructor representation: a tag plus fields
-  | tClass JQIdent
+-- A reference type, by its name as written: `Object`, `Rt.Data`, a local class
+-- `C12`. As in Java, the name is resolved by the semantics (a local class in
+-- scope first, JLS 6.5.5), not by the AST: `Object` and `java.lang.Object`
+-- are two spellings of one class (`resolveType` in Semantics/JavaEval.ard).
+\data JType | tClass JQIdent
+
+\func tObject : JType => tClass "Object"
+
+-- The runtime's one-method function interface: λ□'s function space.
+\func tFn : JType => tClass "Rt.Fn"
+
+-- The runtime's constructor representation: a tag plus fields.
+\func tData : JType => tClass "Rt.Data"
 
 \data JExpr
   | jVar JIdent  -- a local or parameter as a value: `p3`, `l7`

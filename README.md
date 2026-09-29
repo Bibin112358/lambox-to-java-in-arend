@@ -50,13 +50,23 @@ them for the shipped ones. Among those facts: the two axiom oracles agree
 [-2^63, 2^63), both in the Java AST's literals and in the model's `vLong`, so
 an out-of-range long cannot even be written.
 
+The Java model resolves names as Java does: variables and types are separate
+namespaces, a type name means a local class in scope before a top-level class
+(so `Object` and `java.lang.Object` are one class), and a cast succeeds exactly
+when the value's class is a subtype of the target (the JVM's `checkcast`). The
+proof shows that generated code never shadows `Rt` (every name it binds starts
+with a lowercase letter or `C`), so its casts to `Rt.Fn`/`Rt.Data` mean the
+runtime's classes.
+
 **Trusted, not proved:**
 - the printer from the Java AST to text (`Compiler/JavaPrint.ard`);
 - that the real JVM behaves like the Java model (`Semantics/JavaEval.ard`),
   including that `javac` accepts the output and that the stack is deep enough
   (the model has unbounded recursion depth; `Rt.runMain` runs programs on a
   thread with a 1 GB stack);
-- that `runtime/Rt.java` behaves like its model (`Semantics/RtInt63.ard`).
+- that `runtime/Rt.java` behaves like its model (`Semantics/RtInt63.ard`), and
+  that the model's class table (`knownClasses`, `supertypes` in
+  `Semantics/JavaEval.ard`) matches the JDK and `Rt.java`.
 
 These are exercised by the tests, including an automated differential test
 that runs small programs in both Arend models and on the real JVM
