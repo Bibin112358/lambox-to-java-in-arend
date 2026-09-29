@@ -1,13 +1,11 @@
 /test/work/
 /lambox-to-java/bin/
-/lambox-to-java/src/Prog.java
+/lambox-to-java-examples/bin/
 # The test harness' Arend project: everything under src/ is generated
 # (src/Imported/<Module>.ard by test/tools/import-ast.sh, dump modules by
 # test/golden.py); only its arend.yaml is committed.
 /test/arend/src/
 /test/arend/bin/
-/lambox-to-java/src/Playground.ard
-/lambox-to-java-examples/bin/
 /out/
 /.idea/
 /scratch/
@@ -15,9 +13,3 @@
 
 # Python bytecode of the test harness modules
 __pycache__/
-
-# Arend CLI daemon state (socket, lock, logs) -- created in the project dir
-lambox-to-java/.arend/
-
-# Scratch output of ad-hoc extraction runs
-/lambox-to-java/src/Generated.ard
