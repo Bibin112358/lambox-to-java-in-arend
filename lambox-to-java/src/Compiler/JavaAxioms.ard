@@ -21,10 +21,11 @@
 -- `Semantics/RtInt63.ard`/`RtLong.ard` for models of the runtime).
 --
 -- Both primitive kinds are `java.lang.Long` at runtime: a `Uint63` value lies
--- in `long`'s non-negative half. They differ in arithmetic, `Rt.PRIM_*_INT63`
--- versus `Rt.PRIM_*_LONG`. A `const` node is compiled without seeing its
--- operands, so the kind reaches an operation through its axiom NAME
--- (`prim_add_int` vs `prim_add_long`, see `Compiler/LongRewrite.ard`).
+-- in `long`'s non-negative half. They differ in arithmetic: `Rt.PRIM_*_INT63`
+-- wraps modulo 2^63, `Rt.PRIM_*_LONG` is Java's `long` arithmetic. A `const`
+-- node is compiled without seeing its operands, so the kind reaches an
+-- operation through its axiom name (`prim_add_int` vs `prim_add_long`, see
+-- `Compiler/LongRewrite.ard`).
 
 -- A `Uint63` literal (the payload is already normalized).
 \func int63Lit (i : Fin int63Mod) : JExpr =>
@@ -34,16 +35,6 @@
 -- signed reading a JVM `long` gives it.
 \func longLit (i : Fin int64Mod) : JExpr =>
   jCallStatic "Long.valueOf" (jLit (litLong (longOfBits i)) :: nil)
-
--- Runtime family implementing λ□'s `Uint63` operations.
-\func primOpSuffix : String => "INT63"
-
--- Runtime family for the int64 operations and for the Lean-derived operations
--- that cannot leave [0, 2^63) (Lean's `Nat` is an i63 in λ□: lean-to-lambdabox
--- refuses larger literals). `Nat.add`/`Nat.mul` can overflow, so they use the
--- INT63 family instead. `Nat.sub` truncates at zero (Lean's convention), so it
--- has its own `NAT_SUB_*` rather than the wrapping `PRIM_SUB_*`.
-\func leanOpSuffix : String => "LONG"
 
 -- `Rt`, as the receiver of a static member.
 \func rtRef : JExpr => jStatic runtimeClassName
@@ -59,61 +50,57 @@
 -- table suffices because the runtime is ours.) Keyed by the full `Kername`, so
 -- an unrelated `Foo.add` does not match `Nat.add`.
 \func javaAxioms : Array (\Sigma Kername JExpr) =>
-  \let | primOp (nm : String) => jField rtRef ("PRIM_" ++ nm ++ "_" ++ primOpSuffix)
-       | leanOp (nm : String) => jField rtRef ("PRIM_" ++ nm ++ "_" ++ leanOpSuffix)
-       -- Operations that neither take nor return a primitive int.
-       | fixed (nm : String) => jField rtRef nm
-  -- λ□'s int63 operations, under the names peregrine emits.
-  \in (axKnRoot "prim_add_int", primOp "ADD") ::
-      (axKnRoot "prim_mul_int", primOp "MUL") ::
-      (axKnRoot "prim_sub_int", primOp "SUB") ::
-      (axKnRoot "prim_eqb_int", primOp "EQB") ::
-      -- int64 operations, produced only by `Compiler/LongRewrite.ard`: Java's
-      -- unmasked `long` arithmetic.
-      (axKnRoot "prim_add_long", leanOp "ADD") ::
-      (axKnRoot "prim_mul_long", leanOp "MUL") ::
-      (axKnRoot "prim_sub_long", leanOp "SUB") ::
-      (axKnRoot "prim_eqb_long", leanOp "EQB") ::
-      (axKnIn "Nat" "add", primOp "ADD") ::
-      (axKnIn "Nat" "mul", primOp "MUL") ::
-      -- Truncating subtraction, see `leanOpSuffix`.
-      (axKnIn "Nat" "sub", jField rtRef ("NAT_SUB_" ++ leanOpSuffix)) ::
-      (axKnIn "Nat" "beq", leanOp "EQB") ::
-      -- The rest of the machine-Nat operations lean-to-lambdabox leaves as
-      -- axioms. `div`/`mod` follow Lean's total conventions and
-      -- `decEq`/`decLe`/`decLt` return `Decidable`, not `Bool` (see Rt.java).
-      (axKnIn "Nat" "div", leanOp "DIV") ::
-      (axKnIn "Nat" "mod", leanOp "MOD") ::
-      (axKnIn "Nat" "pow", leanOp "POW") ::
-      (axKnIn "Nat" "ble", leanOp "BLE") ::
-      (axKnIn "Nat" "blt", leanOp "BLT") ::
-      (axKnIn "Nat" "decEq", leanOp "DEC_EQ") ::
-      (axKnIn "Nat" "decLe", leanOp "DEC_LE") ::
-      (axKnIn "Nat" "decLt", leanOp "DEC_LT") ::
-      -- Lean's machine-`Int` operations. `Int` erases to the same λ□ primitive
-      -- int as `Nat`, so `ofNat` is the identity in both representations.
-      (axKnIn "Int" "ofNat", fixed "INT_OF_NAT") ::
-      (axKnIn "Int" "negSucc", jField rtRef ("INT_NEG_SUCC_" ++ leanOpSuffix)) ::
-      (axKnIn "Int" "neg", jField rtRef ("INT_NEG_" ++ leanOpSuffix)) ::
-      (axKnIn "Int" "add", jField rtRef ("INT_ADD_" ++ leanOpSuffix)) ::
-      (axKnIn "Int" "mul", jField rtRef ("INT_MUL_" ++ leanOpSuffix)) ::
-      (axKnIn "Int" "ediv", jField rtRef ("INT_EDIV_" ++ leanOpSuffix)) ::
-      (axKnIn "Int" "emod", jField rtRef ("INT_EMOD_" ++ leanOpSuffix)) ::
-      (axKnIn "Int" "decEq", jField rtRef ("INT_DEC_EQ_" ++ leanOpSuffix)) ::
-      -- Lean's `Array` operations (`@[extern]`, so erasure keeps no body). Only
-      -- `size` returns a Nat, hence only it depends on the representation. The
+  \let rt (nm : String) => jField rtRef nm
+  -- λ□'s `Uint63` operations, under the names peregrine emits: wrap mod 2^63.
+  \in (axKnRoot "prim_add_int", rt "PRIM_ADD_INT63") ::
+      (axKnRoot "prim_mul_int", rt "PRIM_MUL_INT63") ::
+      (axKnRoot "prim_sub_int", rt "PRIM_SUB_INT63") ::
+      (axKnRoot "prim_eqb_int", rt "PRIM_EQB_INT63") ::
+      -- Java `long` operations, produced by `Compiler/LongRewrite.ard`.
+      (axKnRoot "prim_add_long", rt "PRIM_ADD_LONG") ::
+      (axKnRoot "prim_mul_long", rt "PRIM_MUL_LONG") ::
+      (axKnRoot "prim_sub_long", rt "PRIM_SUB_LONG") ::
+      (axKnRoot "prim_eqb_long", rt "PRIM_EQB_LONG") ::
+      -- Lean's machine `Nat` (an int63 in λ□: lean-to-lambdabox refuses larger
+      -- literals). `add`/`mul` can overflow, so they wrap like `Uint63`;
+      -- operations that cannot leave [0, 2^63) use the `long` ones. `sub`
+      -- truncates at zero, `div`/`mod` follow Lean's `n / 0 = 0`, `n % 0 = n`.
+      (axKnIn "Nat" "add", rt "PRIM_ADD_INT63") ::
+      (axKnIn "Nat" "mul", rt "PRIM_MUL_INT63") ::
+      (axKnIn "Nat" "sub", rt "NAT_SUB_LONG") ::
+      (axKnIn "Nat" "beq", rt "PRIM_EQB_LONG") ::
+      (axKnIn "Nat" "div", rt "PRIM_DIV_LONG") ::
+      (axKnIn "Nat" "mod", rt "PRIM_MOD_LONG") ::
+      (axKnIn "Nat" "pow", rt "PRIM_POW_LONG") ::
+      (axKnIn "Nat" "ble", rt "PRIM_BLE_LONG") ::
+      (axKnIn "Nat" "blt", rt "PRIM_BLT_LONG") ::
+      -- These return `Decidable`, not `Bool` (see Rt.java).
+      (axKnIn "Nat" "decEq", rt "PRIM_DEC_EQ_LONG") ::
+      (axKnIn "Nat" "decLe", rt "PRIM_DEC_LE_LONG") ::
+      (axKnIn "Nat" "decLt", rt "PRIM_DEC_LT_LONG") ::
+      -- Lean's machine `Int`. It erases to the same λ□ primitive as `Nat`, so
+      -- `ofNat` is the identity.
+      (axKnIn "Int" "ofNat", rt "INT_OF_NAT") ::
+      (axKnIn "Int" "negSucc", rt "INT_NEG_SUCC_LONG") ::
+      (axKnIn "Int" "neg", rt "INT_NEG_LONG") ::
+      (axKnIn "Int" "add", rt "INT_ADD_LONG") ::
+      (axKnIn "Int" "mul", rt "INT_MUL_LONG") ::
+      (axKnIn "Int" "ediv", rt "INT_EDIV_LONG") ::
+      (axKnIn "Int" "emod", rt "INT_EMOD_LONG") ::
+      (axKnIn "Int" "decEq", rt "INT_DEC_EQ_LONG") ::
+      -- Lean's `Array` operations (`@[extern]`, so erasure keeps no body). The
       -- Lean frontend writes `!` in a name as `_u33`.
-      (axKnIn "Array" "mk", fixed "ARRAY_MK") ::
-      (axKnIn "Array" "emptyWithCapacity", fixed "ARRAY_EMPTY_WITH_CAPACITY") ::
-      (axKnIn "Array" "push", fixed "ARRAY_PUSH") ::
-      (axKnIn "Array" "getInternal", fixed "ARRAY_GET_INTERNAL") ::
-      (axKnIn "Array" "get_u33Internal", fixed "ARRAY_GET_BANG_INTERNAL") ::
-      (axKnIn "Array" "set_u33", fixed "ARRAY_SET_BANG") ::
-      (axKnIn "Array" "swap", fixed "ARRAY_SWAP") ::
-      (axKnIn "Array" "size", jField rtRef ("ARRAY_SIZE_" ++ leanOpSuffix)) ::
+      (axKnIn "Array" "mk", rt "ARRAY_MK") ::
+      (axKnIn "Array" "emptyWithCapacity", rt "ARRAY_EMPTY_WITH_CAPACITY") ::
+      (axKnIn "Array" "push", rt "ARRAY_PUSH") ::
+      (axKnIn "Array" "getInternal", rt "ARRAY_GET_INTERNAL") ::
+      (axKnIn "Array" "get_u33Internal", rt "ARRAY_GET_BANG_INTERNAL") ::
+      (axKnIn "Array" "set_u33", rt "ARRAY_SET_BANG") ::
+      (axKnIn "Array" "swap", rt "ARRAY_SWAP") ::
+      (axKnIn "Array" "size", rt "ARRAY_SIZE_LONG") ::
       -- Rewriting along an equality is the identity at runtime.
-      (axKnIn "Eq" "rec", fixed "EQ_REC") ::
-      (axKnIn "Eq" "ndrec", fixed "EQ_REC") ::
+      (axKnIn "Eq" "rec", rt "EQ_REC") ::
+      (axKnIn "Eq" "ndrec", rt "EQ_REC") ::
       nil
 
 -- Lookup in the table, comparing mangled names (exact, since `mangleKername`

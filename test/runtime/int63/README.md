@@ -21,7 +21,6 @@ Files:
 | `prim_int63.mli`, `prim_int63.ml` | the OCaml realizations the attribute file remaps onto |
 | `vars.sh` | the bundle's declarations |
 
-This is the **only** place in the corpus where the `long`-vs-`int63` gap is
-observable: C and OCaml implement genuine int63 (wrapping mod 2^63), our Java
-backend a 64-bit `long`, so the three agree only well below 2^62. That is why the
-`c` backend is kept at all — see the `targetInt63` axis in `../../README.md`.
+All three backends implement int63 (wrapping mod 2^63); Java needs no attribute
+file, since its axiom table maps `prim_*_int` to `Rt.PRIM_*_INT63`. These
+reference backends only run with `test/check run --ref`.
