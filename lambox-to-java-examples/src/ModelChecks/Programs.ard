@@ -1,0 +1,205 @@
+\import Compiler.Int63 (wrap63)
+\import Compiler.LambdaBox
+\import Compiler.LongRewrite (rewriteProgram)
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import ExamplePeano
+\import Paths
+\import Semantics.LambdaBoxAxioms (boolInd, natKn, rootKn)
+\import Semantics.LambdaBoxEval
+
+-- The small λ□ programs the other `ModelChecks` modules use, one feature
+-- each, with a hand-written λ□ derivation where one is short.
+--
+--   * `TheoremInstances`: the main theorem applied to them;
+--   * `DiffRuns`: the λ□ model, the Java model and the JVM compared on them;
+--   * `Sanity`: checks of individual definitions.
+
+-- ---------------------------------------------------------------------------
+-- No declarations.
+-- ---------------------------------------------------------------------------
+
+-- `box`, the erased value.
+\func boxProgram : LBProgram => (nil, box)
+
+\func lbBox (spec : LBSpec) : EvalProgram spec boxProgram box => evalAtomBox idp
+
+-- `let x := box in x`.
+\func letProgram : LBProgram => (nil, letIn anon box (bvar 0))
+
+\func lbLet (spec : LBSpec) : EvalProgram spec letProgram box =>
+  evalZeta (evalAtomBox idp) (evalAtomBox idp)
+
+-- `(\x. x) box`.
+\func idTerm : LBTerm => lambda anon (bvar 0)
+
+\func betaProgram : LBProgram => (nil, app idTerm box)
+
+\func lbBeta (spec : LBSpec) : EvalProgram spec betaProgram box =>
+  evalBeta (evalAtomLambda idp) (evalAtomBox idp) (evalAtomBox idp)
+
+-- `box box` (`eval_box`): erasure produces this whenever a type former or a
+-- proof is applied. In Java `Rt.BOX` is an `Fn` returning itself.
+\func boxAppProgram : LBProgram => (nil, app box box)
+
+\func lbBoxApp (spec : LBSpec) : EvalProgram spec boxAppProgram box =>
+  evalBox idp (evalAtomBox idp) (evalAtomBox idp)
+
+-- A primitive integer.
+\func primProgram : LBProgram => (nil, prim (rocqUint63, 7))
+
+\func lbPrim (spec : LBSpec) : EvalProgram spec primProgram (prim (rocqUint63, 7)) => evalPrim idp
+
+-- A `fix` block with two definitions: 0 returns `box`, 1 is the identity.
+-- Selecting definition 1 and applying it to 5 gives 5, definition 0 `box`.
+\func constBoxTerm : LBTerm => lambda anon box
+
+\func twoDefs : Array (FixDef LBTerm) =>
+  (\new FixDef LBTerm anon constBoxTerm 0) ::
+  (\new FixDef LBTerm anon idTerm 0) :: nil
+
+\func fix2Program : LBProgram => (nil, app (fix twoDefs 1) (prim (rocqUint63, 5)))
+
+\func lbFix2 (spec : LBSpec) : EvalProgram spec fix2Program (prim (rocqUint63, 5)) =>
+  evalFix (evalAtomFix idp) idp (evalPrim idp)
+          (evalBeta (evalAtomLambda idp) (evalPrim idp) (evalPrim idp))
+
+-- ---------------------------------------------------------------------------
+-- Inductives.
+-- ---------------------------------------------------------------------------
+
+-- `proj`: the inductive has one parameter and one constructor with two fields,
+-- so field 1 is at index `npars + 1 = 2`. The three arguments differ, so a
+-- missing offset changes the answer (21 would become 20).
+\func pairKername : Kername => \new Kername (mpFile nil) "Pair"
+
+\func pairInd : InductiveId => \new InductiveId pairKername 0
+
+\func pairDecls : GlobalDeclarations =>
+  (pairKername, inductiveDecl
+    (\new MutualInductiveBody finite 1
+      ((\new OneInductiveBody "Pair" false IntoAny ((\new ConstructorBody "mk" 2) :: nil)
+          ((\new ProjectionBody "fst") :: (\new ProjectionBody "snd") :: nil)) :: nil))) :: nil
+
+-- `mk <param> 20 21`, the parameter erased to `box`.
+\func pairTerm : LBTerm =>
+  construct pairInd 0 (box :: prim (rocqUint63, 20) :: prim (rocqUint63, 21) :: nil)
+
+\func projProgram : LBProgram => (pairDecls, proj (\new ProjectionInfo pairInd 1 1) pairTerm)
+
+\func lbPair (spec : LBSpec) : Eval spec pairDecls pairTerm pairTerm =>
+  evalConstruct idp idp
+    (\lam i => \case \elim i \with {
+      | 0 => evalAtomBox idp
+      | 1 => evalPrim idp
+      | 2 => evalPrim idp
+    })
+    idp
+
+\func lbProj (spec : LBSpec) : EvalProgram spec projProgram (prim (rocqUint63, 21)) =>
+  evalProj (lbPair spec) idp idp idp (evalPrim idp)
+
+-- Peano numerals (`ExamplePeano`'s declarations): a bare constructor value,
+-- and a `case` taking either branch.
+\func twoProgram : LBProgram => (decls, suc' (suc' zero'))
+
+\func natInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "Nat") 0
+
+-- `case 2 of { zero => 0 ; suc n => n }` is 1.
+\func predProgram : LBProgram =>
+  (decls, case natInd 0 (suc' (suc' zero'))
+            (((nil : Array BinderName), zero') ::
+             ((anon :: nil : Array BinderName), bvar 0) :: nil))
+
+-- `case 0 of { zero => 1 ; suc n => n }` is 1: the branch with no fields.
+\func zeroCaseProgram : LBProgram =>
+  (decls, case natInd 0 zero'
+            (((nil : Array BinderName), suc' zero') ::
+             ((anon :: nil : Array BinderName), bvar 0) :: nil))
+
+-- ---------------------------------------------------------------------------
+-- Axioms: Rocq's `Uint63` operations and Lean's machine `Nat`.
+-- ---------------------------------------------------------------------------
+
+\func axiomDecl (kn : Kername) : GlobalDeclarations => (kn, constantDecl (\new ConstantBody nothing)) :: nil
+
+\func app2 (kn : Kername) (a b : LBTerm) : LBTerm => app (app (const kn) a) b
+
+\func u63 (i : Nat) : LBTerm => prim (rocqUint63, wrap63 (pos i))
+
+\func axiomKn : Kername => rootKn "prim_add_int"
+
+\func subAxiomKn : Kername => rootKn "prim_sub_int"
+
+-- `prim_add_int 2 3` is 5.
+\func addAxiomProgram : LBProgram => (axiomDecl axiomKn, app2 axiomKn (prim (rocqUint63, 2)) (prim (rocqUint63, 3)))
+
+-- `prim_sub_int 1 2` is 2^63-1: `Uint63` wraps (a JVM `long` would say -1).
+\func int63Program : LBProgram => (axiomDecl subAxiomKn, app2 subAxiomKn (u63 1) (u63 2))
+
+-- `prim_sub_int 0 1` is 2^63-1 as well.
+\func subZeroProgram : LBProgram => (axiomDecl subAxiomKn, app2 subAxiomKn (u63 0) (u63 1))
+
+-- `prim_add_int (2^63-2) 1` is 2^63-1, just below the wrap.
+\func addNearOverflowProgram : LBProgram =>
+  (axiomDecl axiomKn, app2 axiomKn (u63 9223372036854775806) (u63 1))
+
+-- `prim_add_int (2^63-1) 1` is 0.
+\func overflowProgram : LBProgram => (axiomDecl axiomKn, app2 axiomKn (u63 9223372036854775807) (u63 1))
+
+-- A literal, with no computation.
+\func litProgram : LBProgram => (nil, prim (rocqUint63, 42))
+
+-- Lean's `Nat`: `20 + 22`, `3 - 5` (truncates to 0), `42 / 5`, and
+-- `(2^63-1) + 1` (wraps to 0, as `Uint63`).
+\func natAddProgram : LBProgram => (axiomDecl (natKn "add"), app2 (natKn "add") (u63 20) (u63 22))
+
+\func natSubProgram : LBProgram => (axiomDecl (natKn "sub"), app2 (natKn "sub") (u63 3) (u63 5))
+
+\func natDivProgram : LBProgram => (axiomDecl (natKn "div"), app2 (natKn "div") (u63 42) (u63 5))
+
+\func natOverflowProgram : LBProgram =>
+  (axiomDecl (natKn "add"), app2 (natKn "add") (u63 9223372036854775807) (u63 1))
+
+-- A partial application: a function value on both sides.
+\func partialProgram : LBProgram => (axiomDecl (natKn "add"), app (const (natKn "add")) (u63 20))
+
+-- `Array.push`: realized by the runtime but modelled on neither side.
+\func arrayProgram : LBProgram =>
+  (axiomDecl (\new Kername (mpDot (mpFile nil) "Array") "push"),
+   app2 (\new Kername (mpDot (mpFile nil) "Array") "push") box (u63 1))
+
+-- A Boolean axiom and a `case` on its result. The declaration is the Lean
+-- frontend's root-module `Bool`, the inductive the oracle's `lbBool` returns:
+-- a wrong inductive would be stuck at the `case`, swapped tags would give 100.
+\func boolDecls : GlobalDeclarations =>
+  (natKn "beq", constantDecl (\new ConstantBody nothing)) ::
+  ((rootKn "Bool"), inductiveDecl
+     (\new MutualInductiveBody finite 0
+        ((\new OneInductiveBody "Bool" false IntoAny
+            ((\new ConstructorBody "Bool.false" 0) :: (\new ConstructorBody "Bool.true" 0) :: nil)
+            nil) :: nil))) :: nil
+
+-- `case (Nat.beq 3 3) of { false => 100 ; true => 200 }` is 200.
+\func boolCaseProgram : LBProgram =>
+  (boolDecls,
+   case boolInd 0 (app2 (natKn "beq") (u63 3) (u63 3))
+     (((nil : Array BinderName), u63 100) :: ((nil : Array BinderName), u63 200) :: nil))
+
+-- `Nat.beq 3 4` is `Bool.false`.
+\func boolProgram : LBProgram => (boolDecls, app2 (natKn "beq") (u63 3) (u63 4))
+
+-- ---------------------------------------------------------------------------
+-- The Java-long pass (`Compiler/LongRewrite.ard`) applied to three of the
+-- above: the same value below 2^63, and a different one across it.
+-- ---------------------------------------------------------------------------
+
+-- 5.
+\func longAddProgram : LBProgram => rewriteProgram addAxiomProgram
+
+-- -1, where `Uint63` says 2^63-1.
+\func longSubZeroProgram : LBProgram => rewriteProgram subZeroProgram
+
+-- -2^63, where `Uint63` says 0.
+\func longOverflowProgram : LBProgram => rewriteProgram overflowProgram

@@ -4,23 +4,27 @@
 \import Data.String
 \import Compiler.Int63
 \import Compiler.LambdaBox
+\import Compiler.ToJava (compileProgram)
 \import Set
 
--- Choosing 64-bit arithmetic, as a source-to-source pass on λ□ programs.
+-- Opting into Java `long` arithmetic, as a source-to-source pass on λ□
+-- programs.
 --
--- `rewriteProgram` turns `rocqUint63` literals and operations into `javaLong` ones; the
--- result is an ordinary λ□ program for the ordinary backend and semantics, so
--- "use Java `long` for speed" becomes a comparison of two programs.
+-- `rewriteProgram` turns Rocq `Uint63` literals and operations (`prim_*_int`)
+-- into `javaLong` ones (`prim_*_long`, realized by `Rt.PRIM_*_LONG`, which
+-- skip the 63-bit mask). The result is an ordinary λ□ program for the
+-- ordinary backend, semantics and correctness theorem; `compileProgramLong`
+-- is the backend with the pass in front (`test/check run --long`).
 --
--- Literals and operations are rewritten together in one traversal: a `prim`
--- tag fixes what a literal means, but an operation is a `const` kername that
--- the compiler translates without seeing its operands.
+-- Literals and operations are rewritten together: a `prim` tag fixes what a
+-- literal means, but an operation is a `const` kername that the compiler
+-- translates without seeing its operands.
 --
--- This does NOT preserve semantics in general: the programs agree as long as
--- no operation overflows 2^63. `Proof/LongRewriteSpec.ard` states that side
--- condition; `ModelChecks/CorrectInstances.ard` has one example where the
--- value is preserved and one where it is not. The pass is one-way, and its
--- output cannot be exported by `Compiler/Serialize.ard` (no `javaLong` there).
+-- Literals keep their value (`Proof/LongRewriteSpec.ard`), but operations only
+-- agree while no intermediate result leaves [0, 2^63): `(2^63-1) + 1` is 0 as
+-- a `Uint63` and -2^63 as a `long` (`ModelChecks/Sanity.ard`). Lean's `Nat.*`
+-- are not rewritten: they already use `long` where that is safe. The output
+-- cannot be exported by `Compiler/Serialize.ard` (peregrine has no `javaLong`).
 
 -- The four axioms whose meaning depends on the width; all others (Lean's
 -- `Nat.*`, `Int.*`, `Array.*`, `Eq.rec`) are left alone.
@@ -79,3 +83,7 @@
 
 \func rewriteProgram (p : LBProgram) : LBProgram =>
   (mkArray (\lam i => (rewriteKername (p.1 i).1, rewriteDecl (p.1 i).2)), rewriteTerm p.2)
+
+-- The Java backend with the pass in front.
+\func compileProgramLong (className : String) (p : LBProgram) : String =>
+  compileProgram className (rewriteProgram p)

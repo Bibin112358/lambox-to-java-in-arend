@@ -30,7 +30,6 @@
 -- them: `Array.*` (mutable, would need a store); `Nat.decEq`/`decLe`/`decLt`
 -- and `Eq.rec`/`Eq.ndrec` (return `Decidable`, whose value depends on an
 -- inductive declaration); `Int.*` (each needs its own convention); `Nat.pow`.
--- The census of these in the test corpus is in `ModelChecks/Agreement.ard`.
 
 -- ---------------------------------------------------------------------------
 -- The values this oracle produces and consumes.

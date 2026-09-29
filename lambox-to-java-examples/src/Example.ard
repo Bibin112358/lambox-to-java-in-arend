@@ -30,7 +30,6 @@
 
 -- ---------- Kernames ----------
 
-\func knNat     : Kername => \new Kername mpMain  "NatBlock"
 \func knWrap    : Kername => \new Kername mpSub   "WrapBlock"
 \func knEmpty   : Kername => \new Kername mpMain  "EmptyBlock"
 \func knWrapped : Kername => \new Kername mpSub   "wrapped"

@@ -3,9 +3,7 @@
 \import Debug (putStrLn)
 \import ExamplePeano (addProgram)
 \import ExampleSort (sortProgram)
-\import ModelChecks.Agreement (twoProgram, predProgram, zeroCaseProgram, litProgram, addAxiomProgram,
-                               natAddProgram, boolCaseProgram, boolProgram, natSubProgram, int63Program,
-                               natDivProgram, axiomKn, subAxiomKn)
+\import ModelChecks.Programs
 \import Compiler.Int63 (signed64)
 \import Compiler.LambdaBox
 \import Compiler.StringUtil (natToStr, intToStr, joinStr)
@@ -28,8 +26,8 @@
 --     (`runClass rtInt63`),
 -- the two values in the format `Rt.runMain` prints them on the JVM (`tag(f,..)`,
 -- decimal longs, `BOX`). `test/check diff` compiles and runs the Java for real
--- and compares the three values (whitespace ignored). `ModelChecks/Agreement.ard`
--- checks the two models against EACH OTHER by `idp`; this adds the JVM.
+-- and compares the three values (whitespace ignored). The programs are in
+-- `ModelChecks/Programs.ard`.
 -- =============================================================================
 
 \func wrapFields (tag : String) (fs : Array String) : String \elim fs
@@ -96,15 +94,6 @@
   showJRes (runClass rtInt63 (compileClass progClassName p) bodyMethodName diffFuel) ++
   "\n===== " ++ name ++ " end ====="
 
--- Two int63 edge cases the JVM must wrap exactly like λ□'s `Uint63`.
-\func subZeroProgram : LBProgram =>
-  ((subAxiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const subAxiomKn) (prim (rocqUint63, 0))) (prim (rocqUint63, 1)))
-
-\func addNearOverflowProgram : LBProgram =>
-  ((axiomKn, constantDecl (\new ConstantBody nothing)) :: nil,
-   app (app (const axiomKn) (prim (rocqUint63, 9223372036854775806))) (prim (rocqUint63, 1)))
-
 \func diffPeano => putStrLn (dump "peano" addProgram)
 \func diffSort => putStrLn (dumpJavaOnly "insertion-sort" sortProgram)
 \func diffTwo => putStrLn (dump "two" twoProgram)
@@ -120,3 +109,9 @@
 \func diffNatDiv => putStrLn (dump "nat-div" natDivProgram)
 \func diffSubZero => putStrLn (dump "sub-zero" subZeroProgram)
 \func diffAddNearOverflow => putStrLn (dump "add-near-overflow" addNearOverflowProgram)
+
+-- The Java-long pass: `long` arithmetic on the JVM, in the Java model and in
+-- λ□ (`javaLong`), including where it differs from `Uint63`.
+\func diffLongAdd => putStrLn (dump "long-add" longAddProgram)
+\func diffLongSubZero => putStrLn (dump "long-sub-zero" longSubZeroProgram)
+\func diffLongOverflow => putStrLn (dump "long-overflow" longOverflowProgram)

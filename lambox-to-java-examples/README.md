@@ -15,14 +15,14 @@ Sample input for the `lambox-to-java` compiler, kept in its own Arend project
 - `ModelChecks/`: cheap computational sanity checks of the semantic models in
   `lambox-to-java/src/Semantics/` (the general correctness theorem itself is
   proved in `lambox-to-java/src/Proof/`):
-  - `Agreement.ard`: λ□ programs run by the λ□ runner and, compiled, by the
-    Java-fragment evaluator, with the results compared;
-  - `CorrectInstances.ard`: concrete instances of the correctness statement,
-    checked by running both models, plus negative checks;
-  - `TheoremInstances.ard`: the proved theorem itself applied to concrete
-    programs (`Proof/Corollary.ard`), giving the Java value `body()` returns;
-  - `JavaEvalRuns.ard`: the Java-fragment evaluator on generated programs;
-  - `DiffRuns.ard`: differential tests, the Arend models against a real JVM.
+  - `Programs.ard`: the small λ□ programs the other three use, one feature
+    each (including three after the Java-long pass);
+  - `TheoremInstances.ard`: the proved theorem itself applied to them
+    (`Proof/Corollary.ard`), giving the Java value `body()` returns;
+  - `DiffRuns.ard`: differential tests, the Arend models against a real JVM;
+  - `Sanity.ard`: `idp` checks of single definitions: λ□ rules, name
+    mangling, the value relation, Java name resolution and casts, and where
+    the Java-long pass keeps or changes a value.
 
 ## Running
 

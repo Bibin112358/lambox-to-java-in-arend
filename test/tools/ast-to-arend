@@ -584,6 +584,7 @@ HEADER = """\
 -- The lambda-box program of that Peregrine `.ast` file, rebuilt with the
 -- `LambdaBox.ard` constructors. Typechecking `progJava` prints the generated
 -- Java, exactly as the hand-written ExamplePrint.ard definitions do;
+-- `progJavaLong` the same after the Java-long pass (Compiler/LongRewrite.ard);
 -- `progNames` prints its constructor-name table (Compiler/CtorNames.ard).
 """
 
@@ -594,11 +595,14 @@ IMPORTS = """\
 \\import Debug
 \\import Compiler.CtorNames
 \\import Compiler.LambdaBox
+\\import Compiler.LongRewrite (compileProgramLong)
 \\import Compiler.ToJava
 """
 
 FOOTER = """\
 \\func progJava => putStrLn (compileProgram "Prog" program)
+
+\\func progJavaLong => putStrLn (compileProgramLong "Prog" program)
 
 \\func progNames => putStrLn (ctorNames program)
 """

@@ -7,7 +7,7 @@ One entry point, `test/check`, answers four questions:
 | `test/check proofs` | Do the compiler, the semantics and the correctness proof typecheck? | every module of `lambox-to-java/src/{Compiler,Semantics,Proof}` and `lambox-to-java-examples/src/ModelChecks`, **each in its own Arend run**, 2 at a time | ~15–25 min |
 | `test/check golden` | Is the generated Java unchanged? | generate Java for 5 programs in one Arend run (4 covering the generator's features, plus `insertion-sort`, the example shown in the top-level README), diff against `golden/*.java` | ~1 min |
 | `test/check run P...` | Do compiled programs compute the right value on the JVM? | import `.ast` → generate Java → `javac` → `java`, compare with the corpus' expected value | ~40–70 s per program |
-| `test/check diff` | Do the Arend models agree with the real JVM? | `ModelChecks.DiffRuns` prints, for 14 small programs, the Java and the values computed by the λ□ semantics and by the Java-fragment semantics; the Java is run for real and all three values must be equal | ~1.5 min |
+| `test/check diff` | Do the Arend models agree with the real JVM? | `ModelChecks.DiffRuns` prints, for 18 small programs, the Java and the values computed by the λ□ semantics and by the Java-fragment semantics; the Java is run for real and all three values must be equal | ~1.5 min |
 
 Before a commit run **`test/check quick`** (= `proofs` + `golden`). Run
 `run`/`diff` as well after touching `Compiler/ToJava.ard`, `runtime/Rt.java` or the
@@ -32,6 +32,7 @@ meaningless, so any `[ERROR]` or `[GOAL]` line counts as a failure. Logs are in
     test/check run --all                      # all 56 programs (~30 min)
     test/check run --ref matmul               # also run Peregrine's OCaml / C backends
     test/check run --names insertion-sort     # print the value with constructor names (debugging)
+    test/check run --long matmul              # compile after the Java-long pass (below)
 
 `run` prints one line per program: its verdict (`ok`, `wrong`, `gen-fail`,
 `build-fail`, `run-fail`, `timeout`, `xfail`, `skip-no-tool`, or `disagree` with
@@ -62,6 +63,16 @@ Java model and the proofs are unaffected; without the property `Rt` prints bare
 tags as before. By hand: `LAMBOX_NAMES=1 stages/java.sh gen|build|run ...`, or
 `java -Dlambox.names=<file> ...` with a table printed by `progNames` of an
 imported module.
+
+### Java `long` arithmetic (`--long`)
+
+`run --long` compiles each program after `Compiler/LongRewrite.ard`, which turns
+Rocq's `Uint63` literals and operations (`prim_*_int`, wrapping mod 2^63) into
+Java `long` ones (`prim_*_long`, `Rt.PRIM_*_LONG`). The value, and so the
+comparison with the expected value, is the same while no intermediate result
+reaches 2^63; `ModelChecks/Sanity.ard` and `check diff` include cases on both
+sides of that bound. The correctness theorem covers the rewritten program like
+any other λ□ program.
 
 ## Prerequisites
 

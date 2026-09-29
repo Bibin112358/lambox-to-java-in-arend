@@ -84,9 +84,6 @@
 -- Small inversions.
 -- ---------------------------------------------------------------------------
 
--- `just-injective`, under the name `Proof/CompileValueLemmas.ard` imports.
-\func justInj {A : \Type} {x y : A} (e : just x = just y) : x = y => just-injective e
-
 \func isAtomT (t : LBTerm) : Bool \elim t
   | box => true
   | lambda _ _ => true

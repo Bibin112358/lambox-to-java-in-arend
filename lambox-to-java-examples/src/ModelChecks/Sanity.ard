@@ -1,0 +1,289 @@
+\import Arith.Nat
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Compiler.Int63 (wrap63, wrap64u)
+\import Compiler.JavaAst
+\import Compiler.LambdaBox
+\import Compiler.LongRewrite (rewriteProgram)
+\import Compiler.Mangle
+\import Compiler.StringUtil (intEqB)
+\import Compiler.ToJava
+\import ExamplePeano
+\import ExampleSort (sortProgram)
+\import ModelChecks.Programs
+\import Paths
+\import Proof.LongRewriteSpec (primValue)
+\import Proof.Statement (agrees, axiomRtName, progClassName)
+\import Semantics.JavaEval
+\import Semantics.JavaValue
+\import Semantics.LambdaBoxAxioms
+\import Semantics.LambdaBoxEnv
+\import Semantics.LambdaBoxEval
+\import Semantics.LambdaBoxRun
+\import Semantics.Res
+\import Semantics.RtInt63
+\import Semantics.RtLong
+\import Set
+
+-- Checks of individual definitions, each by `idp`, so typechecking this
+-- module runs them. They cover what the main theorem does not state: rules
+-- and corner cases of the models, name resolution, and the Java-long pass.
+-- (Whole programs are covered by `TheoremInstances` and `DiffRuns`.)
+
+-- ---------------------------------------------------------------------------
+-- 1. The λ□ semantics.
+-- ---------------------------------------------------------------------------
+
+-- `fix { f := \x. x } 0` applied to `box`: `fixSubst`, `substl`, `csubst`.
+\func idFixDefs : Array (FixDef LBTerm) => (\new FixDef LBTerm anon idTerm 0) :: nil
+
+\func evalIdFix (spec : LBSpec) : Eval spec nil (app (fix idFixDefs 0) box) box =>
+  evalFix (evalAtomFix idp) idp (evalAtomBox idp)
+          (evalBeta (evalAtomLambda idp) (evalAtomBox idp) (evalAtomBox idp))
+
+-- The axiom rules, against a toy oracle: a binary axiom returning its second
+-- argument. This pins the order in which `axiomSat` collects arguments.
+\func sndKn : Kername => \new Kername (mpFile nil) "snd"
+
+\func lbSnd : LBSpec \cowith
+  | axiomArity kn => \case kernameEq kn sndKn \with { | true => just 2 | false => nothing }
+  | axiomRun kn args => \case kernameEq kn sndKn, args \with {
+    | true, _ :: y :: nil => just y
+    | _, _ => nothing
+  }
+
+\func sndEnv : GlobalDeclarations => axiomDecl sndKn
+
+-- Unapplied, the axiom is a value ...
+\func evalAxiomIsValue : Eval lbSnd sndEnv (const sndKn) (const sndKn) =>
+  evalAxiom idp idp idp idp
+
+-- ... applied to one argument, a stuck value (congruence) ...
+\func evalAxiomPartial
+  : Eval lbSnd sndEnv (app (const sndKn) (prim (rocqUint63, 1)))
+                      (app (const sndKn) (prim (rocqUint63, 1))) =>
+  evalAppCong evalAxiomIsValue idp (evalPrim idp) idp idp
+
+-- ... and applied to both, the oracle computes the second argument.
+\func evalAxiomFires
+  : Eval lbSnd sndEnv (app2 sndKn (prim (rocqUint63, 1)) (prim (rocqUint63, 2))) (prim (rocqUint63, 2)) =>
+  evalAxiomApp sndKn (prim (rocqUint63, 1) :: prim (rocqUint63, 2) :: nil)
+               evalAxiomPartial (evalPrim idp) idp idp
+
+-- Without an oracle (`lbNone`, upstream λ□) an axiom application is stuck.
+\func stuckWithoutOracle : runProgram lbNone addAxiomProgram 200 = rStuck => idp
+
+-- `Array.push` is realized by the runtime but not modelled: stuck.
+\func arrayStuck : runProgram lbAxioms arrayProgram 200 = rStuck => idp
+
+-- The environment semantics (`Semantics/LambdaBoxEnv.ard`).
+\func eeId (spec : LBSpec) : EvalE spec nil nil (app idTerm box) evBox =>
+  eeApp (eeLam idp) (eeBox idp) (apBeta (eeVar idp))
+
+-- `let x := box in (\y. x) box`: the closure captures `x`.
+\func eeLetCapture (spec : LBSpec)
+  : EvalE spec nil nil (letIn anon box (app (lambda anon (bvar 1)) box)) evBox =>
+  eeLet (eeBox idp) (eeApp (eeLam idp) (eeBox idp) (apBeta (eeVar idp)))
+
+-- ---------------------------------------------------------------------------
+-- 2. Names and the axiom table.
+-- ---------------------------------------------------------------------------
+
+-- `const` and the axiom table identify a constant by its mangled name, so
+-- distinct kernames must mangle differently (`Compiler/Mangle.ard`). These
+-- pairs would collide under a naive `_`-joined encoding.
+\func knAB : Kername => \new Kername (mpFile ("A_B" :: nil)) "x"
+\func knA_B : Kername => \new Kername (mpFile ("A" :: "B" :: nil)) "x"
+\func knDotAB : Kername => \new Kername (mpDot (mpFile ("A" :: nil)) "B") "x"
+
+\func mangleSplitsDirs : (mangleKername knAB == mangleKername knA_B) = false => idp
+\func mangleSplitsDot : (mangleKername knDotAB == mangleKername knA_B) = false => idp
+
+-- A module named `_Nat` is not Lean's `Nat`.
+\func underscoreNatIsNotNat
+  : axiomRtName (\new Kername (mpDot (mpFile nil) "_Nat") "add") = nothing => idp
+
+-- Lean's `Nat.add` wraps like `Uint63`; `Nat.sub` truncates, so it has its own
+-- runtime constant.
+\func natAddResolves : axiomRtName (natKn "add") = just "PRIM_ADD_INT63" => idp
+
+\func natAddArity : axiomArity {lbAxioms} (natKn "add") = builtinArity {rtInt63} "PRIM_ADD_INT63" => idp
+
+\func natSubResolves : axiomRtName (natKn "sub") = just "NAT_SUB_LONG" => idp
+
+-- ---------------------------------------------------------------------------
+-- 3. The value relation `agrees` (`Proof/Statement.ard`).
+-- ---------------------------------------------------------------------------
+
+-- Wrong fields, wrong shape and wrong tag are rejected.
+\func agreesRejectsArity : agrees (suc' zero') (vData 1 nil) = false => idp
+
+\func agreesRejectsShape : agrees box (vLong (0, ())) = false => idp
+
+\func agreesRejectsTag : agrees zero' (vData 1 nil) = false => idp
+
+-- 2^63 is not a `Uint63`: a payload is built with `wrap63`, so writing 2^63
+-- gives 0, which agrees with the Java value 0 and not with -2^63 (the same
+-- bits read as a `long`).
+\func int63LiteralNormalizes
+  : prim (rocqUint63, wrap63 (pos 9223372036854775808)) = prim (rocqUint63, 0) => idp
+
+\func int63NormalizedAgrees
+  : agrees (prim (rocqUint63, wrap63 (pos 9223372036854775808))) (vLong (0, ())) = true => idp
+
+\func int63NormalizedRejectsMin
+  : agrees (prim (rocqUint63, wrap63 (pos 9223372036854775808))) (vLong (neg 9223372036854775808, ())) = false
+  => idp
+
+-- A partial application is a function value on both sides, which `agrees`
+-- does not relate (the theorem does, by construction: `Proof/CompileValue.ard`).
+\func partialInLambdaBox
+  : runProgram lbAxioms partialProgram 200 = rOk (app (const (natKn "add")) (u63 20)) => idp
+
+\func partialInJava
+  : runClass rtInt63 (compileClass progClassName partialProgram) bodyMethodName 200
+  = rOk (rvValue (vBuiltin "PRIM_ADD_INT63" (vLong (20, ()) :: nil))) => idp
+
+\func partialNotCompared
+  : agrees (app (const (natKn "add")) (u63 20)) (vBuiltin "PRIM_ADD_INT63" (vLong (20, ()) :: nil)) = false
+  => idp
+
+-- ---------------------------------------------------------------------------
+-- 4. The Java model on its own.
+-- ---------------------------------------------------------------------------
+
+-- A runtime that covers nothing: enough for programs without axioms or
+-- literals, so these runs are about the Java fragment alone.
+\func rtNone : RtSpec \cowith
+  | rtField _ => nothing
+  | builtinArity _ => nothing
+  | builtinRun _ _ => rStuck
+  | rtStaticCall _ _ => nothing
+
+-- Constructors as `Rt.Data`: an erased inductive's parameters are not stored.
+\func natV (n : Nat) : Value \elim n
+  | 0 => vData 0 nil
+  | suc n => vData 1 (natV n :: nil)
+
+\func listV (xs : Array Nat) : Value \elim xs
+  | nil => vData 0 nil
+  | x :: xs => vData 1 (natV x :: listV xs :: nil)
+
+-- Peano `1 + 3` is 4, what the JVM prints for the corpus program `peano`;
+-- under `rtLong`, a runtime that could answer, it is the same.
+\func peanoEvaluates : runClass rtNone (compileClass "Prog" addProgram) bodyMethodName 2000 = rOk (rvValue (natV 4))
+  => idp
+
+\func peanoUnderRtLong : runClass rtLong (compileClass "Prog" addProgram) bodyMethodName 2000 = rOk (rvValue (natV 4))
+  => idp
+
+-- Insertion sort (`ExampleSort.ard`): too deep for the λ□ runner inside
+-- Arend, fine for the Java model.
+\func sortEvaluates
+  : runClass rtNone (compileClass "Prog" sortProgram) bodyMethodName 5000 = rOk (rvValue (listV (1 :: 1 :: 2 :: 3 :: 4 :: nil)))
+  => idp
+
+-- Programs without inductive declarations are stuck in λ□ but run in Java.
+-- `proj` without and with a parameter stored ahead of the fields (reading 5
+-- instead of 7 would mean the offset is missing).
+\func boxInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "Box") 0
+
+\func projEvaluates
+  : runClass rtLong (compileClass "Prog" (nil, proj (\new ProjectionInfo boxInd 0 0) (construct boxInd 0 (u63 7 :: nil))))
+             bodyMethodName 100 = rOk (rvValue (vLong (7, ())))
+  => idp
+
+\func projParamEvaluates
+  : runClass rtLong (compileClass "Prog" (nil, proj (\new ProjectionInfo boxInd 1 0) (construct boxInd 0 (u63 5 :: u63 7 :: nil))))
+             bodyMethodName 100 = rOk (rvValue (vLong (7, ())))
+  => idp
+
+-- A `case` with no branches (an erased `Empty`): `Rt.noBranch` throws.
+\func emptyCaseThrows
+  : runClass rtLong (compileClass "Prog" (nil, case boxInd 0 (construct boxInd 0 nil) nil)) bodyMethodName 100
+  = rOk (rvThrown (vExcObj cIllegalState "matches no branch"))
+  => idp
+
+-- Type names and casts as in Java (JLS 6.5.5, 5.5.3): a name is resolved (a
+-- local class in scope first), then the cast checks subtyping.
+\func objectAlias : resolveType nil (tClass "java.lang.Object") = resolveType nil tObject => idp
+
+\func castObjectQualified : castOk nil (tClass "java.lang.Object") vBox = just true => idp
+
+-- `Rt.BOX` is an `Rt.Fn` but not an `Rt.Data`: that cast throws.
+\func castBoxFn : castOk nil tFn vBox = just true => idp
+
+\func castBoxData : castOk nil tData vBox = just false => idp
+
+-- A `ClassCastException` is a `RuntimeException`.
+\func castSubclass : castOk nil (tClass "RuntimeException") excCCE = just true => idp
+
+-- An unknown class name: `javac` would reject the cast.
+\func castUnknown : castOk nil (tClass "Foo") vBox = nothing => idp
+
+-- A local class named `Object` shadows `java.lang.Object`; one named `Rt`
+-- shadows `Rt.Data`.
+\func shadowObject : resolveType (bindType nil "Object" (vObj "Object" nil nil)) tObject = just (cLocal "Object") => idp
+
+\func shadowRt : resolveType (bindType nil "Rt" (vObj "Rt" nil nil)) tData = nothing => idp
+
+-- Separate namespaces: a variable named `Rt` shadows no type, and a local
+-- class is no variable.
+\func varNoShadow : resolveType (bindVar nil "Rt" vBox) tData = just cRtData => idp
+
+\func classNoVar : lookupVar (bindType nil "C" (vObj "C" nil nil)) "C" = nothing => idp
+
+-- ---------------------------------------------------------------------------
+-- 5. The Java-long pass (`Compiler/LongRewrite.ard`).
+-- ---------------------------------------------------------------------------
+
+-- Do two first-order λ□ values denote the same thing? Literals are compared by
+-- the number they denote (`primValue`), whatever their kind.
+\func sameValue (n : Nat) (a b : LBTerm) : Bool \elim n
+  | 0 => false
+  | suc n => \case a, b \with {
+    | box, box => true
+    | prim pv, prim pw => intEqB (primValue pv) (primValue pw)
+    | construct _ c xs, construct _ d ys => (c == d) and sameValues n xs ys
+    | _, _ => false
+  }
+
+\func sameValues (n : Nat) (xs ys : Array LBTerm) : Bool \elim xs, ys
+  | nil, nil => true
+  | x :: xs, y :: ys => sameValue n x y and sameValues n xs ys
+  | _, _ => false
+
+-- The program and its rewrite compute the same value (under `lbAxioms`).
+\func rewritePreserves (p : LBProgram) (fuel : Nat) : Bool =>
+  \case runProgram lbAxioms p fuel, runProgram lbAxioms (rewriteProgram p) fuel \with {
+    | rOk v, rOk v' => sameValue fuel v v'
+    | _, _ => false
+  }
+
+-- Below 2^63 the value is kept ...
+\func rewriteKeepsSmall : rewritePreserves addAxiomProgram 200 = true => idp
+
+\func longAddRuns : runProgram lbAxioms longAddProgram 200 = rOk (prim (javaLong, wrap64u 5)) => idp
+
+\func longAddCompiles
+  : runClass rtInt63 (compileClass progClassName longAddProgram) bodyMethodName 200 = rOk (rvValue (vLong (5, ())))
+  => idp
+
+-- ... across it, not: `0 - 1` is 2^63-1 as a `Uint63` and -1 as a `long`,
+-- `(2^63-1) + 1` is 0 and -2^63.
+\func rewriteChangesSub : rewritePreserves subZeroProgram 200 = false => idp
+
+\func rewriteChangesOverflow : rewritePreserves overflowProgram 200 = false => idp
+
+\func overflowAsUint63 : runProgram lbAxioms overflowProgram 200 = rOk (prim (rocqUint63, 0)) => idp
+
+\func overflowAsLong
+  : runProgram lbAxioms longOverflowProgram 200 = rOk (prim (javaLong, wrap64u (pos 9223372036854775808)))
+  => idp
+
+-- The runtime model's `long` addition wraps signed at 2^64, as the JVM does.
+\func longAddWraps
+  : builtinRunLong "PRIM_ADD_LONG" (vLong (9223372036854775807, ()) :: vLong (1, ()) :: nil)
+  = rOk (vLong (neg 9223372036854775808, ()))
+  => idp

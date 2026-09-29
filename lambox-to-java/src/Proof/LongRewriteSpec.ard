@@ -1,69 +1,28 @@
 \import Arith.Nat
-\import Data.Bool
-\import Data.String
-\import Semantics.LambdaBoxEval
-\import Semantics.LambdaBoxRun
-\import Semantics.LambdaBoxAxioms
-\import Semantics.Res
 \import Compiler.Int63
-\import Compiler.LongRewrite
+\import Compiler.JavaLong (wrap64)
 \import Compiler.LambdaBox
-\import Set
-\import Compiler.StringUtil (intEqB)
+\import Compiler.LongRewrite
+\import Paths
+\import Proof.Mod64 (signed-wrapu)
+\import Proof.OracleArith (wrap64-pos)
 
--- =============================================================================
--- What the i64 rewrite pass (`Compiler/LongRewrite.ard`) preserves, stated.
+-- What the Java-long pass (`Compiler/LongRewrite.ard`) preserves.
 --
--- The pass is how a user opts into 64-bit arithmetic: it rewrites the program,
--- so the question "does the rewritten program compute the same thing?" is a
--- comparison of two λ□ programs under one semantics and one oracle
--- (`rewritePreserves`). The answer is "not always": `LongRewriteSound` below
--- is deliberately false and refuted in `ModelChecks/CorrectInstances.ard` by an
--- addition that crosses 2^63.
--- =============================================================================
+-- A literal keeps the number it denotes: a `Uint63` payload `i` becomes the
+-- 64-bit pattern whose signed reading is `i` again. So the rewritten program
+-- can only compute something different through an operation, and the
+-- `Uint63` and `long` operations agree on results in [0, 2^63). That second
+-- half is a property of a run, not of the program text; `ModelChecks/Sanity.ard`
+-- checks a run where it holds and one where it does not (an addition crossing
+-- 2^63).
 
--- Do an i63 and an i64 value denote the same number? An i63 payload is a
--- magnitude in [0, 2^63), an i64 payload a bit pattern read by `signed64`.
--- `sameValue` compares constructors structurally, since the rewrite descends
--- into their fields.
-\func samePrim (i j : Int) : Bool => intEqB i j
+-- The number a primitive literal denotes: a `Uint63` is its magnitude, a
+-- `javaLong` the signed reading of its bits.
+\func primValue (pv : PrimVal) : Int \elim pv
+  | (rocqUint63, i) => pos i
+  | (javaLong, i) => signed64 i
 
-\func sameValue (n : Nat) (a b : LBTerm) : Bool \elim n
-  | 0 => false
-  | suc n => \case a, b \with {
-    | box, box => true
-    | prim (rocqUint63, i), prim (javaLong, j) => samePrim (pos i) (signed64 j)
-    | prim (javaLong, i), prim (javaLong, j) => samePrim (signed64 i) (signed64 j)
-    | construct _ c xs, construct _ d ys => (c == d) and sameValues n xs ys
-    | _, _ => false
-  }
-
-\func sameValues (n : Nat) (xs ys : Array LBTerm) : Bool \elim xs, ys
-  | nil, nil => true
-  | x :: xs, y :: ys => sameValue n x y and sameValues n xs ys
-  | _, _ => false
-
--- "Rewriting this program did not change what it computes", decidably, so
--- that instances are `idp`. Both sides run under the same oracle `lbAxioms`.
-\func rewritePreserves (p : LBProgram) (fuel : Nat) : Bool =>
-  \case runProgram lbAxioms p fuel, runProgram lbAxioms (rewriteProgram p) fuel \with {
-    | rOk v, rOk v' => sameValue fuel v v'
-    | _, _ => false
-  }
-
--- ---------------------------------------------------------------------------
--- The unconditional statement. FALSE, and refuted in
--- `ModelChecks/CorrectInstances.ard`: it pins down what a true version must
--- assume.
---
--- A true version needs: no oracle call during the evaluation leaves
--- [0, 2^63) (below 2^63 the i63 and i64 answers are the same number; `sub`
--- can wrap downwards from small inputs). That is a property of the
--- derivation, not of the program text, so it is not a `Bool` on `p`; stating
--- it needs a semantics that records the operations performed (not done).
--- In practice: choosing i64 is safe for a program whose arithmetic stays
--- below 2^63.
--- ---------------------------------------------------------------------------
-
-\func LongRewriteSound : \Type =>
-  \Pi (p : LBProgram) (fuel : Nat) -> rewritePreserves p fuel = true
+\lemma rewritePrim-value (pv : PrimVal) : primValue (rewritePrim pv) = primValue pv \elim pv
+  | (rocqUint63, i) => signed-wrapu (pos i) *> wrap64-pos (fin_< i)
+  | (javaLong, i) => idp

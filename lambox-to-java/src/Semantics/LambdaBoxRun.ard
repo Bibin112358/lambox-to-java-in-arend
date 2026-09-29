@@ -9,7 +9,7 @@
 \import Compiler.StringUtil (nthArr)
 
 -- A fuelled evaluator for λ□: `Semantics/LambdaBoxEval.ard`'s `Eval` as a
--- function, so that programs can be run (e.g. `ModelChecks/Agreement.ard`
+-- function, so that programs can be run (e.g. `ModelChecks/DiffRuns.ard`
 -- compares its results with the compiled Java).
 --
 -- Soundness, `evalT spec env n t = rOk v -> Eval spec env t v`, is proved in

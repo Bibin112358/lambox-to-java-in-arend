@@ -167,18 +167,3 @@
         (axiomSat spec (app (quote (evAx kn args)) (quote wa)) = nothing)
         (w = evAx kn (wa :: args))
   }
-
-\func EvalEProgram (spec : LBSpec) (p : LBProgram) (w : EV) : \Type => EvalE spec p.1 nil p.2 w
-
--- ---------------------------------------------------------------------------
--- Sanity checks.
--- ---------------------------------------------------------------------------
-
--- (\x. x) box
-\func eeId (spec : LBSpec) : EvalE spec nil nil (app (lambda anon (bvar 0)) box) evBox =>
-  eeApp (eeLam idp) (eeBox idp) (apBeta (eeVar idp))
-
--- let x := box in (\y. x) box
-\func eeLetCapture (spec : LBSpec)
-  : EvalE spec nil nil (letIn anon box (app (lambda anon (bvar 1)) box)) evBox =>
-  eeLet (eeBox idp) (eeApp (eeLam idp) (eeBox idp) (apBeta (eeVar idp)))

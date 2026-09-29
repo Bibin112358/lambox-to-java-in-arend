@@ -1,8 +1,10 @@
 \import Data.Bool
 \import Data.Maybe
+\import Compiler.Int63 (wrap64u)
+\import Compiler.LambdaBox
+\import Compiler.ToJava
 \import ExamplePeano
-\import ModelChecks.Agreement
-\import ModelChecks.CorrectInstances
+\import ModelChecks.Programs
 \import Proof.Corollary
 \import Proof.LambdaBoxSound (evalT-sound)
 \import Proof.Statement (progClassName)
@@ -11,38 +13,39 @@
 \import Semantics.LambdaBoxAxioms (lbAxioms)
 \import Semantics.LambdaBoxEval (EvalProgram)
 \import Semantics.RtInt63 (rtInt63)
-\import Compiler.LambdaBox
-\import Compiler.ToJava
 
 -- The main theorem, applied to concrete programs.
 --
 -- Each instance below is `correctChecked` (`Proof/Corollary.ard`, a form of
 -- `correctClosedFO`) with its hypotheses discharged: closedness and
--- first-orderness by `idp`, the λ□ derivation by hand or by the runner's
--- soundness (`evalT-sound`). The conclusion is a proof, not a test run, that
--- the compiled `body()` returns the stated Java value. This shows the
--- theorem's hypotheses can be met, so it is not vacuous.
---
--- `ModelChecks/CorrectInstances.ard` checks the same programs by running both
--- models. Here the Java result comes from the theorem.
+-- first-orderness by `idp`, the λ□ derivation by hand (`ModelChecks/Programs.ard`)
+-- or by the runner's soundness (`evalT-sound`). The conclusion is a proof,
+-- not a test run, that the compiled `body()` returns the stated Java value.
+-- This shows the theorem's hypotheses can be met, so it is not vacuous.
 
 \func Returns (p : LBProgram) (jv : Value) : \Type =>
   JEval rtInt63 (compileClass progClassName p) bodyMethodName jv
 
--- `(\x. x) box` returns `Rt.BOX`.
+-- ---------------------------------------------------------------------------
+-- One per λ□ construct.
+-- ---------------------------------------------------------------------------
+
+-- `box` is `Rt.BOX`.
+\func boxReturns : Returns boxProgram vBox => correctChecked idp (lbBox lbAxioms) idp
+
+-- `let x := box in x`.
+\func letReturns : Returns letProgram vBox => correctChecked idp (lbLet lbAxioms) idp
+
+-- `(\x. x) box`: a closure and `.apply`.
 \func betaReturns : Returns betaProgram vBox => correctChecked idp (lbBeta lbAxioms) idp
 
--- `prim_add_int 2 3` returns `5L`: the axiom oracle and `Rt.PRIM_ADD_INT63`.
-\func addAxiomReturns : Returns addAxiomProgram (vLong (5, ())) => correctChecked idp lbAxiom idp
+-- `box box`: applying an erased value.
+\func boxAppReturns : Returns boxAppProgram vBox => correctChecked idp (lbBoxApp lbAxioms) idp
 
--- `Nat.sub 3 5` returns `0L`: Lean's truncating subtraction, `Rt.NAT_SUB_LONG`.
-\func natSubReturns : Returns natSubProgram (vLong (0, ())) =>
-  correctChecked idp (evalT-sound lbAxioms 200 idp : EvalProgram lbAxioms natSubProgram (prim (rocqUint63, 0))) idp
+-- A literal is `Long.valueOf(7L)`.
+\func primReturns : Returns primProgram (vLong (7, ())) => correctChecked idp (lbPrim lbAxioms) idp
 
--- `Nat.add (2^63-1) 1` returns `0L`: both sides wrap at 2^63.
-\func natOverflowReturns : Returns natOverflowProgram (vLong (0, ())) => correctChecked idp lbNatOverflow idp
-
--- Projection of field 1 of a pair returns `21L`.
+-- Projection of field 1 of a pair with one parameter returns `21L`.
 \func projReturns : Returns projProgram (vLong (21, ())) => correctChecked idp (lbProj lbAxioms) idp
 
 -- A two-definition `fix` block, selecting definition 1 (the identity), returns `5L`.
@@ -50,14 +53,67 @@
 
 -- Peano `add 1 3`: a constant whose body is a `fix` with a `case`. The result
 -- is the `Rt.Data` encoding of the numeral 4.
-\func peanoReturns : Returns addProgram (foJava (suc' (suc' (suc' (suc' zero'))))) =>
-  correctChecked idp lbPeano idp
+\func lbPeano : EvalProgram lbAxioms addProgram (suc' (suc' (suc' (suc' zero')))) => evalT-sound lbAxioms 2000 idp
 
+\func peanoReturns : Returns addProgram (foJava (suc' (suc' (suc' (suc' zero'))))) => correctChecked idp lbPeano idp
+
+-- ---------------------------------------------------------------------------
+-- Axioms: the oracle on the λ□ side, the runtime model on the Java side.
+-- ---------------------------------------------------------------------------
+
+-- `prim_add_int 2 3` returns `5L`.
+\func addAxiomReturns : Returns addAxiomProgram (vLong (5, ())) =>
+  correctChecked idp (evalT-sound lbAxioms 200 idp : EvalProgram lbAxioms addAxiomProgram (prim (rocqUint63, 5))) idp
+
+-- `prim_sub_int 1 2` returns `2^63-1`: `Uint63` wraps, and so does `Rt.PRIM_SUB_INT63`.
+\func int63Returns : Returns int63Program (vLong (9223372036854775807, ())) =>
+  correctChecked idp (evalT-sound lbAxioms 200 idp : EvalProgram lbAxioms int63Program (prim (rocqUint63, 9223372036854775807))) idp
+
+-- Lean's `Nat.sub 3 5` returns `0L` (truncating), `Nat.add (2^63-1) 1` `0L` (wrapping).
+\func natSubReturns : Returns natSubProgram (vLong (0, ())) =>
+  correctChecked idp (evalT-sound lbAxioms 200 idp : EvalProgram lbAxioms natSubProgram (prim (rocqUint63, 0))) idp
+
+\func natOverflowReturns : Returns natOverflowProgram (vLong (0, ())) =>
+  correctChecked idp (evalT-sound lbAxioms 200 idp : EvalProgram lbAxioms natOverflowProgram (prim (rocqUint63, 0))) idp
+
+-- `case (Nat.beq 3 3) of { false => 100 ; true => 200 }` returns `200L`: a
+-- `case` on a value the oracle produced.
+\func boolCaseReturns : Returns boolCaseProgram (vLong (200, ())) =>
+  correctChecked idp (evalT-sound lbAxioms 500 idp : EvalProgram lbAxioms boolCaseProgram (prim (rocqUint63, 200))) idp
+
+-- ---------------------------------------------------------------------------
+-- The Java-long pass: its output is an ordinary λ□ program, so the theorem
+-- covers it too.
+-- ---------------------------------------------------------------------------
+
+\func longAddReturns : Returns longAddProgram (vLong (5, ())) =>
+  correctChecked idp (evalT-sound lbAxioms 200 idp : EvalProgram lbAxioms longAddProgram (prim (javaLong, wrap64u 5))) idp
+
+-- `(2^63-1) + 1` as `long`s returns `Long.MIN_VALUE`.
+\func longOverflowReturns : Returns longOverflowProgram (vLong (neg 9223372036854775808, ())) =>
+  correctChecked idp (evalT-sound lbAxioms 200 idp
+                        : EvalProgram lbAxioms longOverflowProgram (prim (javaLong, wrap64u (pos 9223372036854775808)))) idp
+
+-- ---------------------------------------------------------------------------
 -- The checks are not trivially true: an open program is rejected, and so is a
 -- function result (for those, `backendShipped` in `Proof/MainTheorem.ard`).
+-- ---------------------------------------------------------------------------
+
 \func openRejected : checkProgram (nil, bvar 0) = false => idp
 
 \func openConstRejected
   : checkProgram ((axiomKn, constantDecl (\new ConstantBody (just (bvar 0)))) :: nil, box) = false => idp
 
 \func functionRejected : foB idTerm = false => idp
+
+-- Coverage: every λ□ constructor with an evaluation rule is reached above.
+--   box, app       boxReturns, boxAppReturns, betaReturns
+--   bvar, letIn    letReturns
+--   lambda         betaReturns
+--   const          peanoReturns (a definition), addAxiomReturns (an axiom)
+--   construct      projReturns, peanoReturns
+--   case           peanoReturns, boolCaseReturns
+--   proj           projReturns
+--   fix            fix2Returns (two definitions), peanoReturns (one)
+--   prim           primReturns and the axiom instances
+-- `fvar` has no rule (the compiled code throws via `Rt.freeVar`).

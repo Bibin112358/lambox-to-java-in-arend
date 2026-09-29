@@ -6,6 +6,7 @@
     test/check run --all                  # every program (~25 min)
     test/check run --ref matmul           # also Peregrine's OCaml/C backends
     test/check run --names peano          # print the value with constructor names
+    test/check run --long matmul          # compile after the Java-long pass
 
 For each program: stages/java.sh gen (import the .ast, generate Java with
 Arend), build (javac), run (java), then compare the printed value with the
@@ -99,8 +100,12 @@ def main(argv=None):
                    help="also run the OCaml/C reference backends the program declares")
     p.add_argument("--names", action="store_true",
                    help="print constructor names (java only) and show the value instead of comparing it")
+    p.add_argument("--long", action="store_true",
+                   help="java: compile after the Java-long pass (Rocq Uint63 -> Java long arithmetic)")
     p.add_argument("--timeout", type=float, default=600, metavar="S", help="per stage (default 600)")
     args = p.parse_args(argv)
+    if args.long:
+        os.environ["LAMBOX_LONG"] = "1"       # read by stages/java.sh
     if args.names:
         if args.ref:
             p.error("--names and --ref cannot be combined")

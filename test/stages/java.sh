@@ -19,6 +19,11 @@
 # table <outdir>/Prog.names (Compiler/CtorNames.ard; one more Arend call), and
 # run passes it to the runtime, which then prints constructor names instead of
 # bare tags. Debugging only: the output no longer matches the expected value.
+#
+# With LAMBOX_LONG=1 (`check run --long`), gen compiles the program after the
+# Java-long pass (`progJavaLong`, Compiler/LongRewrite.ard): Rocq `Uint63`
+# operations become Java `long` ones. The value is the same while no
+# intermediate result reaches 2^63.
 set -euo pipefail
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
@@ -43,7 +48,9 @@ gen)
   require_tool "$PEREGRINE" "the peregrine executable"
   require_tool "$PYTHON" "a Python 3 interpreter"
   run_cmd "$TOOLS_DIR/import-ast.sh" "$ast" "$module"
-  run_cmd "$TOOLS_DIR/extract-arend.sh" "Imported.$module:progJava" "$outdir/Prog.java"
+  entry=progJava
+  [ "${LAMBOX_LONG-}" = 1 ] && entry=progJavaLong
+  run_cmd "$TOOLS_DIR/extract-arend.sh" "Imported.$module:$entry" "$outdir/Prog.java"
   rm -f "$outdir/Prog.names"
   if [ "${LAMBOX_NAMES-}" = 1 ]; then
     run_cmd "$TOOLS_DIR/extract-arend.sh" "Imported.$module:progNames" "$outdir/Prog.names"
