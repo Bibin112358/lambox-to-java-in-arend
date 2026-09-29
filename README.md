@@ -4,7 +4,14 @@ A compiler from λ□ ("lambda-box", the erased intermediate language of
 [MetaRocq](https://github.com/MetaRocq/metarocq) and Peregrine) to Java source,
 written in [Arend](https://arend-lang.github.io/), together with a
 machine-checked proof that the generated Java computes what the λ□ program
-computes. Internship project at JetBrains.
+computes. "Java" in the proof means a model of the small, heap-free Java
+fragment the compiler emits, with the runtime's closure and data classes built
+in; see [What "Java" means in the proof](#what-java-means-in-the-proof).
+Internship project at JetBrains.
+
+It needs an Arend build that is not released yet (the String support of
+[arend-lang/Arend#131](https://github.com/arend-lang/Arend/pull/131)); see
+[Requirements](#requirements).
 
 Lean and Rocq programs reach λ□ through Peregrine / lean-to-lambdabox; this
 backend turns them into one Java class plus a small hand-written runtime
@@ -99,10 +106,16 @@ ambiguously as `List.nil|Bool.true|Nat.zero`, see `test/README.md`).
 (`correctClosedFO`):
 
 > For a λ□ program whose body and constant bodies are closed: if λ□ (with the
-> shipped axioms for `Nat`/`Int63`/... arithmetic) evaluates the program to a
-> first-order value `v`, then the generated class's `body()` method, run in the
-> Java model with the model of the shipped runtime, **returns** a value that
-> corresponds to `v`: it does not throw and does not get stuck.
+> shipped axioms for `Nat`/`Int63`/... arithmetic) **terminates** and evaluates
+> the program to a first-order value `v`, then the generated class's `body()`
+> method, run in the Java model with the model of the shipped runtime,
+> **returns** a value that corresponds to `v`: it does not throw and does not
+> get stuck.
+
+The hypothesis "λ□ evaluates the program to `v`" is a finite big-step
+derivation (`EvalProgram`), so the theorem is only about terminating programs.
+For a program that diverges, or gets stuck in λ□, it says nothing, not even
+that the Java diverges too.
 
 `backendShipped` in the same file covers every result, including functions:
 Java returns the closure compiled from the λ□ function.
@@ -141,6 +154,36 @@ proof shows that generated code never shadows `Rt` (every name it binds starts
 with a lowercase letter or `C`), so its casts to `Rt.Fn`/`Rt.Data` mean the
 runtime's classes.
 
+### What "Java" means in the proof
+
+The theorem is not about the JVM, or the Java Language Specification as a
+whole. Its target is a model (`Semantics/JavaEval.ard`, `Semantics/JavaValue.ard`)
+of exactly the fragment the compiler emits (`Compiler/JavaAst.ard`), and that
+model is simpler than Java in three ways:
+
+- **Closures and data are built in.** Application `((Rt.Fn)f).apply(x)`,
+  closures `new Rt.Fn(){..}`, constructors `new Rt.Data(tag, fields)` and the
+  reads `d.tag == n` / `d.fields[i]` are dedicated AST nodes that the model
+  interprets directly, as values `vClos` and `vData`. The model does not run
+  the Java code of `Rt.Fn`/`Rt.Data`, nor dynamic dispatch through an
+  interface. The target is therefore "Java plus a function type and a data
+  type", which we trust `runtime/Rt.java` to implement.
+- **No heap.** There is no store, no object identity and no assignment: values
+  are immutable trees, and a closure captures its environment by value. That is
+  enough because generated code never mutates anything (locals are `final`,
+  `fix` is a local class rather than a mutable cell) and never compares
+  references. Allocation, garbage collection, memory limits and stack depth are
+  not modelled either.
+- **The rest of the runtime is a parameter.** Arithmetic and the other runtime
+  constants (`Rt.PRIM_ADD_INT63`, ...) are given by an abstract interface
+  (`RtSpec`) with a model (`Semantics/RtInt63.ard`), not by interpreting
+  `Rt.java`. Only uncaught exceptions are modelled; there is no `try`/`catch`.
+
+What the model does follow is Java's evaluation order, name resolution (JLS 6.5),
+casts (`checkcast`) and `long` wraparound. So "verified λ□ to Java" means:
+verified down to this model, with the step from the model to a real JVM covered
+only by tests.
+
 **Trusted, not proved:**
 - the printer from the Java AST to text (`Compiler/JavaPrint.ard`);
 - that the real JVM behaves like the Java model (`Semantics/JavaEval.ard`),
@@ -155,11 +198,19 @@ These are exercised by the tests, including an automated differential test
 that runs small programs in both Arend models and on the real JVM
 (`test/check diff`).
 
-**Scope of the statement.** Programs must be closed (λ□'s substitution captures
-free variables, which no scope-respecting compiler can imitate). Programs λ□
-cannot evaluate (divergent or stuck) are not covered, as in CompCert and
-MetaRocq. Integers are Lean's machine integers as lean-to-lambdabox emits them
-(63-bit), not unbounded naturals.
+**Scope of the statement.**
+- Programs must be closed (λ□'s substitution captures free variables, which no
+  scope-respecting compiler can imitate).
+- Only terminating programs are covered: programs λ□ cannot evaluate
+  (divergent or stuck) are outside the theorem, as in MetaRocq's erasure and
+  verified-extraction theorems. (CompCert, by contrast, also preserves
+  divergence.)
+- Integers are Lean's machine integers as lean-to-lambdabox emits them
+  (63-bit), not unbounded naturals.
+- Some axioms the compiler does emit have no λ□ meaning in the model
+  (`Semantics/LambdaBoxAxioms.ard`): Lean's `Array.*` (mutable), `Int.*`,
+  `Nat.pow`, `Nat.decEq/decLe/decLt` and `Eq.rec`. λ□ gets stuck on them, so
+  programs that use them are not covered either; they are only tested.
 
 ## Layout
 
@@ -202,6 +253,28 @@ Everything goes through one script; see `test/README.md` for details.
     test/check run peano    # compile a program, run it on the JVM, compare
     test/check diff         # λ□ model vs Java model vs real JVM
 
-Requirements: a development build of the Arend 1.12 CLI, arend-lib, and a JDK.
-Tool paths are configured in `test/lib.sh`. Typecheck modules one per
-invocation: checking several at once can hide errors.
+Typecheck modules one per invocation: checking several at once can hide
+errors.
+
+### Requirements
+
+- **An unreleased Arend.** The code needs `String` as an arend-lib type
+  (`\import Data.String`: a record over its UTF-8 bytes, with `==`, `++` and
+  `Debug.putStrLn`). This project is what prompted that change, submitted as
+  [arend-lang/Arend#131](https://github.com/arend-lang/Arend/pull/131), which
+  is **not merged yet**. In the released Arend 1.12.0, `String` is a
+  constructor-less Prelude type and arend-lib has no `Data.String`, so this
+  project does not typecheck there. The change touches both the typechecker
+  and arend-lib, so both the CLI and arend-lib have to come from that PR's
+  branch (`Bibin112358/Arend`, `master`):
+
+      git clone -b master https://github.com/Bibin112358/Arend.git
+      cd Arend && ./gradlew :cli:jarDep    # -> cli/build/libs/cli-1.12.0-full.jar
+
+  and use that checkout's `arend-lib/` as arend-lib, with its extension
+  (`arend-lib/meta`, built by the same Gradle project).
+- A JDK (the scripts use JDK 26) and Python 3.
+- Optional, for `test/check run`: Peregrine, to import `.ast` programs; see
+  `test/README.md`.
+
+The paths to the Arend jar, arend-lib and the JDK are set in `test/lib.sh`.

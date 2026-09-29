@@ -78,7 +78,7 @@ any other λ□ program.
 
 Paths are set in `lib.sh` (edit them there):
 
-* Arend CLI, a **development 1.12 build** (`~/arend-lang-bibin/cli/build/libs/cli-1.12.0-full.jar`), arend-lib in `~/.arend/libs`;
+* Arend CLI and arend-lib built from the unmerged String PR [arend-lang/Arend#131](https://github.com/arend-lang/Arend/pull/131), not the 1.12.0 release (see "Requirements" in the top-level README): the jar `~/arend-lang-bibin/cli/build/libs/cli-1.12.0-full.jar`, arend-lib in `~/.arend/libs`;
 * a JDK (`~/.jdks/openjdk-26.0.1`), Python 3;
 * for `run` only: Peregrine (`peregrine ast box` rewrites the `.ast` inputs before import);
 * for `run --ref` only: OCaml + `malfunction` (opam switch `peregrine`), gcc + the CertiRocq runtime.
