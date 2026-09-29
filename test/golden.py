@@ -32,6 +32,9 @@ SMOKE = {
     "peregrine-rocq-oddeven":   "mutual fix + qualified this; Rocq frontend",
     "leanbench-even":           "cheapest mutual fix; Nat/PRIM axioms, int literal, letIn, box",
     "leanbench-list_sum_foldr": "the only cheap source of Lean's Array axioms",
+    # Not for coverage: the example shown in the top-level README, kept here
+    # so that the file it links to is always the compiler's current output.
+    "insertion-sort":           "README showcase: higher-order argument, three fix constants",
 }
 # The only program reaching Rt.EQ_REC and Rt.INT_*; 23k lines of λ□, ~130 s.
 COVER_EXTRA = {

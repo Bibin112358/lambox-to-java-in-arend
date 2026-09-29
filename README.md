@@ -10,6 +10,89 @@ Lean and Rocq programs reach λ□ through Peregrine / lean-to-lambdabox; this
 backend turns them into one Java class plus a small hand-written runtime
 (`Rt.java`).
 
+## Example: insertion sort
+
+[`test/golden/insertion-sort.java`](test/golden/insertion-sort.java) is the
+complete output (64 lines) for insertion sort on Peano naturals, written as a
+λ□ program in
+[`lambox-to-java-examples/src/ExampleSort.ard`](lambox-to-java-examples/src/ExampleSort.ard)
+after the [Arend tutorial](https://arend-lang.github.io/documentation/tutorial/PartI/universes#correctness-of-insertion-sort).
+The golden check (`test/check golden`) makes sure the file is exactly what the
+compiler produces today. The source, before erasure:
+
+    le : Nat -> Nat -> Bool                      -- the comparison
+    insert : (Nat -> Nat -> Bool) -> Nat -> List -> List
+      insert le a nil         = cons a nil
+      insert le a (cons x xs) = if le x a then cons x (insert le a xs)
+                                          else cons a (cons x xs)
+    sort : (Nat -> Nat -> Bool) -> List -> List
+      sort le nil         = nil
+      sort le (cons a xs) = insert le a (sort le xs)
+
+    main = sort le [3, 1, 4, 1, 2]
+
+The comparison is an ordinary argument: erasure turns the tutorial's
+`TotalPreorder` instance into a value. Here is `insert` as generated. Long lines
+are not wrapped; that is how the compiler prints them:
+
+```java
+public static Object c_ninsert(){
+  class C {
+    public Object f0(Object py0_){
+      return new Rt.Fn(){ public Object apply(Object pLy0_){
+        return new Rt.Fn(){ public Object apply(Object pLLy0_){
+          final Rt.Data dLLLy0_ = ((Rt.Data)(pLLy0_));
+          return ((dLLLy0_.tag == 0) ? new Rt.Data(1, new Object[]{ pLy0_, new Rt.Data(0, new Object[]{  }) }) : ((dLLLy0_.tag == 1) ? ((Rt.Fn)(new Rt.Fn(){ public Object apply(Object tb1_LLLy0_){
+            final Rt.Data db1_LLLy0_ = ((Rt.Data)(((Rt.Fn)(((Rt.Fn)(py0_)).apply(dLLLy0_.fields[0]))).apply(pLy0_)));
+            return ((db1_LLLy0_.tag == 0) ? new Rt.Data(1, new Object[]{ dLLLy0_.fields[0], ((Rt.Fn)(((Rt.Fn)(((Rt.Fn)(new Rt.Fn(){ public Object apply(Object pw0_){
+              return C.this.f0(pw0_);
+            } })).apply(py0_))).apply(pLy0_))).apply(dLLLy0_.fields[1]) }) : ((db1_LLLy0_.tag == 1) ? new Rt.Data(1, new Object[]{ pLy0_, pLLy0_ }) : Rt.noBranch(db1_LLLy0_, "b1_LLLy0_")));
+          } })).apply(Rt.BOX) : Rt.noBranch(dLLLy0_, "LLLy0_")));
+        } };
+      } };
+    }
+  }
+  final C z = new C();
+  return new Rt.Fn(){ public Object apply(Object pw0_){
+    return z.f0(pw0_);
+  } };
+}
+```
+
+How to read it:
+- **Constants** become static methods with no arguments: `insert` is
+  `c_ninsert()` (`Compiler/Mangle.ard`); the program itself is `body()`.
+- **Functions** are curried `Rt.Fn` objects with one `apply`, and every call is
+  `((Rt.Fn)f).apply(x)`. Of `insert`'s three parameters, `le` is the method
+  parameter `py0_`, and `a` and `xs` are the parameters `pLy0_` and `pLLy0_` of
+  two nested closures.
+- **A recursive definition (`fix`)** becomes a local class `C` with one method
+  `f0` per function. A recursive call goes through `C.this.f0`, and the constant
+  returns a closure over an instance `z`.
+- **Constructors** are `new Rt.Data(tag, fields)`; the inductive is not stored.
+  `cons a nil` is `new Rt.Data(1, new Object[]{ a, new Rt.Data(0, new Object[]{  }) })`.
+- **`case`** casts the scrutinee to `Rt.Data` in a `final` local and picks a
+  branch with a chain of `tag ==` tests. `Rt.noBranch` is the unreachable
+  fall-through. A branch that needs statements of its own (here the inner test
+  `le x a`) becomes a closure applied immediately to `Rt.BOX`, since a
+  conditional expression cannot contain statements.
+- **Local names** are derived from the node's position in the λ□ term,
+  not from a counter (`Compiler/NodePath.ard`). The first letter is the kind:
+  `p` parameter, `d` scrutinee, `t` branch thunk, `z`/`C` a `fix`'s instance
+  and class. The rest is the path to the root: `L` inside a λ, `b1_` the second
+  branch, `y0_` the first `fix` function, `w0_` its forwarding closure. The
+  proof relies on these names being unique (`Proof/NodePathUnique.ard`).
+
+`test/check run insertion-sort` compiles the class with `runtime/Rt.java`,
+runs it and compares its output with the expected value. `Rt` prints a
+constructor as its tag followed by its fields. With `--names` it prints
+constructor names instead:
+
+    List.cons(Nat.suc(Nat.zero), List.cons(Nat.suc(Nat.zero), List.cons(Nat.suc(Nat.suc(Nat.zero)), ...)))
+
+(shortened and on one line; the runtime indents, and it prints `Nat.zero`
+ambiguously as `List.nil|Bool.true|Nat.zero`, see `test/README.md`).
+
 ## What is proved
 
 `Proof/Statement.ard` states the theorem, `Proof/MainTheorem.ard` proves it

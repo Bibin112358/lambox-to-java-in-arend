@@ -5,7 +5,7 @@ One entry point, `test/check`, answers four questions:
 | command | question | how | time |
 |---|---|---|---|
 | `test/check proofs` | Do the compiler, the semantics and the correctness proof typecheck? | every module of `lambox-to-java/src/{Compiler,Semantics,Proof}` and `lambox-to-java-examples/src/ModelChecks`, **each in its own Arend run**, 2 at a time | ~15–25 min |
-| `test/check golden` | Is the generated Java unchanged? | generate Java for 4 programs in one Arend run, diff against `golden/*.java` | ~40 s |
+| `test/check golden` | Is the generated Java unchanged? | generate Java for 5 programs in one Arend run (4 covering the generator's features, plus `insertion-sort`, the example shown in the top-level README), diff against `golden/*.java` | ~1 min |
 | `test/check run P...` | Do compiled programs compute the right value on the JVM? | import `.ast` → generate Java → `javac` → `java`, compare with the corpus' expected value | ~40–70 s per program |
 | `test/check diff` | Do the Arend models agree with the real JVM? | `ModelChecks.DiffRuns` prints, for 14 small programs, the Java and the values computed by the λ□ semantics and by the Java-fragment semantics; the Java is run for real and all three values must be equal | ~1.5 min |
 
