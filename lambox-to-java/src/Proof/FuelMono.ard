@@ -18,9 +18,10 @@
 --
 -- One lemma per function of the evaluator's mutual cycle, each stating
 -- `F n .. <= F (suc n) ..` for the order `Mono`. Every clause of the
--- evaluator is `bindRes` of recursive calls at the same fuel, so each clause
--- of the proof is `bindMono` of the induction hypotheses; continuations that
--- do not recurse are identical at both clocks (`monoRefl`).
+-- evaluator sequences recursive calls at the same fuel (`thenE`, `thenA`,
+-- `methodResult`, `bindRes`), so each clause of the proof combines the
+-- induction hypotheses with the matching lemma below; continuations that do
+-- not recurse are identical at both clocks (`monoRefl`).
 -- =============================================================================
 
 -- `a` is below `b`: whatever value `a` produces, `b` produces too. Timeouts and
@@ -47,6 +48,25 @@
   | rStuck => \lam r p => contradiction
   | rOutOfFuel => \lam r p => contradiction
 
+\func thenEMono {B : \Type} {exc : Value -> B} {m m' : Res ExprOut} {k k' : Value -> Res B}
+                (hm : Mono m m') (hk : \Pi (v : Value) -> Mono (k v) (k' v))
+  : Mono (thenE exc m k) (thenE exc m' k') =>
+  bindMono hm (\lam o => \case \elim o \with {
+    | eExc ev => monoRefl
+    | eVal v => hk v
+  })
+
+\func thenAMono {B : \Type} {exc : Value -> B} {m m' : Res ArgsOut} {k k' : Array Value -> Res B}
+                (hm : Mono m m') (hk : \Pi (vs : Array Value) -> Mono (k vs) (k' vs))
+  : Mono (thenA exc m k) (thenA exc m' k') =>
+  bindMono hm (\lam o => \case \elim o \with {
+    | aExc ev => monoRefl
+    | aVals vs => hk vs
+  })
+
+\func methodResultMono {m m' : Res StmtOut} (hm : Mono m m') : Mono (methodResult m) (methodResult m') =>
+  bindMono hm (\lam o => monoRefl)
+
 -- ---------------------------------------------------------------------------
 -- The mutual cycle, one step of fuel.
 -- ---------------------------------------------------------------------------
@@ -60,58 +80,43 @@
   | suc n, jStatic q => monoRefl
   | suc n, jClosure p body => monoRefl
   | suc n, jQualThis q => monoRefl
-  | suc n, jField recv f => bindMono (evalExprMono rt cls n env recv) (\lam o => monoRefl)
-  | suc n, jCast t e => bindMono (evalExprMono rt cls n env e) (\lam o => monoRefl)
-  | suc n, jApply f a => bindMono (evalExprMono rt cls n env f) (\lam o => \case \elim o \with {
-    | eExc ev => monoRefl
-    | eVal fv => afterCastMono (castOk env tFn fv) (bindMono (evalExprMono rt cls n env a) (\lam oa => \case \elim oa \with {
-      | eExc ev => monoRefl
-      | eVal av => applyValMono rt cls n fv av
-    }))
-  })
-  | suc n, jInvoke recv m args => bindMono (evalExprMono rt cls n env recv) (\lam o => \case \elim o \with {
-    | eExc ev => monoRefl
-    | eVal rv => bindMono (evalArgsMono rt cls n env args) (\lam oas => \case \elim oas \with {
-      | aExc ev => monoRefl
-      | aVals vs => invokeMethodMono rt cls n rv m vs
-    })
-  })
-  | suc n, jCallStatic q args => bindMono (evalArgsMono rt cls n env args) (\lam oas => \case \elim oas \with {
-    | aExc ev => monoRefl
-    | aVals vs => callStaticMono rt cls n q vs
-  })
-  | suc n, jNew t args => bindMono (evalArgsMono rt cls n env args) (\lam oas => monoRefl)
-  | suc n, jDataNew tag args => bindMono (evalArgsMono rt cls n env args) (\lam oas => monoRefl)
-  | suc n, jTagEq d k => bindMono (evalExprMono rt cls n env d) (\lam o => monoRefl)
-  | suc n, jDataField d i => bindMono (evalExprMono rt cls n env d) (\lam o => monoRefl)
-  | suc n, jCond c a b => bindMono (evalExprMono rt cls n env c) (\lam o => \case \elim o \with {
-    | eExc ev => monoRefl
-    | eVal (vBool true) => evalExprMono rt cls n env a
-    | eVal (vBool false) => evalExprMono rt cls n env b
-    | eVal vBox => monoRefl
-    | eVal (vData _ _) => monoRefl
-    | eVal (vClos _ _ _) => monoRefl
-    | eVal (vObj _ _ _) => monoRefl
-    | eVal (vBuiltin _ _) => monoRefl
-    | eVal (vStaticRef _) => monoRefl
-    | eVal (vLong _) => monoRefl
-    | eVal (vStr _) => monoRefl
-    | eVal (vExcObj _ _) => monoRefl
+  | suc n, jField recv f => thenEMono (evalExprMono rt cls n env recv) (\lam v => monoRefl)
+  | suc n, jCast t e => thenEMono (evalExprMono rt cls n env e) (\lam v => monoRefl)
+  | suc n, jApply f a => thenEMono (evalExprMono rt cls n env f) (\lam fv =>
+    afterCastMono (castOk env tFn fv) (thenEMono {_} {eExc} (evalExprMono rt cls n env a) (\lam av => applyValMono rt cls n fv av)))
+  | suc n, jInvoke recv m args => thenEMono (evalExprMono rt cls n env recv) (\lam rv =>
+    thenAMono {_} {eExc} (evalArgsMono rt cls n env args) (\lam vs => invokeMethodMono rt cls n rv m vs))
+  | suc n, jCallStatic q args => thenAMono (evalArgsMono rt cls n env args) (\lam vs => callStaticMono rt cls n q vs)
+  | suc n, jNew t args => thenAMono (evalArgsMono rt cls n env args) (\lam vs => monoRefl)
+  | suc n, jDataNew tag args => thenAMono (evalArgsMono rt cls n env args) (\lam vs => monoRefl)
+  | suc n, jTagEq d k => thenEMono (evalExprMono rt cls n env d) (\lam v => monoRefl)
+  | suc n, jDataField d i => thenEMono (evalExprMono rt cls n env d) (\lam v => monoRefl)
+  | suc n, jCond c a b => thenEMono (evalExprMono rt cls n env c) (\lam v => \case \elim v \with {
+    | vBool true => evalExprMono rt cls n env a
+    | vBool false => evalExprMono rt cls n env b
+    | vBox => monoRefl
+    | vData _ _ => monoRefl
+    | vClos _ _ _ => monoRefl
+    | vObj _ _ _ => monoRefl
+    | vBuiltin _ _ => monoRefl
+    | vStaticRef _ => monoRefl
+    | vLong _ => monoRefl
+    | vStr _ => monoRefl
+    | vExcObj _ _ => monoRefl
   })
 
 \func evalArgsMono (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (es : Array JExpr)
   : Mono (evalArgs rt cls n env es) (evalArgs rt cls (suc n) env es) \elim n, es
   | 0, _ => monoFuel
   | suc n, nil => monoRefl
-  | suc n, e :: es => bindMono (evalExprMono rt cls n env e) (\lam o => \case \elim o \with {
-    | eExc ev => monoRefl
-    | eVal v => bindMono (evalArgsMono rt cls n env es) (\lam os => monoRefl)
-  })
+  | suc n, e :: es => thenEMono (evalExprMono rt cls n env e) (\lam v =>
+    thenAMono {_} {aExc} {_} {_} {\lam vs => rOk (aVals (v :: vs))} {\lam vs => rOk (aVals (v :: vs))}
+              (evalArgsMono rt cls n env es) (\lam vs => monoRefl))
 
 \func applyValMono (rt : RtSpec) (cls : JClass) (n : Nat) (f a : Value)
   : Mono (applyVal rt cls n f a) (applyVal rt cls (suc n) f a) \elim n, f
   | 0, _ => monoFuel
-  | suc n, vClos p body cenv => bindMono (execStmtsMono rt cls n (bindVar cenv p a) body) (\lam o => monoRefl)
+  | suc n, vClos p body cenv => methodResultMono (execStmtsMono rt cls n (bindVar cenv p a) body)
   | suc n, vBuiltin nm got => monoRefl
   | suc n, vBox => monoRefl
   | suc n, vData _ _ => monoRefl
@@ -128,8 +133,7 @@
   | suc n, vObj c ms cenv => cases (lookupClassMethod ms m) \with {
     | nothing => monoRefl
     | just pb => cases vs \with {
-      | a :: nil => bindMono (execStmtsMono rt cls n (bindVar (bindType cenv c (vObj c ms cenv)) pb.1 a) pb.2)
-                             (\lam o => monoRefl)
+      | a :: nil => methodResultMono (execStmtsMono rt cls n (bindVar (bindType cenv c (vObj c ms cenv)) pb.1 a) pb.2)
       | nil => monoRefl
       | a :: b :: vs => monoRefl
     }
@@ -149,7 +153,7 @@
   | 0 => monoFuel
   | suc n => cases (lookupMethod cls q) \with {
     | just mth => cases vs \with {
-      | nil => bindMono (execStmtsMono rt cls n nil (JMethod.mBody {mth})) (\lam o => monoRefl)
+      | nil => methodResultMono (execStmtsMono rt cls n nil (JMethod.mBody {mth}))
       | _ :: _ => monoRefl
     }
     | nothing => monoRefl
@@ -159,10 +163,10 @@
   : Mono (execStmt rt cls n env s) (execStmt rt cls (suc n) env s) \elim n, s
   | 0, _ => monoFuel
   | suc n, jComment _ => monoRefl
-  | suc n, jLocal _ x e => bindMono (evalExprMono rt cls n env e) (\lam o => monoRefl)
+  | suc n, jLocal _ x e => thenEMono (evalExprMono rt cls n env e) (\lam v => monoRefl)
   | suc n, jLocalClass c ms => monoRefl
-  | suc n, jThrow e => bindMono (evalExprMono rt cls n env e) (\lam o => monoRefl)
-  | suc n, jReturn e => bindMono (evalExprMono rt cls n env e) (\lam o => monoRefl)
+  | suc n, jThrow e => thenEMono (evalExprMono rt cls n env e) (\lam v => monoRefl)
+  | suc n, jReturn e => thenEMono (evalExprMono rt cls n env e) (\lam v => monoRefl)
 
 \func execStmtsMono (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (ss : Array JStmt)
   : Mono (execStmts rt cls n env ss) (execStmts rt cls (suc n) env ss) \elim n, ss

@@ -175,6 +175,38 @@
 \func excAIOOBE : Value => vExcObj cArrayIndexOutOfBounds "index"
 
 -- ---------------------------------------------------------------------------
+-- Abrupt completion (JLS 15.6, 14.1): when a subexpression throws, the whole
+-- expression or statement throws the same exception and nothing after it is
+-- evaluated. The clauses of the evaluator describe normal completion only and
+-- leave propagation to these three functions.
+-- ---------------------------------------------------------------------------
+
+-- Evaluate `m`, then continue with `k` on its value. A throw is passed on,
+-- wrapped by `exc` as the caller's kind of outcome (`eExc`, `aExc`, `oExcS`).
+\func thenE {B : \Type} (exc : Value -> B) (m : Res ExprOut) (k : Value -> Res B) : Res B =>
+  bindRes m (\lam o => \case o \with {
+    | eExc ev => rOk (exc ev)
+    | eVal v => k v
+  })
+
+-- The same for an argument list.
+\func thenA {B : \Type} (exc : Value -> B) (m : Res ArgsOut) (k : Array Value -> Res B) : Res B =>
+  bindRes m (\lam o => \case o \with {
+    | aExc ev => rOk (exc ev)
+    | aVals vs => k vs
+  })
+
+-- A method body's outcome as the result of the call. `apply` and every
+-- generated method return `Object`, so falling off the end is not a
+-- well-formed body (JLS 8.4.7); cf. ClightBigstep's `outcome_result_value`.
+\func methodResult (m : Res StmtOut) : Res ExprOut =>
+  bindRes m (\lam o => \case o \with {
+    | oReturn v => rOk (eVal v)
+    | oExcS ev => rOk (eExc ev)
+    | oNormal _ => rStuck
+  })
+
+-- ---------------------------------------------------------------------------
 -- The evaluator.
 --
 -- Fuel (`n`) is the first `\elim` argument and decreases at every call of the
@@ -214,95 +246,68 @@
   -- `e.f`: only ever a field of `Rt` (`Rt.PRIM_ADD_LONG`, ...); any other
   -- receiver is never generated, hence stuck.
   | suc n, jField recv f =>
-    bindRes (evalExpr rt cls n env recv) (\lam o => \case o \with {
-      | eExc ev => rOk (eExc ev)
-      | eVal (vStaticRef _) => \case rtField {rt} f \with {
+    thenE eExc (evalExpr rt cls n env recv) (\lam rv => \case rv \with {
+      | vStaticRef _ => \case rtField {rt} f \with {
         | nothing => rStuck                      -- an Rt member no instance covers
         | just v => rOk (eVal v)
       }
-      | eVal _ => rStuck
+      | _ => rStuck
     })
 
   -- `(T)e`. JLS 5.5.
   | suc n, jCast t e =>
-    bindRes (evalExpr rt cls n env e) (\lam o => \case o \with {
-      | eExc ev => rOk (eExc ev)
-      | eVal v => afterCast (castOk env t v) (rOk (eVal v))
-    })
+    thenE eExc (evalExpr rt cls n env e) (\lam v => afterCast (castOk env t v) (rOk (eVal v)))
 
   -- `((Rt.Fn)(f)).apply(x)`: λ□ application; the cast is part of the node.
   | suc n, jApply f a =>
-    bindRes (evalExpr rt cls n env f) (\lam of => \case of \with {
-      | eExc ev => rOk (eExc ev)
-      | eVal fv => afterCast (castOk env tFn fv)
-        (bindRes (evalExpr rt cls n env a) (\lam oa => \case oa \with {
-          | eExc ev => rOk (eExc ev)
-          | eVal av => applyVal rt cls n fv av
-        }))
-    })
+    thenE eExc (evalExpr rt cls n env f) (\lam fv =>
+      afterCast (castOk env tFn fv)
+        (thenE eExc (evalExpr rt cls n env a) (\lam av => applyVal rt cls n fv av)))
 
   -- `recv.m(arg)`: a call to a method of a `fix` local class, the fragment's
   -- only non-`apply` virtual call. Exactly one argument, by construction.
   | suc n, jInvoke recv m args =>
-    bindRes (evalExpr rt cls n env recv) (\lam orv => \case orv \with {
-      | eExc ev => rOk (eExc ev)
-      | eVal rv =>
-        bindRes (evalArgs rt cls n env args) (\lam oas => \case oas \with {
-          | aExc ev => rOk (eExc ev)
-          | aVals vs => invokeMethod rt cls n rv m vs
-        })
-    })
+    thenE eExc (evalExpr rt cls n env recv) (\lam rv =>
+      thenA eExc (evalArgs rt cls n env args) (\lam vs => invokeMethod rt cls n rv m vs))
 
   -- `q(args)`: a method of the generated class, or a static of the runtime.
   | suc n, jCallStatic q args =>
-    bindRes (evalArgs rt cls n env args) (\lam oas => \case oas \with {
-      | aExc ev => rOk (eExc ev)
-      | aVals vs => callStatic rt cls n q vs
-    })
+    thenA eExc (evalArgs rt cls n env args) (\lam vs => callStatic rt cls n q vs)
 
   -- `new T(args)`.
   | suc n, jNew t args =>
-    bindRes (evalArgs rt cls n env args) (\lam oas => \case oas \with {
-      | aExc ev => rOk (eExc ev)
-      | aVals vs => newObject env t vs
-    })
+    thenA eExc (evalArgs rt cls n env args) (\lam vs => newObject env t vs)
 
   -- `new Rt.Data(tag, new Object[]{ .. })`: fields are values (no store).
   | suc n, jDataNew tag args =>
-    bindRes (evalArgs rt cls n env args) (\lam oas => \case oas \with {
-      | aExc ev => rOk (eExc ev)
-      | aVals vs => rOk (eVal (vData tag vs))
-    })
+    thenA eExc (evalArgs rt cls n env args) (\lam vs => rOk (eVal (vData tag vs)))
 
   -- `d.tag == k` (JLS 15.21.1): is this value the k-th constructor? The
   -- receiver is always the `Rt.Data`-typed local a `case` binds, so a
   -- non-`Data` cannot arise.
   | suc n, jTagEq d k =>
-    bindRes (evalExpr rt cls n env d) (\lam o => \case o \with {
-      | eExc ev => rOk (eExc ev)
-      | eVal (vData tg _) => rOk (eVal (vBool (tg == k)))
-      | eVal _ => rStuck
+    thenE eExc (evalExpr rt cls n env d) (\lam dv => \case dv \with {
+      | vData tg _ => rOk (eVal (vBool (tg == k)))
+      | _ => rStuck
     })
 
   -- `d.fields[i]`. An out-of-range index throws (JLS 10.4); unreachable for
   -- well-formed λ□, but modelled since a generator bug would land here.
   | suc n, jDataField d i =>
-    bindRes (evalExpr rt cls n env d) (\lam o => \case o \with {
-      | eExc ev => rOk (eExc ev)
-      | eVal (vData _ fs) => \case nthArr i fs \with {
+    thenE eExc (evalExpr rt cls n env d) (\lam dv => \case dv \with {
+      | vData _ fs => \case nthArr i fs \with {
         | just v => rOk (eVal v)
         | nothing => rOk (eExc excAIOOBE)
       }
-      | eVal _ => rStuck
+      | _ => rStuck
     })
 
   -- `(c ? a : b)`: the condition, then exactly one arm (JLS 15.25).
   | suc n, jCond c a b =>
-    bindRes (evalExpr rt cls n env c) (\lam o => \case o \with {
-      | eExc ev => rOk (eExc ev)
-      | eVal (vBool true) => evalExpr rt cls n env a
-      | eVal (vBool false) => evalExpr rt cls n env b
-      | eVal _ => rStuck
+    thenE eExc (evalExpr rt cls n env c) (\lam cv => \case cv \with {
+      | vBool true => evalExpr rt cls n env a
+      | vBool false => evalExpr rt cls n env b
+      | _ => rStuck
     })
 
 -- Arguments, left to right (JLS 15.12.4.2); the first throw stops the list.
@@ -311,14 +316,8 @@
   | 0, _ => rOutOfFuel
   | suc _, nil => rOk (aVals nil)
   | suc n, e :: es =>
-    bindRes (evalExpr rt cls n env e) (\lam o => \case o \with {
-      | eExc ev => rOk (aExc ev)
-      | eVal v =>
-        bindRes (evalArgs rt cls n env es) (\lam os => \case os \with {
-          | aExc ev => rOk (aExc ev)
-          | aVals vs => rOk (aVals (v :: vs))
-        })
-    })
+    thenE aExc (evalExpr rt cls n env e) (\lam v =>
+      thenA aExc (evalArgs rt cls n env es) (\lam vs => rOk (aVals (v :: vs))))
 
 -- `apply`. A closure runs its body in the captured environment extended with
 -- its parameter; a runtime constant accumulates arguments until
@@ -328,14 +327,7 @@
   : Res ExprOut \elim n
   | 0 => rOutOfFuel
   | suc n => \case f \with {
-    | vClos p body cenv =>
-      bindRes (execStmts rt cls n (bindVar cenv p a) body) (\lam o => \case o \with {
-        | oReturn v => rOk (eVal v)
-        | oExcS ev => rOk (eExc ev)
-        -- `apply` returns `Object`, so falling off the end is not a well-formed
-        -- method body (JLS 8.4.7); cf. ClightBigstep's `outcome_result_value`.
-        | oNormal _ => rStuck
-      })
+    | vClos p body cenv => methodResult (execStmts rt cls n (bindVar cenv p a) body)
     | vBuiltin nm got => \case builtinArity {rt} nm \with {
       | nothing => rStuck
       | just k => \case snocArr got a \with {
@@ -362,13 +354,7 @@
     | vObj c ms cenv => \case lookupClassMethod ms m \with {
       | nothing => rStuck
       | just pb => \case vs \with {
-        | a :: nil =>
-          bindRes (execStmts rt cls n (bindVar (bindType cenv c (vObj c ms cenv)) pb.1 a) pb.2)
-                  (\lam o => \case o \with {
-            | oReturn v => rOk (eVal v)
-            | oExcS ev => rOk (eExc ev)
-            | oNormal _ => rStuck
-          })
+        | a :: nil => methodResult (execStmts rt cls n (bindVar (bindType cenv c (vObj c ms cenv)) pb.1 a) pb.2)
         -- Every method of a `fix` class is `Object f<j>(Object)`: unreachable.
         | _ => rStuck
       }
@@ -385,13 +371,7 @@
   | 0 => rOutOfFuel
   | suc n => \case lookupMethod cls q \with {
     | just mth => \case vs \with {
-      | nil =>
-        bindRes (execStmts rt cls n nil (JMethod.mBody {mth})) (\lam o => \case o \with {
-          | oReturn v => rOk (eVal v)
-          | oExcS ev => rOk (eExc ev)
-          -- An `Object` method may not fall off the end (JLS 8.4.7).
-          | oNormal _ => rStuck
-        })
+      | nil => methodResult (execStmts rt cls n nil (JMethod.mBody {mth}))
       | _ => rStuck                              -- zero-argument by construction
     }
     -- Not ours: `Rt.unbound`, `Rt.freeVar`, `Rt.noBranch`, `Long.valueOf`; the
@@ -438,10 +418,7 @@
   -- `final T x = e;`: a binding. The declared type is not checked (`javac`
   -- does, JLS 5.2).
   | suc n, jLocal _ x e =>
-    bindRes (evalExpr rt cls n env e) (\lam o => \case o \with {
-      | eExc ev => rOk (oExcS ev)
-      | eVal v => rOk (oNormal (bindVar env x v))
-    })
+    thenE oExcS (evalExpr rt cls n env e) (\lam v => rOk (oNormal (bindVar env x v)))
 
   -- A local class `C` (a `fix` block): binds the type `C` to the instance,
   -- capturing the environment, so `new C()` and every `C.this` mean the same
@@ -450,23 +427,17 @@
 
   -- `throw e;` (JLS 14.18): `e` must be a `Throwable`.
   | suc n, jThrow e =>
-    bindRes (evalExpr rt cls n env e) (\lam o => \case o \with {
-      | eExc ev => rOk (oExcS ev)
-      | eVal v => \case instanceOf v cThrowable \with {
-        | just true => rOk (oExcS v)
-        | _ => rStuck
-      }
+    thenE oExcS (evalExpr rt cls n env e) (\lam v => \case instanceOf v cThrowable \with {
+      | just true => rOk (oExcS v)
+      | _ => rStuck
     })
 
   | suc n, jReturn e =>
-    bindRes (evalExpr rt cls n env e) (\lam o => \case o \with {
-      | eExc ev => rOk (oExcS ev)
-      | eVal v => rOk (oReturn v)
-    })
+    thenE oExcS (evalExpr rt cls n env e) (\lam v => rOk (oReturn v))
 
 -- An abrupt outcome stops the sequence and propagates; a normal one carries its
 -- (possibly extended) environment to the next statement. Falling off the end is
--- `oNormal`, which every caller rejects -- see `applyVal`.
+-- `oNormal`, which every caller rejects -- see `methodResult`.
 \func execStmts (rt : RtSpec) (cls : JClass) (n : Nat) (env : Env) (ss : Array JStmt)
   : Res StmtOut \elim n, ss
   | 0, _ => rOutOfFuel
@@ -488,10 +459,7 @@
 \data RunOut | rvValue Value | rvThrown Value
 
 \func runClass (rt : RtSpec) (cls : JClass) (entry : JIdent) (n : Nat) : Res RunOut =>
-  bindRes (callStatic rt cls n entry nil) (\lam o => \case o \with {
-    | eVal v => rOk (rvValue v)
-    | eExc ev => rOk (rvThrown ev)
-  })
+  thenE rvThrown (callStatic rt cls n entry nil) (\lam v => rOk (rvValue v))
 
 -- The relation recovered from the function: `cls` runs to `v` for some fuel.
 \func JEval (rt : RtSpec) (cls : JClass) (entry : JIdent) (v : Value) : \Type =>
