@@ -21,7 +21,10 @@
 -- `Semantics/RtInt63.ard` layers the `PRIM_*_INT63` family on top of it; that
 -- combination is the runtime model of the correctness theorem.
 --
--- Not modelled (stuck): the `ARRAY_*`, `DEC_*`, `INT_*` and `EQ_REC` families.
+-- Not modelled (stuck): `PRIM_POW_LONG`, `PRIM_DEC_*_LONG`, the `INT_*`, `ARRAY_*`
+-- and `EQ_REC` families. They realize axioms the λ□ oracle does not model
+-- either (Semantics/LambdaBoxAxioms.ard), so they are outside the theorem;
+-- test/rt/RtTest.java unit-tests `PRIM_POW_LONG` and the array indices.
 --
 -- Longs are `JLong`s (`Compiler/JavaLong.ard`): in range by construction, so
 -- `lng(x)` is just the value `x.1`, and every result is built by `wrapLong`

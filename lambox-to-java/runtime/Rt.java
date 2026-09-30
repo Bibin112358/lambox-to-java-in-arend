@@ -303,12 +303,17 @@ public final class Rt {
     }
   };
 
-  // `Math.pow` is floating point, so the exponentiation is an explicit loop;
-  // it wraps like every other `*_LONG` operation.
+  // `Math.pow` is floating point, so the exponentiation is square-and-multiply
+  // in O(log y) steps. It wraps like every other `*_LONG` operation: `long`
+  // multiplication is multiplication mod 2^64, so the result equals the naive
+  // product of y copies of x mod 2^64. An exponent <= 0 gives 1.
   public static final Fn PRIM_POW_LONG = new Bin() {
     Object run(Object x, Object y) {
       long base = lng(x), acc = 1L;
-      for (long i = lng(y); i > 0L; i--) acc = acc * base;
+      for (long e = lng(y); e > 0L; e >>= 1) {
+        if ((e & 1L) != 0L) acc = acc * base;
+        base = base * base;
+      }
       return Long.valueOf(acc);
     }
   };
@@ -428,21 +433,22 @@ public final class Rt {
 
   private static Object[] arr(Object x) { return (Object[]) x; }
 
-  // Both int representations are `java.lang.Number`s, so an index needs no
-  // target-specific version; only `Array.size`, which RETURNS a Nat, does.
-  private static int idx(Object x) { return ((Number) x).intValue(); }
+  // An index is a Nat, i.e. a `Long`, and a Java array index an `int`. It is
+  // bounds-checked as a `long` before narrowing: a plain `intValue()` would
+  // truncate, so that index 2^32 read element 0 of a one-element array.
+  private static int index(Object[] a, Object x, String what) {
+    long i = ((Number) x).longValue();
+    if (i < 0L || i >= a.length) {
+      throw new IndexOutOfBoundsException(
+        "Lean " + what + ": index " + i + " outside array of size " + a.length);
+    }
+    return (int) i;
+  }
 
   private static Object[] copyWith(Object[] a, int extra) {
     Object[] b = new Object[a.length + extra];
     System.arraycopy(a, 0, b, 0, a.length);
     return b;
-  }
-
-  private static void checkIndex(Object[] a, int i, String what) {
-    if (i < 0 || i >= a.length) {
-      throw new IndexOutOfBoundsException(
-        "Lean " + what + ": index " + i + " outside array of size " + a.length);
-    }
   }
 
   // `Array.mk {α} (toList : List α) : Array α`. Reading the list is the one
@@ -485,8 +491,7 @@ public final class Rt {
   public static final Fn ARRAY_GET_INTERNAL = curry(4, new Op() {
     public Object run(Object[] a) {
       Object[] xs = arr(a[1]);
-      int i = idx(a[2]);
-      checkIndex(xs, i, "Array.getInternal");
+      int i = index(xs, a[2], "Array.getInternal");
       return xs[i];
     }
   });
@@ -497,8 +502,7 @@ public final class Rt {
   public static final Fn ARRAY_GET_BANG_INTERNAL = curry(4, new Op() {
     public Object run(Object[] a) {
       Object[] xs = arr(a[2]);
-      int i = idx(a[3]);
-      checkIndex(xs, i, "Array.get!Internal");
+      int i = index(xs, a[3], "Array.get!Internal");
       return xs[i];
     }
   });
@@ -507,8 +511,7 @@ public final class Rt {
   public static final Fn ARRAY_SET_BANG = curry(4, new Op() {
     public Object run(Object[] a) {
       Object[] xs = arr(a[1]);
-      int i = idx(a[2]);
-      checkIndex(xs, i, "Array.set!");
+      int i = index(xs, a[2], "Array.set!");
       Object[] b = copyWith(xs, 0);
       b[i] = a[3];
       return b;
@@ -519,9 +522,7 @@ public final class Rt {
   public static final Fn ARRAY_SWAP = curry(6, new Op() {
     public Object run(Object[] a) {
       Object[] xs = arr(a[1]);
-      int i = idx(a[2]), j = idx(a[3]);
-      checkIndex(xs, i, "Array.swap");
-      checkIndex(xs, j, "Array.swap");
+      int i = index(xs, a[2], "Array.swap"), j = index(xs, a[3], "Array.swap");
       Object[] b = copyWith(xs, 0);
       Object t = b[i];
       b[i] = b[j];

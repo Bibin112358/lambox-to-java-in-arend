@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """The test harness' one entry point.
 
-    test/check quick            proofs + golden: run before every commit (~10 min)
+    test/check quick            proofs + golden + rt: run before every commit (~25 min)
     test/check proofs [-j N] [MODULE...]
                                 typecheck every Compiler/Semantics/Proof module and
                                 every examples ModelChecks module, each in its own
                                 Arend run, N at a time (default 2)
-    test/check golden [...]     generated Java unchanged vs test/golden/ (~35 s)
+    test/check golden [...]     generated Java unchanged vs test/golden/ (~1 min)
     test/check run [...]        compile + run programs, check their values
     test/check diff             Arend models vs the real JVM on small programs (~1.5 min)
+    test/check rt               unit tests of runtime/Rt.java on edge values (~5 s)
 
 `test/check <command> -h` for the options of each. Exit status 0 = all passed.
 """
@@ -90,15 +91,33 @@ def diff(argv):
     return d.main(argv)
 
 
+def rt(argv):
+    """Compile runtime/Rt.java with test/rt/RtTest.java and run it."""
+    if argv:
+        c.die("rt takes no options")
+    import subprocess
+    out = c.WORK_DIR / "rt"
+    out.mkdir(parents=True, exist_ok=True)
+    script = ('. "$0"; require_tool "$JAVAC" "a JDK"; '
+              '"$JAVAC" -d "$1" "$2" "$3" && "$JAVA" -cp "$1" RtTest')
+    try:
+        return subprocess.run(["bash", "-c", script, str(c.LIB_SH), str(out),
+                               str(c.CORE / "runtime" / "Rt.java"),
+                               str(c.TEST_DIR / "rt" / "RtTest.java")], timeout=120).returncode
+    except subprocess.TimeoutExpired:
+        print("rt: FAILED, timed out after 120 s")
+        return 1
+
+
 def quick(argv):
     if argv:
         c.die("quick takes no options")
-    status = {"proofs": proofs([]), "golden": golden([])}
+    status = {"proofs": proofs([]), "golden": golden([]), "rt": rt([])}
     print("\nquick: " + ", ".join(f"{k} {'ok' if v == 0 else 'FAILED'}" for k, v in status.items()))
     return 1 if any(status.values()) else 0
 
 
-COMMANDS = {"quick": quick, "proofs": proofs, "golden": golden, "run": run, "diff": diff}
+COMMANDS = {"quick": quick, "proofs": proofs, "golden": golden, "run": run, "diff": diff, "rt": rt}
 
 
 def main():

@@ -27,9 +27,11 @@
 --     is two's-complement 64-bit arithmetic on bit patterns in [0, 2^64).
 --
 -- Deliberate gaps (`nothing`, hence stuck), although `javaAxioms` realizes
--- them: `Array.*` (mutable, would need a store); `Nat.decEq`/`decLe`/`decLt`
--- and `Eq.rec`/`Eq.ndrec` (return `Decidable`, whose value depends on an
--- inductive declaration); `Int.*` (each needs its own convention); `Nat.pow`.
+-- them: `Array.*` (Lean arrays, a representation of their own in `Rt.java`);
+-- `Nat.decEq`/`decLe`/`decLt` (return a `Decidable` constructor, whose meaning
+-- depends on Lean's inductive declaration); `Eq.rec`/`Eq.ndrec`; `Int.*` (each
+-- needs its own convention); `Nat.pow` (not modelled, only unit-tested:
+-- test/rt/RtTest.java).
 
 -- ---------------------------------------------------------------------------
 -- The values this oracle produces and consumes.
