@@ -118,7 +118,10 @@
 
 \record ProjectionBody (projBodyName : Ident)
 
-\data AllowedEliminations  -- TODO : adjust for Arend?
+-- MetaRocq's `allowed_eliminations`: which sorts a `case` on the type may
+-- return into. Only exported (Compiler/Serialize.ard), since Peregrine checks
+-- it; the compiler and the semantics never read it.
+\data AllowedEliminations
   | IntoSProp
   | IntoPropSProp
   | IntoSetPropSProp
@@ -126,18 +129,23 @@
 
 \record OneInductiveBody
   (indName : Ident)
-  (indPropositional : Bool)   -- Should always be false? since erasure should remove anything which ends up in Prop
+  -- `true` for a type in `Prop`. Erasure removes computations on those, so it
+  -- is `false` in practice; the semantics lets `case`/`proj` fire only when it
+  -- is `false` (`constructorInfo`, Semantics/LambdaBoxEval.ard).
+  (indPropositional : Bool)
   (indKelim : AllowedEliminations)
   (indCtors : Array ConstructorBody)
   (indProjs : Array ProjectionBody)  -- This is only about giving user-visible names to projections, but `peregrine` complains about wellformedness if it is empty.
 
 \data RecursivityKind
   | finite
-  | cofinite  -- Lean doesn't have primitive coinductive types, but including this here anyway to match the MetaCoq side.
+  | cofinite  -- Lean has no primitive coinductive types; kept to match MetaRocq.
   | bifinite
 
 \record MutualInductiveBody
-  (indFinite : RecursivityKind)  -- Should always be finite ?
+  -- Only exported (Compiler/Serialize.ard); the compiler never reads it. This
+  -- λ□ has no cofixpoint term, so any type is built and matched the same way.
+  (indFinite : RecursivityKind)
   (indNpars : Nat)  -- Number of parameters to this family of mutually inductive types.
   (indBodies : Array OneInductiveBody)
 

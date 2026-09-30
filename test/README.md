@@ -1,15 +1,16 @@
 # Tests
 
-One entry point, `test/check`, answers four questions:
+One entry point, `test/check`, answers five questions:
 
 | command | question | how | time |
 |---|---|---|---|
-| `test/check proofs` | Do the compiler, the semantics and the correctness proof typecheck? | every module of `lambox-to-java/src/{Compiler,Semantics,Proof}` and `lambox-to-java-examples/src/ModelChecks`, **each in its own Arend run**, 2 at a time | ~15–25 min |
+| `test/check proofs` | Do the compiler, the semantics and the correctness proof typecheck? | every module of `lambox-to-java/src/{Compiler,Semantics,Proof}` and `lambox-to-java-examples/src/ModelChecks`, **each in its own Arend run**, 2 at a time | ~25 min (measured: 25.6 min for 45 modules on a shared machine) |
 | `test/check golden` | Is the generated Java unchanged? | generate Java for 5 programs in one Arend run (4 covering the generator's features, plus `insertion-sort`, the example shown in the top-level README), diff against `golden/*.java` | ~1 min |
-| `test/check run P...` | Do compiled programs compute the right value on the JVM? | import `.ast` → generate Java → `javac` → `java`, compare with the corpus' expected value | ~40–70 s per program |
-| `test/check diff` | Do the Arend models agree with the real JVM? | `ModelChecks.DiffRuns` prints, for 18 small programs, the Java and the values computed by the λ□ semantics and by the Java-fragment semantics; the Java is run for real and all three values must be equal | ~1.5 min |
+| `test/check run P...` | Do compiled programs compute the right value on the JVM? | import `.ast` → generate Java → `javac` → `java`, compare with the corpus' expected value | ~25–50 s per program, mostly the Arend run (`lean-deriv` ~3.5 min) |
+| `test/check diff` | Do the Arend models agree with the real JVM? | `ModelChecks.DiffRuns` prints, for 18 small programs, the Java and the values computed by the λ□ semantics and by the Java-fragment semantics; the Java is run for real and all three values must be equal | ~1–1.5 min |
+| `test/check rt` | Does `runtime/Rt.java` behave on edge values? | `rt/RtTest.java`: unit tests of single runtime constants, in particular those the Arend model does not cover (`Nat.pow`, Lean array indices) | ~5 s |
 
-Before a commit run **`test/check quick`** (= `proofs` + `golden`). Run
+Before a commit run **`test/check quick`** (= `proofs` + `golden` + `rt`). Run
 `run`/`diff` as well after touching `Compiler/ToJava.ard`, `runtime/Rt.java` or the
 models. Every command exits 0 iff everything passed; `test/check <cmd> -h` lists
 its options.
@@ -29,7 +30,7 @@ meaningless, so any `[ERROR]` or `[GOAL]` line counts as a failure. Logs are in
     test/check golden --set cover             # + lean-deriv, the only program using Eq.rec / Int axioms (~2 min more)
     test/check run                            # list all programs, run nothing
     test/check run peano leanbench-unit peregrine-rocq-nat
-    test/check run --all                      # all 56 programs (~30 min)
+    test/check run --all                      # all 60 programs (~30–40 min)
     test/check run --ref matmul               # also run Peregrine's OCaml / C backends
     test/check run --names insertion-sort     # print the value with constructor names (debugging)
     test/check run --long matmul              # compile after the Java-long pass (below)
@@ -103,12 +104,26 @@ printed value. Each `corpora/<name>.sh` prints one tab-separated row per program
 | corpus | programs | source |
 |---|---|---|
 | `handwritten` | 17 | `corpora/handwritten/<p>/prog.ast`, checked in: exported from `lambox-to-java-examples` (`tools/regen-arend-asts.sh`) or extracted from Lean |
+| `regression` | 3 | `corpora/regression/<p>/prog.ast`, checked in, exported from `lambox-to-java-examples/src/Example{ConstBlowup,MangleCollision,AxiomCollision}.ard`. Each pins down one defect of this compiler; its `meta` says which, and whether it is fixed or open (below) |
 | `lean-benchmarks` | 26 | an upstream checkout of the Lean benchmark programs (`tools/extract-lean-benchmarks.sh`) |
 | `peregrine` | 14 | the Peregrine test suite's `.ast` files |
 
-Expected values live in `corpora/*.expected`. They were obtained from the
-reference backends and checked by hand. A corpus whose upstream checkout is
-missing prints no rows, and `check` warns about it.
+Expected values: a checked-in program (`handwritten`, `regression`) has its own
+in the `expected=` line of `corpora/<corpus>/<p>/meta`; the two upstream corpora,
+whose `.ast` files are not checked in, have one line per program in
+`corpora/lean-benchmarks.expected` and `corpora/peregrine.expected`. They were
+obtained from the reference backends and checked by hand. A program with an
+empty expected value is only checked for not crashing (`none` in `run`'s
+output). A corpus whose upstream checkout is missing prints no rows, and
+`check` warns about it.
+
+The **regression** programs, run with `run --ref <p>` to see the comparison:
+
+| program | defect | status | what `run` shows |
+|---|---|---|---|
+| `const-blowup` | constants are re-evaluated on every use: a DAG of N constants costs 2^N calls | **open** (top-level README, "Known limitations") | `ok` (the value is right); the cost is in the java run time, ~12 s at N = 30 against ~0.0 s for OCaml/C |
+| `mangle-collision` | `A_B.f` and `A.B.f` got the same Java name | fixed (3bbc010) | `ok` |
+| `axiom-mangle-collision` | an axiom `_Nat.add` resolved to Lean's `Nat.add`, so Java silently printed 13 instead of 42 | fixed (3bbc010) | `xfail` for java: it now throws "axiom not implemented", as intended (the Java backend does not read Peregrine's attribute files); a return to 13 would be `wrong` |
 
 The **reference backends** (`stages/ocaml.sh`, `stages/c.sh`, runtimes in
 `runtime/`) are no longer on the default path: every value they could confirm is
@@ -137,16 +152,19 @@ session. With `--ref`, the OCaml/C times are the control for machine noise.
 Measured design decisions: `case` as a ternary chain (not `switch`) and `fix` as
 a local class (not a `Fn[]` knot) were neutral to slightly faster; `letIn` as a
 β-redex instead of `final` locals was ~5× slower on `letchain` and was rejected.
-Java runs use `-Xss512m` (λ□ `fix` is non-tail recursion) and
+λ□ `fix` is non-tail recursion, so `Rt.runMain` runs the program on a thread
+with a 1 GB stack (`-Dlambox.stack=<bytes>`; `-Xss512m` only sizes the main
+thread), and Java runs use
 `-XX:-DontCompileHugeMethods` (generated methods exceed HotSpot's 8000-bytecode
 JIT limit; `lean-deriv` 24 s → 6 s).
 
 ## Layout
 
-    check                 the entry point (proofs, quick; dispatches the others)
+    check                 the entry point (proofs, rt, quick; dispatches the others)
     golden.py run.py diff.py common.py
     golden/               expected generated Java (golden check)
-    corpora/              program lists, expected values, hand-written .ast files
+    rt/RtTest.java        unit tests of runtime/Rt.java (rt check)
+    corpora/              program lists, expected values, checked-in .ast files
     stages/{java,ocaml,c}.sh  gen / build / run of one backend
     runtime/              OCaml/C runtimes of the reference backends (see their READMEs)
     arend/                Arend project for generated programs; src/ is generated and gitignored
@@ -156,12 +174,12 @@ JIT limit; `lean-deriv` 24 s → 6 s).
       import-ast.sh       .ast -> arend/src/Imported/<Module>.ard (peregrine ast box + ast-to-arend)
       ast-to-arend        the .ast -> Arend translator (Python)
       extract-arend.sh    typecheck MODULE:DEF and capture what its putStrLn prints
-      regen-arend-asts.sh re-export corpora/handwritten .ast files from the Arend examples
+      regen-arend-asts.sh re-export the checked-in .ast files from the Arend examples
       extract-lean-benchmarks.sh  rebuild the lean-benchmarks .ast files from Lean
     work/                 scratch, gitignored (per-program build dirs, logs, results.tsv)
 
 Generated programs live in a separate Arend project, `test/arend` (depends on
-`lambox-to-java`), so that the 55 imported modules (~19 MB) do not end up in the
+`lambox-to-java`), so that the imported modules (one per program, ~19 MB) do not end up in the
 core library's sources. Arend has no file IO, so every generated artefact is
 harvested from what a `putStrLn` prints during typechecking. The harness removes
 `bin/` caches before each Arend run, because a cached module prints nothing.

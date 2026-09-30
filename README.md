@@ -123,9 +123,11 @@ Java returns the closure compiled from the λ□ function.
 `Proof/Corollary.ard` (`correctChecked`) restates the theorem for use on a
 concrete program: the closedness and first-order hypotheses become Boolean
 checks, and the conclusion names the returned Java value exactly. It is applied
-to seven programs (beta, axioms, overflow, projection, `fix`, Peano addition
-through a constant) in `lambox-to-java-examples/src/ModelChecks/TheoremInstances.ard`,
-which shows the hypotheses can be met, i.e. the theorem is not vacuous.
+to 15 programs in `lambox-to-java-examples/src/ModelChecks/TheoremInstances.ard`
+(`box`, `let`, beta, applying `box`, a primitive, projection, `fix`, Peano
+addition through a constant, Lean's `Nat.add`/`Nat.sub`/overflow, a `case` on
+a boolean axiom result, and two programs after the Java-long pass), which shows
+the hypotheses can be met, i.e. the theorem is not vacuous.
 
 The proof follows MetaRocq's structure in two steps:
 
@@ -216,10 +218,37 @@ that runs small programs in both Arend models and on the real JVM
   divergence.)
 - Integers are Lean's machine integers as lean-to-lambdabox emits them
   (63-bit), not unbounded naturals.
-- Some axioms the compiler does emit have no λ□ meaning in the model
-  (`Semantics/LambdaBoxAxioms.ard`): Lean's `Array.*` (mutable), `Int.*`,
-  `Nat.pow`, `Nat.decEq/decLe/decLt` and `Eq.rec`. λ□ gets stuck on them, so
-  programs that use them are not covered either; they are only tested.
+- Some axioms the compiler does emit are modelled on neither side: they have no
+  λ□ meaning in `Semantics/LambdaBoxAxioms.ard`, and their runtime constants
+  are missing from `Semantics/RtLong.ard`. λ□ gets stuck on them, so programs
+  that use them are outside the theorem; they are only tested:
+
+  | Lean axiom | `Rt` constant | tested by (`test/check run`, unless noted) |
+  |---|---|---|
+  | `Nat.pow` | `PRIM_POW_LONG` | `test/check rt`; `lean-binarytrees`, `lean-deriv` |
+  | `Nat.decEq`, `decLe`, `decLt` (return `Decidable`) | `PRIM_DEC_{EQ,LE,LT}_LONG` | `lean-qsort`, `lean-binarytrees`, `lean-unionfind` |
+  | `Int.*` (`ofNat`, `neg`, `add`, `mul`, `ediv`, `emod`, ...) | `INT_*` | `lean-deriv` |
+  | `Array.*` (`mk`, `push`, `getInternal`, `set!`, `swap`, `size`, ...) | `ARRAY_*` | `test/check rt` (indices); `lean-qsort`, `lean-unionfind`, `lean-matmul` |
+  | `Eq.rec`, `Eq.ndrec` | `EQ_REC` | `lean-deriv` |
+
+## Known limitations
+
+- **Constants are re-evaluated on every use.** `const k` compiles to a call of
+  the zero-argument static method `c_k()`, which runs the constant's whole body
+  each time; nothing is memoized. A constant used twice is computed twice, so
+  a DAG of N constants that share each other costs 2^N calls, where Peregrine's
+  OCaml and C backends compute each constant once. The value is still correct
+  (the theorem is about values, not cost). The regression program
+  `const-blowup` (`test/corpora/regression/`) shows it: at N = 30 Java takes
+  about 12 s against OCaml's 0.0 s, and interpreted (`-Xint`) the time doubles
+  with each level. The fix, a lazily initialized static field per constant,
+  needs static state in the Java model and a new `const` case in the proof, so
+  it is not done.
+- **Stack depth.** λ□ `fix` compiles to non-tail recursion; `Rt.runMain` runs
+  programs on a thread with a 1 GB stack, and deeper recursion throws
+  `StackOverflowError` (the model has no depth limit, see above).
+- **Performance** is a constant factor behind OCaml/C on most programs; see
+  "Performance" in `test/README.md`.
 
 ## Layout
 
@@ -256,11 +285,12 @@ does not import `Proof/`.
 
 Everything goes through one script; see `test/README.md` for details.
 
-    test/check quick        # typecheck every module + golden Java (~25 min)
+    test/check quick        # typecheck every module + golden Java + rt (~25 min)
     test/check proofs       # typecheck every module, each in its own run
     test/check golden       # generated Java unchanged (~1 min)
     test/check run peano    # compile a program, run it on the JVM, compare
     test/check diff         # λ□ model vs Java model vs real JVM
+    test/check rt           # unit tests of runtime/Rt.java
 
 Typecheck modules one per invocation: checking several at once can hide
 errors.
