@@ -1,6 +1,9 @@
 -- Only `map`/`mkArray`: all of Data.Array would clash its `++` with String's.
+\import Arith.Nat
 \import Data.Array (map, mkArray)
+\import Data.Bool
 \import Data.String
+\import Set
 \import Compiler.JavaAst
 \import Compiler.StringUtil
 
@@ -15,8 +18,9 @@
 -- No precedence handling: every non-atomic node (`jCast`, `jCond`, `jTagEq`)
 -- parenthesizes itself, so any node can go wherever an expression is allowed.
 -- Layout is indentation only (`ind` = number of two-space levels).
--- `litStr` is NOT escaped: the generator only puts node paths, mangled
--- identifiers and fixed messages there.
+-- `litStr` is escaped (`escapeBytes`): most strings there are node paths,
+-- mangled identifiers and fixed messages, but `Rt.freeVar` gets a λ□ variable
+-- name verbatim, which may contain any byte.
 --
 -- Termination: inside the `printExpr`/`printStmt` cycle, array children are
 -- recursed on inline via `xs i` (as in `Compiler/ToJava.ard`); `Data.Array.map`
@@ -26,8 +30,24 @@
   | tClass q => q
 
 \func printLit (l : JLit) : String
-  | litStr s => "\"" ++ s ++ "\""
+  | litStr s => "\"" ++ escapeBytes s.bytes ++ "\""
   | litLong i => intToStr i.1 ++ "L"
+
+-- The body of a Java string literal denoting the bytes `bs` (JLS 3.10.7): `"`
+-- and `\` are backslash-escaped, control bytes (0-31, 127) become three-digit
+-- octal escapes, and every other byte (including UTF-8) is copied. Octal, not
+-- `\u000a`: unicode escapes are decoded before lexing, so that one would end
+-- the literal. A copied `\` never starts a unicode escape, since it is doubled.
+\func escapeBytes (bs : Array Byte) : String \elim bs
+  | nil => ""
+  | b :: bs => escapeByte b (b == 34) (b == 92) (inByteRange 0 31 b or (b == 127)) ++ escapeBytes bs
+  \where
+    \func escapeByte (b : Byte) (quote backslash control : Bool) : String \elim quote, backslash, control
+      | true, _, _ => "\\\""
+      | false, true, _ => "\\\\"
+      | false, false, true =>
+        "\\" ++ natToStr (b Nat.div 64) ++ natToStr ((b Nat.div 8) Nat.mod 8) ++ natToStr (b Nat.mod 8)
+      | false, false, false => oneByteString b
 
 -- `ind` is the indentation of the current line; only `jClosure`, whose body
 -- spans further lines, uses it.

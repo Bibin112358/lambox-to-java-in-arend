@@ -4,6 +4,7 @@
 \import Data.String
 \import Compiler.Int63 (wrap63, wrap64u)
 \import Compiler.JavaAst
+\import Compiler.JavaPrint (printLit)
 \import Compiler.LambdaBox
 \import Compiler.LongRewrite (rewriteProgram)
 \import Compiler.Mangle
@@ -111,6 +112,10 @@
 \func natAddArity : axiomArity {lbAxioms} (natKn "add") = builtinArity {rtInt63} "PRIM_ADD_INT63" => idp
 
 \func natSubResolves : axiomRtName (natKn "sub") = just "NAT_SUB_LONG" => idp
+
+-- The printer escapes string literals: a free variable's name reaches
+-- `Rt.freeVar` verbatim and may contain `"`, `\` or a newline (octal `\012`).
+\func printEscapes : printLit (litStr "a\"b\\c\nd") = "\"a\\\"b\\\\c\\012d\"" => idp
 
 -- ---------------------------------------------------------------------------
 -- 3. The value relation `agrees` (`Proof/Statement.ard`).
