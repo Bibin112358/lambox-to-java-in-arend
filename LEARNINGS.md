@@ -1,0 +1,20 @@
+- my personal lessons to be shared
+- compiler
+  - unique variable names technique, fresh-name
+- Arend
+  - fuel based induction
+  - complete specification
+- proof
+  - abstraction layer over target language (Java)
+- AI
+  - good for getting things running (ruby website)
+  - asking investigative questions
+  - have to review the style
+  - reviewing every diff line-by-line vs complete at the end?
+    - before vs after commit
+  - write specs by hand
+    - semantics by hand?
+    - trust proof and implementation faster and iterate
+    - start with the simplest implementation and the try optimizations
+    - print-out for review
+  - AI can review and find bugs and problems (can also be used for handwritten code)
