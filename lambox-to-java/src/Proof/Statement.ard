@@ -87,11 +87,11 @@
 -- arguments both sides compute related results.
 \func AxiomAgree (spec : LBSpec) (rt : RtSpec) (kn : Kername) (nm : JIdent) : \Type =>
   \Sigma
-    (axiomArity {spec} kn = builtinArity {rt} nm)
-    (\Pi (args : Array LBTerm) (jargs : Array Value args.len) (v : LBTerm)
-      -> (\Pi (i : Fin args.len) -> ValRel (args i) (jargs i))
-      -> axiomRun {spec} kn args = just v
-      -> \Sigma (jv : Value) (builtinRun {rt} nm jargs = rOk jv) (ValRel v jv))
+    (axiomArity {spec} kn = builtinArity {rt} nm)  -- same number of arguments
+    (\Pi (args : Array LBTerm) (jargs : Array Value args.len) (v : LBTerm)  -- for any arguments/inputs
+      -> (\Pi (i : Fin args.len) -> ValRel (args i) (jargs i))  -- every argument/input is the same
+      -> axiomRun {spec} kn args = just v  -- axiom produces `v`
+      -> \Sigma (jv : Value) (builtinRun {rt} nm jargs = rOk jv) (ValRel v jv))  -- then rt also produces the same value as `v`
 
 \func OracleAgree (spec : LBSpec) (rt : RtSpec) : \Type =>
   \Sigma
