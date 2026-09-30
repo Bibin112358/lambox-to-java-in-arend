@@ -1,0 +1,19 @@
+# FIXED (commit 3bbc010): an axiom whose kername collided with Lean's Nat.add.
+#
+# The program applies the axiom `_Nat.add` (module literally named `_Nat`) to
+# 6 and 7; its Peregrine attributes (prog.attr) realize the axiom as int63
+# multiplication, so OCaml prints 42.
+#
+# Before the fix the Java axiom table was keyed by mangled strings, `_Nat.add`
+# mangled like `Nat.add`, and Java SILENTLY printed 6 + 7 = 13. Now the table is
+# keyed by kernames, `_Nat.add` is unknown, and Java throws
+# "axiom ... not implemented": the intended loud failure, since the Java
+# backend does not read attribute files. Hence `xfail` for java. `xfail` never
+# absorbs a wrong value, so a regression to 13 would fail the run. Source:
+# lambox-to-java-examples/src/ExampleAxiomCollision.ard. No `c` backend:
+# `peregrine c` refuses unrealized axioms.
+expected=42
+backends=java ocaml
+runtime=int63
+xfail=Java ignores Peregrine attribute remaps, so the unknown axiom _Nat.add throws "not implemented" (intended; before 3bbc010 it silently printed 13)
+note=_Nat.add 6 7 with _Nat.add remapped to int63 multiplication; must not resolve to Lean's Nat.add

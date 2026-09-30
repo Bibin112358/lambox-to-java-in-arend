@@ -1,7 +1,10 @@
 \import Data.String  -- the `"Prog"` class-name literal the `*Java` printers pass
 \import Debug
 \import Example (testProgram)
+\import ExampleAxiomCollision (axiomCollisionAttrsOCaml, axiomCollisionProgram)
+\import ExampleConstBlowup (constBlowupProgram)
 \import ExampleLetChain (letChainProgram)
+\import ExampleMangleCollision (mangleCollisionProgram)
 \import ExampleMatMul (matMulAttrsC, matMulAttrsOCaml, matMulProgram, matMulProgramOf)
 \import ExamplePeano (addProgram)
 \import ExampleSort (sortProgram)
@@ -42,3 +45,14 @@
 -- attribute files; see ExampleLetChain.ard.
 \func letChainJava => putStrLn (compileProgram "Prog" letChainProgram)
 \func letChainSexpr => putStrLn (LambdaBoxToString letChainProgram)
+
+-- The three programs of the `regression` corpus (test/corpora/regression/).
+\func constBlowupJava => putStrLn (compileProgram "Prog" constBlowupProgram)
+\func constBlowupSexpr => putStrLn (LambdaBoxToString constBlowupProgram)
+
+\func mangleCollisionJava => putStrLn (compileProgram "Prog" mangleCollisionProgram)
+\func mangleCollisionSexpr => putStrLn (LambdaBoxToString mangleCollisionProgram)
+
+\func axiomCollisionJava => putStrLn (compileProgram "Prog" axiomCollisionProgram)
+\func axiomCollisionSexpr => putStrLn (LambdaBoxToString axiomCollisionProgram)
+\func axiomCollisionAttrsOCamlText => putStrLn (AttributesToString axiomCollisionAttrsOCaml)

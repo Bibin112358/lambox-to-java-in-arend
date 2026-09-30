@@ -1,0 +1,76 @@
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Compiler.LambdaBox
+\import Compiler.StringUtil (natToStr)
+
+-- Regression program `const-blowup` (test/corpora/regression/): constants are
+-- re-evaluated on every reference, an OPEN performance limitation.
+--
+-- `const k` compiles to a call of the zero-argument static method `c_k()`,
+-- whose body is the constant's whole λ□ body, with no memoization. So a
+-- constant referenced twice is evaluated twice, and a DAG of N constants costs
+-- 2^N on the JVM. Peregrine's OCaml and C backends bind each constant once (N).
+-- The value is still correct (the correctness theorem is about values, not
+-- cost); only the time grows.
+--
+--   a0 = true               b0 = false
+--   a(k+1) = pick a(k) b(k)  b(k+1) = pick b(k) a(k)      main = a N
+--
+-- `pick x y` matches on `y` and returns `x`, so both references are needed and
+-- the answer is `true` (printed as 1).
+--
+-- Two design choices keep the cost visible, both measured:
+-- * Two interleaved chains, not `d(k+1) = pick d(k) d(k)`: two IDENTICAL
+--   nullary static calls in one expression are merged by HotSpot's inlining
+--   plus common-subexpression elimination, and that version stopped growing
+--   above N = 26. Calls to two different methods are not merged.
+-- * The result is a nullary constructor, so nothing stays alive: the cost is
+--   time, not memory (the program runs in a 16 MB heap at N = 30).
+--
+-- The measurements are in the corpus `meta`.
+
+\func blowupLevels : Nat => 30
+
+-- Bool = false | true; the `peano` runtime prints `true` as 1.
+\func boolInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "Bool") 0
+
+\func falseC : LBTerm => construct boolInd 0 nil
+\func trueC  : LBTerm => construct boolInd 1 nil
+
+\func boolMutual : MutualInductiveBody =>
+  \new MutualInductiveBody finite 0
+      ((\new OneInductiveBody "Bool" false IntoAny
+             ((\new ConstructorBody "false" 0) :: (\new ConstructorBody "true" 0) :: nil)
+             nil) :: nil)
+
+-- pick x y = case y of { false => x ; true => x }   (y = bvar 0, x = bvar 1)
+\func pickBody : LBTerm =>
+  lambda anon (lambda anon (
+    case boolInd 0 (bvar 0) ((nil, bvar 1) :: (nil, bvar 1) :: nil)))
+
+\func pickRef : LBTerm => const (\new Kername (mpFile nil) "pick")
+
+\func aName (k : Nat) : Kername => \new Kername (mpFile nil) ("a" ++ natToStr k)
+\func bName (k : Nat) : Kername => \new Kername (mpFile nil) ("b" ++ natToStr k)
+
+\func aBody (k : Nat) : LBTerm => app (app pickRef (const (aName k))) (const (bName k))
+\func bBody (k : Nat) : LBTerm => app (app pickRef (const (bName k))) (const (aName k))
+
+-- Dependents first, dependencies last (MetaRocq's `wf_glob`):
+-- aN :: bN :: ... :: a0 :: b0 :: pick :: Bool :: nil.
+\func declsUpTo (k : Nat) : GlobalDeclarations \elim k
+  | 0 =>
+    (aName 0, constantDecl (\new ConstantBody (just trueC))) ::
+    (bName 0, constantDecl (\new ConstantBody (just falseC))) ::
+    (\new Kername (mpFile nil) "pick", constantDecl (\new ConstantBody (just pickBody))) ::
+    (\new Kername (mpFile nil) "Bool", inductiveDecl boolMutual) ::
+    nil
+  | suc k =>
+    (aName (suc k), constantDecl (\new ConstantBody (just (aBody k)))) ::
+    (bName (suc k), constantDecl (\new ConstantBody (just (bBody k)))) ::
+    declsUpTo k
+
+-- The entry point is a bare constant: Peregrine's OCaml drivers read the
+-- module's first export, which is the constant `main` refers to.
+\func constBlowupProgram : LBProgram => (declsUpTo blowupLevels, const (aName blowupLevels))

@@ -1,0 +1,35 @@
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Compiler.LambdaBox
+
+-- Regression program `mangle-collision` (test/corpora/regression/): two
+-- different constants whose kernames collided under the old mangling. FIXED.
+--
+-- The old `mangleKername` joined module-path components with `_` and passed
+-- `_` in a component through, so `mpFile ["A_B"]` and `mpFile ["A", "B"]` both
+-- gave `c_A_B__f`, and `javac` rejected the duplicate method. The current
+-- encoding (`Compiler/Mangle.ard`) is proved injective
+-- (`Proof/MangleInj.ard`), and this program returns the first constant,
+-- `true` (printed as 1), on every backend.
+
+\func boolInd : InductiveId => \new InductiveId (\new Kername (mpFile nil) "Bool") 0
+
+\func falseC : LBTerm => construct boolInd 0 nil
+\func trueC  : LBTerm => construct boolInd 1 nil
+
+\func boolMutual : MutualInductiveBody =>
+  \new MutualInductiveBody finite 0
+      ((\new OneInductiveBody "Bool" false IntoAny
+             ((\new ConstructorBody "false" 0) :: (\new ConstructorBody "true" 0) :: nil)
+             nil) :: nil)
+
+\func decls : GlobalDeclarations =>
+  -- one component that contains an underscore ...
+  (\new Kername (mpFile ("A_B" :: nil)) "f",      constantDecl (\new ConstantBody (just trueC))) ::
+  -- ... and two components: a different kername
+  (\new Kername (mpFile ("A" :: "B" :: nil)) "f", constantDecl (\new ConstantBody (just falseC))) ::
+  (\new Kername (mpFile nil) "Bool",              inductiveDecl boolMutual) ::
+  nil
+
+\func mangleCollisionProgram : LBProgram => (decls, const (\new Kername (mpFile ("A_B" :: nil)) "f"))

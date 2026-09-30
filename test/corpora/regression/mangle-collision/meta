@@ -1,0 +1,13 @@
+# FIXED (commit 3bbc010): two different constants whose kernames collided
+# under the old mangling.
+#
+# The old `mangleKername` joined module-path components with `_` and let `_`
+# in a component through, so `mpFile ["A_B"]` and `mpFile ["A","B"]` both gave
+# `c_A_B__f` and javac rejected the duplicate method. Compiler/Mangle.ard is now
+# injective (proved in Proof/MangleInj.ard). The program returns the first
+# constant, `true` (1). Source: lambox-to-java-examples/src/ExampleMangleCollision.ard.
+expected=1
+backends=java ocaml c
+runtime=peano
+xfail=
+note=Bool.true; A_B.f and A.B.f must get different Java names (collided before 3bbc010)

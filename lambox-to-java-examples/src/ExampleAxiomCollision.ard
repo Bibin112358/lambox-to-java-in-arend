@@ -1,0 +1,44 @@
+\import Data.Bool
+\import Data.Maybe
+\import Data.String
+\import Compiler.LambdaBox
+
+-- Regression program `axiom-mangle-collision` (test/corpora/regression/): an
+-- axiom whose kername collided with Lean's `Nat.add` under the old mangling.
+-- FIXED; Java now fails loudly, which is the intended behaviour.
+--
+-- The program declares an axiom `add` in a module literally named `_Nat` and
+-- computes `_Nat.add 6 7`. Its Peregrine attributes realize the axiom as
+-- multiplication, so OCaml prints 42.
+--
+-- * Before: the axiom table was keyed by mangled strings, and `_Nat.add`
+--   mangled like `Nat.add`, so Java SILENTLY computed 6 + 7 = 13.
+-- * Now: the table is keyed by `Kername`s (`Compiler/JavaAxioms.ard`),
+--   `_Nat.add` is not in it, and it compiles to the stub that throws
+--   `RuntimeException("axiom ... not implemented")`. The Java backend does not
+--   read Peregrine attribute files, so 42 is not expected from it; the corpus
+--   records this as `xfail`. A regression to the silent 13 would be reported
+--   as `wrong`, which `xfail` does not absorb.
+
+\func decls : GlobalDeclarations =>
+  (\new Kername (mpFile nil) "res",
+   constantDecl (\new ConstantBody (just
+     (app (app (const (\new Kername (mpFile ("_Nat" :: nil)) "add")) (prim (rocqUint63, 6)))
+          (prim (rocqUint63, 7)))))) ::
+  (\new Kername (mpFile ("_Nat" :: nil)) "add", constantDecl (\new ConstantBody nothing)) ::
+  nil
+
+-- The entry point is a bare constant: Peregrine's OCaml drivers read the
+-- module's first export, which is the constant `main` refers to (with an
+-- application there, OCaml printed a closure).
+\func axiomCollisionProgram : LBProgram => (decls, const (\new Kername (mpFile nil) "res"))
+
+-- OCaml realizes the axiom as `Prim_int63.mul` (test/runtime/int63). The
+-- `\new RemappedConstant` stays inline: a String field read through a helper
+-- `\func` does not reduce when printed (see ExampleMatMul.ard).
+\func axiomCollisionAttrsOCaml : AttributesConfig =>
+  \new AttributesConfig nil
+      ((\new Kername (mpFile ("_Nat" :: nil)) "add",
+        \new RemappedConstant nothing 2 false false "Prim_int63.mul") ::
+       nil)
+      nil nil nil

@@ -1,0 +1,1 @@
+(Untyped ((((MPfile ()) "res") (ConstantDecl (constant_body (Some (tApp (tApp (tConst ((MPfile ("_Nat")) "add")) (tPrim (primInt 6))) (tPrim (primInt 7))))))) (((MPfile ("_Nat")) "add") (ConstantDecl (constant_body None)))) (Some (tConst ((MPfile ()) "res"))))

@@ -1,39 +1,39 @@
 #!/usr/bin/env bash
 # regen-arend-asts.sh [program...]
 #
-# Refreshes the checked-in `prog.ast` of the three AREND-AUTHORED programs.
+# Refreshes the checked-in `prog.ast` of the programs written in Arend
+# (`$ALL_PROGRAMS` below; sources in lambox-to-java-examples, printed by
+# ExamplePrint.ard). Every corpus program is a λ□ s-expression file, so these
+# terms are serialized once (Compiler/Serialize.ard) and committed; the harness
+# itself never runs Arend to obtain a program. Every run of such a program then
+# also exercises the round trip Serialize -> tools/ast-to-arend -> compile.
 #
-# Every program in the corpus is a λ□ s-expression file -- that is the single
-# program input shape of the harness, so `example`, `peano` and `matmul`, whose
-# source is a hand-written `LBTerm` in the Arend project rather than a file from
-# Lean or Rocq, need their term serialized once and committed. This script is the
-# only producer of those files; the harness itself never runs Arend to obtain a
-# program, only to compile one.
+# Most live in corpora/handwritten/; `const-blowup`, `mangle-collision` and
+# `axiom-mangle-collision` pin down properties of the compiler and live in
+# corpora/regression/ (see corpora/regression.sh).
 #
-# The round trip that makes this legitimate -- serialize with `Serialize.ard`,
-# read back with `tools/ast-to-arend`, compile, and get the same output as
-# compiling the original term -- is what the retired `peano-ast` and `matmul-ast`
-# cases used to check by hand. Running it on every program instead of on two is
-# an improvement, not a loss: `Serialize` and the importer are now on the path of
-# all three.
+# Attribute files are refreshed too: `matmul*` remaps four primitive-op axioms
+# per backend (prog.attr for OCaml, prog-c.attr for C), `axiom-mangle-collision`
+# one axiom for OCaml.
 #
-# Cost: one Arend CLI run per program, ~40 s each (library loading dominates), so
+# Cost: one Arend CLI run per file, ~40 s each (library loading dominates), so
 # this is a rare, manual step -- never part of `test/check`.
-#
-# `letchain` is the fourth such program (the `letIn` worst case, see
-# test/README.md "Performance"); it declares only the java backend, so it needs
-# no attribute files.
-#
-# `matmul` additionally needs its two attribute files, which are extracted from
-# the same Arend module and are refreshed here as well. They are four fixed
-# declarations independent of the matrix size, which is why they are checked in
-# rather than re-extracted per run.
 set -euo pipefail
+
+ALL_PROGRAMS="example peano matmul matmul250 letchain insertion-sort const-blowup mangle-collision axiom-mangle-collision"
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$TOOLS_DIR/../lib.sh"
 
-HANDWRITTEN="$CORPORA_DIR/handwritten"
+# program -> its directory: sample computations are in `handwritten`, programs
+# that pin down a property of the compiler in `regression`.
+prog_dir() {
+  case $1 in
+    const-blowup|mangle-collision|axiom-mangle-collision)
+      printf '%s/regression/%s\n' "$CORPORA_DIR" "$1" ;;
+    *) printf '%s/handwritten/%s\n' "$CORPORA_DIR" "$1" ;;
+  esac
+}
 
 # program -> the ExamplePrint definition that prints its serialized λ□ term.
 sexpr_def() {
@@ -46,12 +46,16 @@ sexpr_def() {
     matmul300) printf 'ExamplePrint:matMulSexpr300\n' ;;
     letchain) printf 'ExamplePrint:letChainSexpr\n' ;;
     insertion-sort) printf 'ExamplePrint:sortSexpr\n' ;;
-    *)       die "no Arend source for program: $1 (regenerable: example peano matmul matmul200 matmul250 matmul300 letchain insertion-sort)" ;;
+    const-blowup) printf 'ExamplePrint:constBlowupSexpr\n' ;;
+    mangle-collision) printf 'ExamplePrint:mangleCollisionSexpr\n' ;;
+    axiom-mangle-collision) printf 'ExamplePrint:axiomCollisionSexpr\n' ;;
+    *)       die "no Arend source for program: $1 (regenerable: $ALL_PROGRAMS matmul200 matmul300)" ;;
   esac
 }
 
 regen() {
-  local prog=$1 dir="$HANDWRITTEN/$prog"
+  local prog=$1 dir
+  dir=$(prog_dir "$prog")
   [ -d "$dir" ] || die "no such program directory: $dir"
   info "regenerating $prog/prog.ast from $(sexpr_def "$prog")"
   "$TOOLS_DIR/extract-arend.sh" "$(sexpr_def "$prog")" "$dir/prog.ast"
@@ -60,6 +64,9 @@ regen() {
     # onto different native symbols; see runtime/int63/README.md.
     "$TOOLS_DIR/extract-arend.sh" ExamplePrint:matMulAttrsCText     "$dir/prog-c.attr"
     "$TOOLS_DIR/extract-arend.sh" ExamplePrint:matMulAttrsOCamlText "$dir/prog.attr" ;;
+  axiom-mangle-collision)
+    # OCaml only: realizes the axiom as int63 multiplication.
+    "$TOOLS_DIR/extract-arend.sh" ExamplePrint:axiomCollisionAttrsOCamlText "$dir/prog.attr" ;;
   esac
 }
 
@@ -69,5 +76,5 @@ else
   # matmul200/matmul300 are known to sexpr_def but have no program directory:
   # 250 is the kept benchmark size (test/README.md "Performance"); either of
   # the others is one `mkdir` plus a `meta` away.
-  for prog in example peano matmul matmul250 letchain insertion-sort; do regen "$prog"; done
+  for prog in $ALL_PROGRAMS; do regen "$prog"; done
 fi

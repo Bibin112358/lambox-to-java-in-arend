@@ -1,0 +1,28 @@
+# OPEN limitation: constants are re-evaluated on every reference.
+#
+# `const k` compiles to a call of the zero-argument static method `c_k()`,
+# whose body is the whole constant body, with no memoization. A DAG of N
+# constants therefore costs 2^N on the JVM, while Peregrine's OCaml/C backends
+# bind each constant once. The value is right, so `run` reports `ok`; the
+# defect is the time, visible with `run --ref const-blowup`. Source:
+# lambox-to-java-examples/src/ExampleConstBlowup.ard (N = blowupLevels = 30).
+#
+# Measured 2026-09-30 on the generated Prog.java, with `body()` pointed at
+# a_N (java run only, -XX:-DontCompileHugeMethods; OCaml/C stay at ~0.0 s):
+#
+#   N           20     22     24     26     28     30
+#   default   0.16   0.39   1.03   1.26   4.64  13.9 s
+#   -Xint     0.86   2.00   7.15                     s   (~2x per level)
+#
+# HotSpot's inlining hides part of the growth (hence the uneven default row),
+# which is why the program uses two interleaved chains: a single chain with two
+# identical calls per body was collapsed completely above N = 26. The result
+# is a nullary constructor, so the cost is time, not memory.
+#
+# The fix is a lazily initialized static field per constant; it needs static
+# state in the Java model and changes the `const` case of the proof.
+expected=1
+backends=java ocaml c
+runtime=peano
+xfail=
+note=Bool.true; a_k/b_k = pick of the previous pair: Java re-evaluates constants (2^N calls), OCaml/C bind them once
