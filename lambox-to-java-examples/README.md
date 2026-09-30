@@ -27,10 +27,10 @@ Sample input for the `lambox-to-java` compiler, kept in its own Arend project
 ## Running
 
 The Arend CLI resolves the `lambox-to-java` dependency via two `-L` search
-roots: the repository root (where `lambox-to-java/` lives) and the default
-library root (`~/.arend/libs`, for `arend-lib`). `-L` replaces the default
+roots: the repository root (where `lambox-to-java/` lives) and the directory
+containing `arend-lib` (by default `~/.arend/libs`). `-L` replaces the default
 root rather than adding to it, so both are needed. `test/lib.sh` /
 `test/tools/extract-arend.sh` already do this; to run the CLI on this project
-by hand:
+by hand, from this directory:
 
-    java -Xss1g -jar <arend-cli.jar> -L <repo-root> -L ~/.arend/libs arend.yaml ExamplePrint:peanoJava
+    java -Xss1g -jar <arend-cli.jar> -L .. -L <arend-lib-root> arend.yaml ExamplePrint:peanoJava

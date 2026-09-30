@@ -25,6 +25,7 @@
 set -euo pipefail
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
+use_opam_switch   # malfunction, ocamlopt and the CertiRocq runtime
 
 stage=${1:?usage: ocaml.sh <gen|build|run> ...}
 shift

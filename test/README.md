@@ -76,12 +76,19 @@ any other λ□ program.
 
 ## Prerequisites
 
-Paths are set in `lib.sh` (edit them there):
+No path in the repository is specific to one machine. Tools are found on `PATH`
+or through environment variables. The easiest way to set them is to copy
+`local.sh.example` to `test/local.sh` (gitignored) and fill it in; `lib.sh`
+reads it first. The variables are:
 
-* Arend CLI and arend-lib built from the unmerged String PR [arend-lang/Arend#131](https://github.com/arend-lang/Arend/pull/131), not the 1.12.0 release (see "Requirements" in the top-level README): the jar `~/arend-lang-bibin/cli/build/libs/cli-1.12.0-full.jar`, arend-lib in `~/.arend/libs`;
-* a JDK (`~/.jdks/openjdk-26.0.1`), Python 3;
-* for `run` only: Peregrine (`peregrine ast box` rewrites the `.ast` inputs before import);
-* for `run --ref` only: OCaml + `malfunction` (opam switch `peregrine`), gcc + the CertiRocq runtime.
+| needed for | tool | variable (default) |
+|---|---|---|
+| everything | Arend CLI built from the unmerged String PR [arend-lang/Arend#131](https://github.com/arend-lang/Arend/pull/131), not the 1.12.0 release (see "Requirements" in the top-level README) | `AREND_JAR` (none: must be set) |
+| everything | that PR's arend-lib | `AREND_LIBDIR`, the directory containing `arend-lib/` (`~/.arend/libs`, the CLI's default) |
+| everything | a JDK (tested with 26), Python 3 | `JAVA`, `JAVAC` (`$JAVA_HOME/bin/java`, else `java` on `PATH`), `PYTHON` (`python3`) |
+| `run` | Peregrine (`peregrine ast box` rewrites the `.ast` inputs before import) | `PEREGRINE` (`peregrine`) |
+| the `peregrine` / `lean-benchmarks` corpora | upstream checkouts | `PEREGRINE_DIR`, `LEAN_TO_LAMBDABOX_DIR` (unset: corpus skipped); `LAKE` (`lake`) to regenerate the Lean benchmarks |
+| `run --ref` | OCaml + `malfunction`, gcc + the CertiRocq runtime | `OPAM_SWITCH_NAME` (`peregrine`; its `bin/` is put on `PATH`), `CERTIROCQ_RT` (found in that switch) |
 
 Each Arend run takes up to 2 GB. `proofs -j N` sets the parallelism. On a shared
 machine set `AREND_WRAP=/path/to/lock-script` to put a command in front of every
@@ -143,7 +150,8 @@ JIT limit; `lean-deriv` 24 s → 6 s).
     stages/{java,ocaml,c}.sh  gen / build / run of one backend
     runtime/              OCaml/C runtimes of the reference backends (see their READMEs)
     arend/                Arend project for generated programs; src/ is generated and gitignored
-    lib.sh                tool paths and shell helpers
+    lib.sh                tool lookup and shell helpers
+    local.sh.example      template for test/local.sh, this machine's tool locations (gitignored)
     tools/
       import-ast.sh       .ast -> arend/src/Imported/<Module>.ard (peregrine ast box + ast-to-arend)
       ast-to-arend        the .ast -> Arend translator (Python)

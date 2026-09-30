@@ -25,8 +25,8 @@
 # bundle under the module name `bench`.
 #
 # Regenerate prog.ast (the file is otherwise unmodified):
-#   cp prog.lean $HOME/lean-to-lambdabox/MatMulPeano.lean
-#   cd $HOME/lean-to-lambdabox && $HOME/.elan/bin/lake env lean MatMulPeano.lean
+#   cp prog.lean $LEAN_TO_LAMBDABOX_DIR/MatMulPeano.lean
+#   cd $LEAN_TO_LAMBDABOX_DIR && lake env lean MatMulPeano.lean
 #   cp prog.ast <this directory>/prog.ast
 # Change `def size` in prog.lean to scale it.
 #

@@ -22,7 +22,10 @@
 set -euo pipefail
 
 CORPUS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TESTS="$HOME/lean-to-lambdabox/benchmarks/TESTS"
+. "$CORPUS_DIR/../lib.sh"
+# A lean-to-lambdabox checkout; without one the corpus is empty.
+[ -n "$LEAN_TO_LAMBDABOX_DIR" ] || exit 0
+TESTS="$LEAN_TO_LAMBDABOX_DIR/benchmarks/TESTS"
 [ -f "$TESTS" ] || exit 0
 
 while IFS=: read -r name runner _; do

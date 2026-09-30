@@ -87,13 +87,22 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     programs = c.load_corpora()
+    skipped = []
     if args.programs:
         names = args.programs
     elif args.set == "all":
         names = [q.name for q in programs if (GOLDEN_DIR / f"{q.name}.java").exists()]
     else:
         names = list(SMOKE) + (list(COVER_EXTRA) if args.set == "cover" else [])
+        # A program of an upstream corpus that is not installed here.
+        known = {q.name for q in programs}
+        skipped = [n for n in names if n not in known]
+        names = [n for n in names if n in known]
+        for n in skipped:
+            c.warn(f"{n}: skipped, its corpus is not available "
+                   "(set PEREGRINE_DIR / LEAN_TO_LAMBDABOX_DIR, see test/README.md)")
     selection = [q for q in c.select(programs, names) if c.ensure_imported(q)]
+    skipped += [n for n in names if n not in {q.name for q in selection}]
     if not selection:
         c.die("nothing to check")
 
@@ -110,12 +119,14 @@ def main(argv=None):
 
     statuses = {q.name: compare(q.name, produced[q.name], args.update) if q.name in produced
                 else "no-output" for q in selection}
+    statuses.update({n: "skipped" for n in skipped})
     print()
     for name, status in statuses.items():
         print(f"  {name:28s} {status}")
     bad = [n for n, s in statuses.items() if s in ("differs", "no-output", "no-golden")]
     print(f"\ngolden: {len(statuses)} program(s) in {time.monotonic() - start:.0f}s, "
-          f"{len(bad)} failing" + (f": {' '.join(bad)}" if bad else ""))
+          f"{len(bad)} failing" + (f": {' '.join(bad)}" if bad else "")
+          + (f", {len(skipped)} skipped" if skipped else ""))
     return 1 if bad else 0
 
 

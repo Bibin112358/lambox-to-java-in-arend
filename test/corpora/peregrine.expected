@@ -4,7 +4,7 @@
 # Two columns, whitespace-separated: fixture name, value. Everything after the
 # value on a line is a comment (corpora/peregrine.sh reads the second field).
 #
-# The oracle is UPSTREAM, at revision 247d495 (~/peregrine-tool), and it comes in
+# The oracle is UPSTREAM, at revision 247d495 ($PEREGRINE_DIR), and it comes in
 # two strengths -- which one applies is written on each line:
 #
 #   [upstream]  peregrine's own recorded answer in test/src/tests.ts

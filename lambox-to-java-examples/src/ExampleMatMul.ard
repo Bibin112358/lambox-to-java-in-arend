@@ -432,7 +432,7 @@
 -- stuck and would print as `reConstS {primRemap ...}`).
 --
 -- C backend: remaps onto the CertiRocq C runtime's prim_int63 functions
--- (~/.opam/peregrine/.../CertiRocq/Plugin/runtime/prim_int63.{h,c}).
+-- (`CertiRocq/Plugin/runtime/prim_int63.{h,c}`, `$CERTIROCQ_RT` in test/lib.sh).
 -- ---------------------------------------------------------------------------
 
 \func matMulAttrsC : AttributesConfig =>

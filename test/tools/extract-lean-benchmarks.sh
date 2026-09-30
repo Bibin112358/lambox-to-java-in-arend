@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # extract-lean-benchmarks.sh [lean-to-lambdabox-directory]
 #
+# The directory defaults to $LEAN_TO_LAMBDABOX_DIR (see lib.sh).
+#
 # The producer of the `lean-benchmarks` corpus' programs: closes every benchmark
 # of upstream's `benchmarks/TESTS` over one small input and erases it to a λ□
 # `.ast` file in $WORK_DIR/lean-benchmarks/.
@@ -28,7 +30,8 @@ set -euo pipefail
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$TOOLS_DIR/../lib.sh"
 
-lean_root=${1:-$HOME/lean-to-lambdabox}
+lean_root=${1:-$LEAN_TO_LAMBDABOX_DIR}
+[ -n "$lean_root" ] || die "no lean-to-lambdabox checkout: pass it or set LEAN_TO_LAMBDABOX_DIR"
 tests="$lean_root/benchmarks/TESTS"
 lib="$lean_root/benchmarks/.lake/build/lib/lean"
 input=10
@@ -37,7 +40,7 @@ source="$ast_dir/BenchmarkSuite.lean"
 
 [ -f "$tests" ] || die "benchmark manifest not found: $tests"
 [ -d "$lib" ] || die "benchmark library not built: $lib (run \`lake build\` in $lean_root/benchmarks)"
-require_tool "$HOME/.elan/bin/lake" "install Lean's lake launcher"
+require_tool "$LAKE" "Lean's lake (install elan, or set LAKE)"
 mkdir -p "$ast_dir"
 
 # The wrapper: `runonce`/`repeat` benchmarks take `()`, `natio` ones take the
@@ -56,7 +59,7 @@ rm -f "$ast_dir"/*.ast "$ast_dir"/*.ast.inlinings "$ast_dir"/*.attr
 
 info "erasing $(grep -c '^#erase' "$source") benchmarks of $lean_root at input $input"
 (cd "$lean_root" && LEAN_PATH="$lib${LEAN_PATH:+:$LEAN_PATH}" \
-  "$HOME/.elan/bin/lake" env lean "$source")
+  "$LAKE" env lean "$source")
 
 # The OCaml stage requires an attribute file next to the program (peregrine
 # demands the flag); a benchmark realizes its axioms through the `lean` runtime

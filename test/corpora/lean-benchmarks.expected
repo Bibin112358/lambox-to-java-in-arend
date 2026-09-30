@@ -8,9 +8,9 @@
 # library. Reproduce with one `#eval` per line in a file importing
 # FromLeanCommon, at the revision test/README.md records:
 #
-#     cd ~/lean-to-lambdabox
+#     cd $LEAN_TO_LAMBDABOX_DIR
 #     LEAN_PATH=$PWD/benchmarks/.lake/build/lib/lean \
-#       ~/.elan/bin/lake env lean RefValues.lean
+#       lake env lean RefValues.lean
 #
 # Only the `Nat`-valued benchmarks are here. `unit`, `demo0`, `demo1`, `demo1_tc`
 # and `demo2` return `Unit` or a list, which Lean and our Java `Rt.Data` printer

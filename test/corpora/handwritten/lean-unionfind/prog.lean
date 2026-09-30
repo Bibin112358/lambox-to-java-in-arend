@@ -4,10 +4,10 @@
 -- closes it over an input and asks for the OCaml interface as well.
 --
 -- Regenerate prog.ast / bench.mli (both are otherwise unmodified):
---   cp prog.lean $HOME/lean-to-lambdabox/Gen.lean
---   cd $HOME/lean-to-lambdabox && LEAN_PATH=$PWD/benchmarks/.lake/build/lib/lean \
---     $HOME/.elan/bin/lake env lean Gen.lean
---   cp $HOME/lean-to-lambdabox/{prog.ast,bench.mli} <this directory>
+--   cp prog.lean $LEAN_TO_LAMBDABOX_DIR/Gen.lean
+--   cd $LEAN_TO_LAMBDABOX_DIR && LEAN_PATH=$PWD/benchmarks/.lake/build/lib/lean \
+--     lake env lean Gen.lean
+--   cp $LEAN_TO_LAMBDABOX_DIR/{prog.ast,bench.mli} <this directory>
 --
 -- The input below is SMALLER than the one in upstream's manifest
 -- (benchmarks/TESTS), so that one run costs seconds rather than minutes; see

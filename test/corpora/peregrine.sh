@@ -33,11 +33,14 @@
 set -euo pipefail
 
 CORPUS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$HOME/peregrine-tool/test"
+. "$CORPUS_DIR/../lib.sh"
+# A peregrine-tool checkout; without one the corpus is empty.
+[ -n "$PEREGRINE_DIR" ] || exit 0
+upstream="$PEREGRINE_DIR/test"
 shopt -s nullglob
 
-for ast in "$ROOT"/*/extraction/*.ast; do
-  frontend=${ast#"$ROOT"/} frontend=${frontend%%/*}
+for ast in "$upstream"/*/extraction/*.ast; do
+  frontend=${ast#"$upstream"/} frontend=${frontend%%/*}
   base=${ast##*/} base=${base%.ast}
   name="peregrine-$frontend-${base,,}"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \

@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-# Shared by the stage scripts (stages/*.sh) and tools/*.sh. Sourced, never run.
-# Tool paths are hard-coded for this machine; edit them here if they move.
+# Shared by the stage scripts (stages/*.sh), corpora/*.sh and tools/*.sh.
+# Sourced, never run.
+#
+# Nothing here is specific to one machine: repository paths are derived from
+# this file's location, and every external tool is taken from an environment
+# variable, else found on PATH. A machine's own settings go into test/local.sh
+# (gitignored; copy local.sh.example), which is read first.
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/.." && pwd)"
+
+# shellcheck source=/dev/null
+[ -f "$TEST_DIR/local.sh" ] && . "$TEST_DIR/local.sh"
 
 info() { printf '[test] %s\n' "$*" >&2; }
 warn() { printf '[test] WARNING: %s\n' "$*" >&2; }
@@ -16,27 +24,39 @@ CORPORA_DIR="$TEST_DIR/corpora"
 RUNTIME_DIR="$TEST_DIR/runtime"
 
 # --- Arend ---------------------------------------------------------------
-# A development 1.12 build of the Arend CLI (the library needs its String
-# implementation).
-AREND_JAR="$HOME/arend-lang-bibin/cli/build/libs/cli-1.12.0-full.jar"
-AREND_LIBDIR="$HOME/.arend/libs"            # where arend-lib is installed
+# The Arend CLI jar, built from the String PR (README "Requirements"); no default.
+AREND_JAR="${AREND_JAR:-}"
+# The directory containing arend-lib (that PR's arend-lib/); the default is
+# the CLI's own default library root.
+AREND_LIBDIR="${AREND_LIBDIR:-$HOME/.arend/libs}"
 AREND_CORE="$ROOT/lambox-to-java"           # the compiler, semantics, proofs
 AREND_EXAMPLES="$ROOT/lambox-to-java-examples"
 AREND_TESTS="$TEST_DIR/arend"               # generated programs (src/ is gitignored)
-JAVA="$HOME/.jdks/openjdk-26.0.1/bin/java"
-JAVAC="${JAVA}c"
+# The JDK: $JAVA, else $JAVA_HOME/bin/java, else `java` on PATH.
+JAVA="${JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/java}}"
+JAVA="${JAVA:-java}"
+JAVAC="${JAVAC:-${JAVA}c}"
 # Optional command prefix for every Arend JVM, e.g. a lock that limits how many
 # run at once on a memory-constrained machine: AREND_WRAP="/path/to/slot.sh".
 AREND_WRAP="${AREND_WRAP:-}"
 
 # arend <project-dir> <module-or-def>... -- typecheck in that project, all output
 # to stdout. The exit status means nothing: callers look for `[ERROR]` lines.
-# The two projects that depend on lambox-to-java find it through -L (which
-# replaces the default library root, hence arend-lib's root as well).
+# Libraries are found through -L: arend-lib in $AREND_LIBDIR, and for the two
+# projects that depend on lambox-to-java, the repository root.
 arend() {
   local project=$1; shift
-  local -a libs=()
-  [ "$project" = "$AREND_CORE" ] || libs=(-L "$ROOT" -L "$AREND_LIBDIR")
+  # A missing tool is reported the way callers look for failures.
+  if [ -z "$AREND_JAR" ] || [ ! -f "$AREND_JAR" ]; then
+    echo "[ERROR] Arend CLI jar not found (AREND_JAR='$AREND_JAR'); see test/local.sh.example"
+    return 0
+  fi
+  if ! command -v "$JAVA" >/dev/null 2>&1; then
+    echo "[ERROR] no JVM '$JAVA'; set JAVA or JAVA_HOME (see test/local.sh.example)"
+    return 0
+  fi
+  local -a libs=(-L "$AREND_LIBDIR")
+  [ "$project" = "$AREND_CORE" ] || libs+=(-L "$ROOT")
   # A binary cache can hide a source change and suppresses the putStrLn output
   # the harness harvests, so no run may use one.
   rm -rf "$project/bin" "$AREND_CORE/bin"
@@ -56,22 +76,38 @@ JAVA_RUN_STACK=-Xss512m
 JAVA_RUN_FLAGS=-XX:-DontCompileHugeMethods
 
 # --- Importing .ast programs ---------------------------------------------
-PYTHON=python3
+PYTHON="${PYTHON:-python3}"
 AST_TO_AREND="$TOOLS_DIR/ast-to-arend"
 
+# --- Upstream checkouts (optional corpora) --------------------------------
+# Each corpus is skipped when its variable is unset.
+PEREGRINE_DIR="${PEREGRINE_DIR:-}"                   # peregrine-tool: corpora/peregrine.sh
+LEAN_TO_LAMBDABOX_DIR="${LEAN_TO_LAMBDABOX_DIR:-}"   # corpora/lean-benchmarks.sh
+LAKE="${LAKE:-lake}"   # Lean's build tool, for tools/extract-lean-benchmarks.sh
+
 # --- Peregrine / CertiRocq (import, and the OCaml and C reference backends)
-PEREGRINE="$HOME/peregrine-tool/_build/install/default/bin/peregrine"
-PEREGRINE_BOX_FLAGS=   # optional extra passes for `peregrine ast box`
-CERTIROCQ_RT="$HOME/.opam/peregrine/lib/coq/user-contrib/CertiRocq/Plugin/runtime"
-OPAM_SWITCH_BIN="$HOME/.opam/peregrine/bin"   # malfunction lives here
-case ":$PATH:" in
-  *":$OPAM_SWITCH_BIN:"*) ;;
-  *) PATH="$OPAM_SWITCH_BIN:$PATH" ;;
-esac
-GCC=gcc
-OCAMLOPT=ocamlopt
-MALFUNCTION=malfunction
+PEREGRINE="${PEREGRINE:-peregrine}"
+PEREGRINE_BOX_FLAGS="${PEREGRINE_BOX_FLAGS:-}"   # extra passes for `peregrine ast box`
+# The opam switch with malfunction and CertiRocq, and CertiRocq's C runtime in
+# it (found through `opam` by use_opam_switch unless set).
+OPAM_SWITCH_NAME="${OPAM_SWITCH_NAME:-peregrine}"
+CERTIROCQ_RT="${CERTIROCQ_RT:-}"
+GCC="${GCC:-gcc}"
+OCAMLOPT="${OCAMLOPT:-ocamlopt}"
+MALFUNCTION="${MALFUNCTION:-malfunction}"
 NATIVE_RUN_STACK=unlimited   # `ulimit -s` for native programs (deep recursion)
+
+# use_opam_switch -- put $OPAM_SWITCH_NAME's bin/ on PATH and locate
+# $CERTIROCQ_RT in it. Without opam (or that switch) both are left to PATH and
+# the variable. Only the reference backends call this.
+use_opam_switch() {
+  local prefix
+  command -v opam >/dev/null 2>&1 || return 0
+  prefix=$(opam var --switch="$OPAM_SWITCH_NAME" prefix 2>/dev/null) || return 0
+  [ -n "$prefix" ] || return 0
+  PATH="$prefix/bin:$PATH"
+  CERTIROCQ_RT="${CERTIROCQ_RT:-$prefix/lib/coq/user-contrib/CertiRocq/Plugin/runtime}"
+}
 
 # --- Exit codes: the stage scripts' contract with run.py -----------------
 MISSING_TOOL_EXIT=3      # a toolchain is absent               -> skip-no-tool
@@ -89,7 +125,8 @@ require_tool() {
 }
 
 require_arend() {
-  require_tool "$JAVA" "a JDK"
+  require_tool "$JAVA" "a JDK: set JAVA or JAVA_HOME"
+  [ -n "$AREND_JAR" ] || { warn "AREND_JAR is not set (see test/local.sh.example)"; exit "$MISSING_TOOL_EXIT"; }
   [ -f "$AREND_JAR" ] || { warn "Arend CLI jar not found: $AREND_JAR"; exit "$MISSING_TOOL_EXIT"; }
 }
 

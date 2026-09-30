@@ -1,4 +1,6 @@
 /test/work/
+# A machine's tool locations (template: test/local.sh.example)
+/test/local.sh
 /lambox-to-java/bin/
 /lambox-to-java-examples/bin/
 # The test harness' Arend project: everything under src/ is generated

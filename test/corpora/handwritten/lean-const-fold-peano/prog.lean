@@ -4,10 +4,10 @@
 -- 58701f8); nothing here changes it.
 --
 -- Regenerate prog.ast (otherwise unmodified):
---   cp prog.lean $HOME/lean-to-lambdabox/GenP.lean
---   cd $HOME/lean-to-lambdabox && LEAN_PATH=$PWD/benchmarks/.lake/build/lib/lean \
---     $HOME/.elan/bin/lake env lean GenP.lean
---   cp $HOME/lean-to-lambdabox/prog.ast <this directory>
+--   cp prog.lean $LEAN_TO_LAMBDABOX_DIR/GenP.lean
+--   cd $LEAN_TO_LAMBDABOX_DIR && LEAN_PATH=$PWD/benchmarks/.lake/build/lib/lean \
+--     lake env lean GenP.lean
+--   cp $LEAN_TO_LAMBDABOX_DIR/prog.ast <this directory>
 --
 -- The result is a Bool, and the expected value is written as ARITHMETIC over small
 -- literals (68*70+12 = 4772): under `nat := .peano` a large literal is erased to a

@@ -1,0 +1,28 @@
+# This machine's tool locations for the test harness. Copy to test/local.sh
+# (gitignored) and adapt; lib.sh reads it before anything else. Instead, every
+# variable can also be set in the environment (a value set here wins). A line
+# left commented out keeps the default shown; only AREND_JAR has no default.
+
+# Required: the Arend CLI and arend-lib from the String PR (README "Requirements").
+AREND_JAR=/path/to/Arend/cli/build/libs/cli-1.12.0-full.jar
+# AREND_LIBDIR=~/.arend/libs          # the directory that contains arend-lib/
+
+# The JDK: $JAVA, else $JAVA_HOME/bin/java, else `java` on PATH.
+# JAVA_HOME=/path/to/jdk
+# JAVA=/path/to/jdk/bin/java
+# JAVAC=/path/to/jdk/bin/javac        # default: $JAVA followed by `c`
+
+# `check run`: Peregrine imports the .ast programs.
+# PEREGRINE=/path/to/peregrine-tool/_build/install/default/bin/peregrine
+
+# Optional corpora: upstream checkouts, each corpus is skipped when unset.
+# PEREGRINE_DIR=/path/to/peregrine-tool
+# LEAN_TO_LAMBDABOX_DIR=/path/to/lean-to-lambdabox
+# LAKE=~/.elan/bin/lake               # only to regenerate the Lean benchmarks
+
+# `check run --ref`: the opam switch with malfunction and CertiRocq.
+# OPAM_SWITCH_NAME=peregrine
+# CERTIROCQ_RT=/path/to/CertiRocq/Plugin/runtime   # default: found in that switch
+
+# A command put in front of every Arend JVM, e.g. a lock on a small machine.
+# AREND_WRAP=/path/to/slot.sh

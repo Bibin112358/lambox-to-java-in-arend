@@ -282,8 +282,12 @@ errors.
 
   and use that checkout's `arend-lib/` as arend-lib, with its extension
   (`arend-lib/meta`, built by the same Gradle project).
-- A JDK (the scripts use JDK 26) and Python 3.
+- A JDK (tested with JDK 26) and Python 3.
 - Optional, for `test/check run`: Peregrine, to import `.ast` programs; see
   `test/README.md`.
 
-The paths to the Arend jar, arend-lib and the JDK are set in `test/lib.sh`.
+Nothing in the repository depends on where these are installed. Tell the test
+harness where they are by copying `test/local.sh.example` to `test/local.sh`
+(gitignored) and setting at least `AREND_JAR`, plus `AREND_LIBDIR` if arend-lib is
+not in `~/.arend/libs`. Everything else is found on `PATH`, and each setting can
+also come from the environment (see "Prerequisites" in `test/README.md`).

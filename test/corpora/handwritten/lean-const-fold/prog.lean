@@ -5,10 +5,10 @@
 -- asks for the OCaml interface as well.
 --
 -- Regenerate prog.ast / bench.mli (both are otherwise unmodified):
---   cp prog.lean $HOME/lean-to-lambdabox/ConstFold.lean
---   cd $HOME/lean-to-lambdabox && LEAN_PATH=$PWD/benchmarks/.lake/build/lib/lean \
---     $HOME/.elan/bin/lake env lean ConstFold.lean
---   cp $HOME/lean-to-lambdabox/{prog.ast,bench.mli} <this directory>
+--   cp prog.lean $LEAN_TO_LAMBDABOX_DIR/ConstFold.lean
+--   cd $LEAN_TO_LAMBDABOX_DIR && LEAN_PATH=$PWD/benchmarks/.lake/build/lib/lean \
+--     lake env lean ConstFold.lean
+--   cp $LEAN_TO_LAMBDABOX_DIR/{prog.ast,bench.mli} <this directory>
 -- (`#erase` writes relative to the working directory, hence the copy back.)
 -- Change the input below to scale the benchmark; the expected value in case.sh
 -- then has to be recomputed (`#eval const_fold <n>` -- needs `ulimit -s
